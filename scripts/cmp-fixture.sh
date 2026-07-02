@@ -22,7 +22,9 @@ tp=""
 for e in .xht .html .htm .xhtml .svg; do [ -f "$wpt/$id$e" ] && tp="$wpt/$id$e" && break; done
 [ -z "$tp" ] && { echo "test not found: $wpt/$id"; exit 1; }
 
-ref=$(grep -oE 'rel="match" href="[^"]+"|href="[^"]+" rel="match"' "$tp" | head -1 | grep -oE 'href="[^"]+"' | sed 's/href="//;s/"//')
+# The match reference: find the <link rel="match"> line (rel + href may be
+# in any order with arbitrary whitespace) and pull its href.
+ref=$(grep -iE 'rel="match"' "$tp" | grep -oE 'href="[^"]+"' | head -1 | sed 's/href="//;s/"//')
 [ -z "$ref" ] && { echo "no match ref"; exit 1; }
 rp=$(cd "$(dirname "$tp")" && realpath "$ref" 2>/dev/null)
 
