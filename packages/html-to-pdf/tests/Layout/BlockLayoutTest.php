@@ -73,6 +73,42 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta($cb->geometry->y + 100.0, $ap->geometry->y, 0.5);
     }
 
+    public function testTableOwnMinWidthShrinkWraps(): void
+    {
+        // An auto table whose only cell is empty still shrink-wraps to the
+        // table's own min-width instead of filling the container.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; min-width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+    }
+
+    public function testCellMinWidthFloorsItsColumn(): void
+    {
+        // A cell's own min-width floors its column contribution, so an
+        // empty cell with min-width shrink-wraps the auto table.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; min-width: 96px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($t);
+        self::assertNotNull($cell);
+        self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
     public function testTableColumnGroupWidthShrinkWrapsAutoTable(): void
     {
         // A `display: table-column-group` (on a div, not `<colgroup>`) with

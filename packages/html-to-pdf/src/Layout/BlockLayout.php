@@ -7589,10 +7589,19 @@ final class BlockLayout
             + $this->resolveLength($cell->style->get('padding-right'), 0.0)
             + $this->resolveBorderWidth($cell->style, 'left')
             + $this->resolveBorderWidth($cell->style, 'right');
-        return [
-            'min' => $mm['min'] + $inset,
-            'max' => $mm['max'] + $inset,
-        ];
+        $min = $mm['min'] + $inset;
+        $max = $mm['max'] + $inset;
+        // CSS Sizing — a cell's own `min-width` floors its column
+        // contribution, so an empty cell with `min-width: 1in` sizes its
+        // column. Resolve via toPx: intrinsic measurement can run before
+        // the cell's resolveLengths pass, so units may be author-declared.
+        $cellMinWidth = $cell->style->get('min-width');
+        if ($cellMinWidth instanceof Length) {
+            $floor = \Phpdftk\Css\Cascade\LengthResolver::toPx($cellMinWidth, $context->lengthContext);
+            $min = max($min, $floor);
+            $max = max($max, $floor);
+        }
+        return ['min' => $min, 'max' => $max];
     }
 
     /**
@@ -7680,6 +7689,17 @@ final class BlockLayout
                 $min += $colMin[$c];
                 $max += $colMax[$c];
             }
+        }
+        // CSS 2.1 §17.5.2 / Sizing — the table box's OWN min-width floors
+        // its used width, so an auto table with only empty cells shrink-
+        // wraps to its min-width instead of filling the container. (Table
+        // boxes go through layout, but resolve via toPx defensively in case
+        // this runs before the table's own resolveLengths pass.)
+        $tableMin = $this->columnBoxLength($table, 'min-width', $context->lengthContext);
+        if ($tableMin !== null) {
+            $min = max($min, $tableMin);
+            $max = max($max, $tableMin);
+            $hasContent = true;
         }
         return $this->tableIntrinsicMemo[$cacheId]
             = ['min' => $min, 'max' => $max, 'hasContent' => $hasContent];
