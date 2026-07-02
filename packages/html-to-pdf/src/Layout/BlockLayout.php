@@ -355,6 +355,14 @@ final class BlockLayout
             // `<colgroup width="N">`. `null` entries fall through to
             // the auto-distribution path in `layoutTableRow`.
             $this->currentColumnWidths = $this->collectColumnWidths($box, $this->currentTableColumns);
+            // Overlay `display: table-column` widths (non-`<col>` columns the
+            // tag-based collector above can't see) onto still-auto columns.
+            $boxWidths = $this->collectColumnBoxWidths($box, $this->currentTableColumns, $context->lengthContext);
+            foreach ($boxWidths as $i => $w) {
+                if ($w !== null && ($this->currentColumnWidths[$i] ?? null) === null) {
+                    $this->currentColumnWidths[$i] = $w;
+                }
+            }
             $this->currentColumnMinWidths = $this->collectColumnMinWidths($box, $this->currentTableColumns, $context->lengthContext);
             try {
                 $height = $this->layoutBlock($box, $context);
@@ -7395,19 +7403,71 @@ final class BlockLayout
         return 1;
     }
 
+    private function columnBoxMinWidth(Box $colBox, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
+    {
+        return $this->columnBoxLength($colBox, 'min-width', $lengthContext);
+    }
+
     /**
-     * A table-column box's `min-width` in pixels, or null. Resolved via
+     * A table-column box's `width` in pixels (from `display: table-column`
+     * on any element — the tag-based `<col>` path in {@see
+     * collectColumnWidths} misses non-`<col>` columns), or null.
+     *
+     * @return list<?float>
+     */
+    private function collectColumnBoxWidths(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        int $totalColumns,
+        \Phpdftk\Css\Cascade\LengthContext $lengthContext,
+    ): array {
+        /** @var list<?float> $widths */
+        $widths = array_fill(0, $totalColumns, null);
+        if ($totalColumns === 0) {
+            return $widths;
+        }
+        $col = 0;
+        foreach ($table->children as $tc) {
+            if (!($tc instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox)) {
+                continue;
+            }
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableColumnBox> $groupCols */
+            $groupCols = array_values(array_filter(
+                $tc->children,
+                static fn(Box $c): bool => $c instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox,
+            ));
+            if ($groupCols !== []) {
+                $groupWidth = $this->columnBoxLength($tc, 'width', $lengthContext);
+                foreach ($groupCols as $colBox) {
+                    $span = $this->columnSpan($colBox);
+                    $w = $this->columnBoxLength($colBox, 'width', $lengthContext) ?? $groupWidth;
+                    for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                        $widths[$col] = $w;
+                    }
+                }
+                continue;
+            }
+            $span = $this->columnSpan($tc);
+            $w = $this->columnBoxLength($tc, 'width', $lengthContext);
+            for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                $widths[$col] = $w;
+            }
+        }
+        return $widths;
+    }
+
+    /**
+     * A table-column box's length property in pixels, or null. Resolved via
      * {@see LengthResolver::toPx} because column boxes are layout no-ops
      * and so never went through the cascade's `resolveLengths` pass — the
      * declared value is still in author units (e.g. `1in` → Length(1, in)).
      */
-    private function columnBoxMinWidth(Box $colBox, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
+    private function columnBoxLength(Box $colBox, string $property, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
     {
-        $minWidth = $colBox->style->get('min-width');
-        if (!($minWidth instanceof Length)) {
+        $value = $colBox->style->get($property);
+        if (!($value instanceof Length)) {
             return null;
         }
-        $px = \Phpdftk\Css\Cascade\LengthResolver::toPx($minWidth, $lengthContext);
+        $px = \Phpdftk\Css\Cascade\LengthResolver::toPx($value, $lengthContext);
         return $px > 0.0 ? $px : null;
     }
 
@@ -7567,6 +7627,12 @@ final class BlockLayout
                 = ['min' => 0.0, 'max' => 0.0, 'hasContent' => false];
         }
         $explicit = $this->collectColumnWidths($table, $totalColumns);
+        $boxWidths = $this->collectColumnBoxWidths($table, $totalColumns, $context->lengthContext);
+        foreach ($boxWidths as $i => $w) {
+            if ($w !== null && ($explicit[$i] ?? null) === null) {
+                $explicit[$i] = $w;
+            }
+        }
         $colMin = array_fill(0, $totalColumns, 0.0);
         $colMax = array_fill(0, $totalColumns, 0.0);
         $hasContent = false;

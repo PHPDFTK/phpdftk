@@ -73,6 +73,26 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta($cb->geometry->y + 100.0, $ap->geometry->y, 0.5);
     }
 
+    public function testTableColumnGroupWidthShrinkWrapsAutoTable(): void
+    {
+        // A `display: table-column-group` (on a div, not `<colgroup>`) with
+        // an explicit width sizes its column, so an auto table shrink-wraps
+        // to it — the tag-based `<col>` width collector can't see this.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="g"></div>'
+            . '<div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #g { display: table-column-group; width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+    }
+
     public function testTableColumnMinWidthShrinkWrapsAutoTable(): void
     {
         // CSS Tables 3 §4.4 — a `display: table-column` (here on a div, not
