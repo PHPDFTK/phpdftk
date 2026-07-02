@@ -65,6 +65,17 @@ final class BlockLayout
     private ?array $currentColumnWidths = null;
 
     /**
+     * Per-column `min-width` floors declared on `table-column` /
+     * `table-column-group` boxes (CSS Tables 3 §4.4 — a column's used
+     * width is at least its min-width). Each entry is a pixel floor or
+     * null. Applied to auto columns during content distribution and to
+     * the table's intrinsic min/max so an auto table shrink-wraps to it.
+     *
+     * @var list<?float>|null
+     */
+    private ?array $currentColumnMinWidths = null;
+
+    /**
      * Set to true once the auto-width content-measurement pass has
      * run for the current table. Reset alongside `currentColumnWidths`
      * in the table layout branch so each table re-measures.
@@ -328,6 +339,7 @@ final class BlockLayout
             // table-level concept).
             $prev = $this->currentTableColumns;
             $prevWidths = $this->currentColumnWidths;
+            $prevMinWidths = $this->currentColumnMinWidths;
             $prevAutoResolved = $this->currentAutoWidthsResolved;
             $prevGrid = $this->currentTableCellGrid;
             $prevRowHeights = $this->currentTableRowHeights;
@@ -343,6 +355,7 @@ final class BlockLayout
             // `<colgroup width="N">`. `null` entries fall through to
             // the auto-distribution path in `layoutTableRow`.
             $this->currentColumnWidths = $this->collectColumnWidths($box, $this->currentTableColumns);
+            $this->currentColumnMinWidths = $this->collectColumnMinWidths($box, $this->currentTableColumns, $context->lengthContext);
             try {
                 $height = $this->layoutBlock($box, $context);
                 // CSS Tables 3 §11.1 — extend rowspan cells to cover
@@ -364,6 +377,7 @@ final class BlockLayout
             } finally {
                 $this->currentTableColumns = $prev;
                 $this->currentColumnWidths = $prevWidths;
+                $this->currentColumnMinWidths = $prevMinWidths;
                 $this->currentAutoWidthsResolved = $prevAutoResolved;
                 $this->currentTableCellGrid = $prevGrid;
                 $this->currentTableRowHeights = $prevRowHeights;
@@ -7320,6 +7334,84 @@ final class BlockLayout
     }
 
     /**
+     * Collect per-column `min-width` floors from `table-column` /
+     * `table-column-group` boxes (works for both `<col>` and
+     * `display: table-column` on any element, since both become a
+     * {@see TableColumnBox}). A group's min-width applies to each column
+     * it spans; a column's own min-width overrides. Non-`min-width`
+     * columns stay null.
+     *
+     * @return list<?float>
+     */
+    private function collectColumnMinWidths(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        int $totalColumns,
+        \Phpdftk\Css\Cascade\LengthContext $lengthContext,
+    ): array {
+        /** @var list<?float> $mins */
+        $mins = array_fill(0, $totalColumns, null);
+        if ($totalColumns === 0) {
+            return $mins;
+        }
+        $col = 0;
+        foreach ($table->children as $tc) {
+            if (!($tc instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox)) {
+                continue;
+            }
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableColumnBox> $groupCols */
+            $groupCols = array_values(array_filter(
+                $tc->children,
+                static fn(Box $c): bool => $c instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox,
+            ));
+            if ($groupCols !== []) {
+                // A column-group whose children are columns: the group's
+                // floor applies to every column it holds, refined per column.
+                $groupMin = $this->columnBoxMinWidth($tc, $lengthContext);
+                foreach ($groupCols as $colBox) {
+                    $span = $this->columnSpan($colBox);
+                    $min = $this->columnBoxMinWidth($colBox, $lengthContext) ?? $groupMin;
+                    for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                        $mins[$col] = $min;
+                    }
+                }
+                continue;
+            }
+            // A bare column (or an empty column-group standing in for one).
+            $span = $this->columnSpan($tc);
+            $min = $this->columnBoxMinWidth($tc, $lengthContext);
+            for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                $mins[$col] = $min;
+            }
+        }
+        return $mins;
+    }
+
+    private function columnSpan(Box $colBox): int
+    {
+        $spanAttr = $colBox->element?->getAttribute('span');
+        if ($spanAttr !== null && preg_match('/^\d+$/', trim($spanAttr)) === 1) {
+            return max(1, (int) trim($spanAttr));
+        }
+        return 1;
+    }
+
+    /**
+     * A table-column box's `min-width` in pixels, or null. Resolved via
+     * {@see LengthResolver::toPx} because column boxes are layout no-ops
+     * and so never went through the cascade's `resolveLengths` pass — the
+     * declared value is still in author units (e.g. `1in` → Length(1, in)).
+     */
+    private function columnBoxMinWidth(Box $colBox, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
+    {
+        $minWidth = $colBox->style->get('min-width');
+        if (!($minWidth instanceof Length)) {
+            return null;
+        }
+        $px = \Phpdftk\Css\Cascade\LengthResolver::toPx($minWidth, $lengthContext);
+        return $px > 0.0 ? $px : null;
+    }
+
+    /**
      * CSS Tables 3 §10.4 — for each `null` (auto) entry in
      * `currentColumnWidths`, measure the max-content of cells
      * anchored in that column via `measureMinMaxContent`. Auto
@@ -7374,6 +7466,16 @@ final class BlockLayout
             ) {
                 if ($colMax[$c] < $share) {
                     $colMax[$c] = $share;
+                }
+            }
+        }
+        // CSS Tables 3 §4.4 — a column's used width is at least its declared
+        // min-width. Floor auto columns before the zero-content early-return
+        // so an empty column with a min-width still sizes.
+        if ($this->currentColumnMinWidths !== null) {
+            foreach ($this->currentColumnMinWidths as $i => $mw) {
+                if ($mw !== null && $i < $totalColumns && $colMax[$i] < $mw) {
+                    $colMax[$i] = $mw;
                 }
             }
         }
@@ -7486,6 +7588,17 @@ final class BlockLayout
             ) {
                 $colMin[$c] = max($colMin[$c], $minShare);
                 $colMax[$c] = max($colMax[$c], $maxShare);
+            }
+        }
+        // CSS Tables 3 §4.4 — floor each column by its declared min-width so
+        // an auto table shrink-wraps to at least the column min-widths.
+        $columnMins = $this->collectColumnMinWidths($table, $totalColumns, $context->lengthContext);
+        for ($c = 0; $c < $totalColumns; $c++) {
+            $mw = $columnMins[$c] ?? null;
+            if ($mw !== null) {
+                $colMin[$c] = max($colMin[$c], $mw);
+                $colMax[$c] = max($colMax[$c], $mw);
+                $hasContent = true;
             }
         }
         $min = 0.0;

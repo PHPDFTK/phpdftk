@@ -73,6 +73,31 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta($cb->geometry->y + 100.0, $ap->geometry->y, 0.5);
     }
 
+    public function testTableColumnMinWidthShrinkWrapsAutoTable(): void
+    {
+        // CSS Tables 3 §4.4 — a `display: table-column` (here on a div, not
+        // a `<col>`) with min-width floors its column, so an auto-width
+        // table with an otherwise-empty cell shrink-wraps to that width.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c"></div>'
+            . '<div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #c { display: table-column; min-width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($t);
+        self::assertNotNull($cell);
+        // Table (and its single cell) size to the 96px column min-width,
+        // not the full container width.
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+        self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
     public function testOutOfFlowFirstChildDoesNotCollapseParentMargin(): void
     {
         // CSS 2.1 §8.3.1 — an out-of-flow (abs-pos) child's margins never
