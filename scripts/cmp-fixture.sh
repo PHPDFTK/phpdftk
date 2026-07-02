@@ -9,7 +9,8 @@
 #   /tmp/fx_<name>_{test,ref,diff,combined}.png
 # Works for .html / .xht / .xhtml / .svg fixtures — the underlying
 # render-fixture.php mirrors HarnessRunner, so results match the gate.
-set -e
+# NB: no `set -e` — ImageMagick `compare` exits non-zero whenever the images
+# differ (AE > 0), which is the normal, expected result we want to report.
 here="${0:A:h}"
 root="${here:h}"
 cd "$root"
