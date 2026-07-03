@@ -10,6 +10,13 @@
 #
 # Coverage % = pass / inScopeTotal (skipped/out-of-scope excluded), the same
 # `inScopePassRate` the harness reports. An aggregate row sums the buckets.
+#
+# IMPORTANT: uses `--filter=<corpus>/**` with the DEFAULT root
+# (vendor-data/wpt), NOT `--root=vendor-data/wpt/<corpus>`. Many fixtures pull
+# Ahem via an ABSOLUTE `<link href="/fonts/ahem.css">`, which only resolves
+# when the sandbox root is the corpus root. Passing a sub-directory as --root
+# moves the sandbox root and silently drops Ahem, so all Ahem text renders
+# blank and coverage is badly understated. Same methodology as wpt-scoreboard.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$here")"
@@ -28,7 +35,7 @@ trap 'rm -rf "$tmp"' EXIT
 pids=()
 for c in "${corpora[@]}"; do
     (
-        WPT_DISABLE_DOM_SETTLER=1 "$wpt" run --root="vendor-data/wpt/$c" --json \
+        WPT_DISABLE_DOM_SETTLER=1 "$wpt" run --filter="$c/**" --json \
             > "$tmp/$c.json" 2> "$tmp/$c.err"
         echo $? > "$tmp/$c.rc"
     ) &
