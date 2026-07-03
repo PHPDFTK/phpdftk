@@ -129,7 +129,7 @@ final class BlockLayout
     {
         $this->tableIntrinsicMemo = [];
         // Ensure the root's style has lengths resolved against the context.
-        $this->cascade->resolveLengths($root->style, $context->lengthContext);
+        $this->cascade->resolveLengths($root->style, $this->boxLengthContext($root, $context));
         // Phase 1 simplification: a single FloatContext for the whole
         // document tree (CSS 2.1 §9.5 floats stay inside their BFC;
         // proper BFC scoping is a follow-up). Lazily attach when the
@@ -508,7 +508,7 @@ final class BlockLayout
                 ->withOrigin($cellX, $geo->y);
             // Resolve cell-level CSS lengths against the cell's containing
             // block before recursing (mirrors `layoutBlock`'s pre-pass).
-            $this->cascade->resolveLengths($cell->style, $cellCtx->lengthContext);
+            $this->cascade->resolveLengths($cell->style, $this->boxLengthContext($cell, $cellCtx));
             $h = $this->layoutBlock($cell, $cellCtx);
             // Cells that span multiple rows don't contribute their full
             // height to *this* row's max — the rowspan post-pass extends
@@ -601,7 +601,7 @@ final class BlockLayout
                     $context->containingBlockHeight,
                 )
                 ->withOrigin($geo->x, $cursorY);
-            $this->cascade->resolveLengths($cell->style, $cellCtx->lengthContext);
+            $this->cascade->resolveLengths($cell->style, $this->boxLengthContext($cell, $cellCtx));
             $this->layoutBlock($cell, $cellCtx);
             $cellOuterHeight = $cell->geometry->outerHeight();
             $maxCellBlockExtent = max($maxCellBlockExtent, $cell->geometry->outerWidth());
@@ -2636,7 +2636,7 @@ final class BlockLayout
         $basisCbMain = $isColumn ? $itemCbHeight : $geo->width;
         $mainProp = $isColumn ? 'height' : 'width';
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $itemCtx->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $itemCtx));
             // CSS Flexbox 1 §9.2 — the flex base size: explicit
             // `flex-basis` wins, else the main-axis size when
             // declared, else max-content for row-direction items
@@ -3024,7 +3024,7 @@ final class BlockLayout
             ->withContainingBlock($pa->width, $pa->height)
             ->withPositionedAncestor($pa);
         foreach ($absChildren as $child) {
-            $this->cascade->resolveLengths($child->style, $absCtx->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $absCtx));
             $absStyle = $child->style;
             $hasTopAnchor = !$this->isAuto($absStyle->get('top'))
                 || !$this->isAuto($absStyle->get('bottom'));
@@ -3455,7 +3455,7 @@ final class BlockLayout
             $childCtx = $context
                 ->withContainingBlock($cellWidth, $cellHeight)
                 ->withOrigin($cellX, $cellY);
-            $this->cascade->resolveLengths($p['box']->style, $childCtx->lengthContext);
+            $this->cascade->resolveLengths($p['box']->style, $this->boxLengthContext($p['box'], $childCtx));
             $this->layoutBox($p['box'], $childCtx);
 
             $childGeo = $p['box']->geometry;
@@ -4197,6 +4197,32 @@ final class BlockLayout
             $minAdvance = max($minAdvance, $shaped->totalAdvance);
         }
         return ['min' => $minAdvance, 'max' => $maxAdvance];
+    }
+
+    /**
+     * A LengthContext whose `ch` / `ex` ratios come from the box's OWN
+     * resolved font (CSS Values 4 §6.1 — `ch` is the '0' glyph advance, `ex`
+     * the x-height, in the element's first available font). The base context
+     * only carries the document default-font ratios (or the 0.5 fallback),
+     * so a box using an @font-face family (e.g. Ahem, where `1ch` = `1em`)
+     * would otherwise mis-resolve `ch`/`ex` lengths.
+     */
+    private function boxLengthContext(Box $box, LayoutContext $layoutCtx): LengthContext
+    {
+        $base = $layoutCtx->lengthContext;
+        $font = $layoutCtx->fontResolver?->resolve(
+            $box->style->get('font-family'),
+            $this->intrinsicFontWeight($box->style),
+            $this->intrinsicFontStyle($box->style),
+        ) ?? $layoutCtx->defaultFont;
+        if ($font === null || $font->unitsPerEm <= 0) {
+            return $base;
+        }
+        $upem = (float) $font->unitsPerEm;
+        $xRatio = $font->xHeight > 0 ? $font->xHeight / $upem : $base->xHeightRatio;
+        $zero = $font->charWidths[0x30] ?? null;
+        $chRatio = ($zero !== null && $zero > 0) ? (float) $zero / $upem : $base->chWidthRatio;
+        return $base->withFontMetrics($xRatio, $chRatio);
     }
 
     private function intrinsicFontWeight(CascadedValues $style): int
@@ -6455,7 +6481,7 @@ final class BlockLayout
         // is the line it would sit on, not the bottom of the block).
         $prevInFlowChild = null;
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $childContext->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
             // CSS 2.1 §9.6 — `position: absolute` (and `fixed`, which
             // behaves identically in a print context with no scrolling)
             // removes the box from normal flow. Lay it out at the
@@ -6699,7 +6725,7 @@ final class BlockLayout
         $prevBlockEndMargin = 0.0;
         $hasPrev = false;
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $childContext->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
             // CSS 2.1 §9.6 — out-of-flow children are positioned
             // independently of the in-flow stacking cursor. Mirror
             // the horizontal stacker's abs-pos branch: lay out at
@@ -7071,7 +7097,7 @@ final class BlockLayout
             ) {
                 continue;
             }
-            $this->cascade->resolveLengths($child->style, $absCtx->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $absCtx));
             $this->applyAbsoluteCornerAnchorSize($child, $absCtx);
             $this->layoutBox($child, $absCtx);
             [$dx, $dy] = $this->resolveAbsoluteOffsets($child, $absCtx, $originX, $originY, $originY);

@@ -156,6 +156,32 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
     }
 
+    public function testChUnitResolvesAgainstBoxFont(): void
+    {
+        // CSS Values 4 §6.1 — `1ch` is the advance of the '0' glyph in the
+        // box's own font, not the global default-font ratio. NotoSans '0'
+        // advance / upem = 0.572, so `width: 4ch` at 50px = 114.4px, not the
+        // 0.5-fallback 100px.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div id="d">x</div></body></html>',
+            'html, body { display: block; } #d { display: block; font-family: noto; font-size: 50px; width: 4ch; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $d = $this->findById($box, 'd');
+        self::assertNotNull($d);
+        self::assertEqualsWithDelta(114.4, $d->geometry->width, 1.0);
+    }
+
     public function testIntrinsicFloatSizingUsesResolvedFont(): void
     {
         // An auto-width (shrink-to-fit) float sizes to its text content. The
