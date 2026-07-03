@@ -13,6 +13,8 @@ use Phpdftk\HtmlToPdf\Box\BlockBox;
 use Phpdftk\HtmlToPdf\Box\Box;
 use Phpdftk\HtmlToPdf\Box\BoxGenerator;
 use Phpdftk\HtmlToPdf\Layout\BlockLayout;
+use Phpdftk\FontParser\OpenTypeParser;
+use Phpdftk\HtmlToPdf\Layout\FontResolver;
 use Phpdftk\HtmlToPdf\Layout\LayoutContext;
 use Phpdftk\Html\Parser as HtmlParser;
 use PHPUnit\Framework\TestCase;
@@ -152,6 +154,39 @@ final class BlockLayoutTest extends TestCase
         // not the full container width.
         self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
+    public function testIntrinsicFloatSizingUsesResolvedFont(): void
+    {
+        // An auto-width (shrink-to-fit) float sizes to its text content. The
+        // intrinsic measurement must resolve the box's own font-family, not
+        // fall back to the coarse ~6px/char heuristic — otherwise the float's
+        // width diverges from what actually paints.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $html = '<html><body><div id="f">MMMMMM</div></body></html>';
+        $css = 'html, body { display: block; } #f { float: left; font-family: noto; font-size: 40px; }';
+
+        $withFont = $this->buildTree($html, $css);
+        $this->layout->layout($withFont, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $resolvedWidth = $this->findById($withFont, 'f')?->geometry->width ?? 0.0;
+
+        // No resolver → the 6px/char heuristic (~36px for "MMMMMM").
+        $noFont = $this->buildTree($html, $css);
+        $this->layout->layout($noFont, $this->defaultCtx);
+        $heuristicWidth = $this->findById($noFont, 'f')?->geometry->width ?? 0.0;
+
+        // NotoSans 'M' at 40px is far wider than 6px, so the resolved-font
+        // float is substantially wider than the heuristic float.
+        self::assertGreaterThan($heuristicWidth * 2.0, $resolvedWidth);
     }
 
     public function testOutOfFlowFirstChildDoesNotCollapseParentMargin(): void

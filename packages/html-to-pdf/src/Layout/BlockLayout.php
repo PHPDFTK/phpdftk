@@ -4099,7 +4099,14 @@ final class BlockLayout
             return ['min' => 0.0, 'max' => 0.0];
         }
         $whiteSpace = $this->resolveTextBoxWhiteSpace($box);
-        $font = $context->defaultFont;
+        // Resolve the box's own font-family (e.g. an @font-face `Ahem`) so the
+        // intrinsic size matches what actually paints; the context default
+        // font alone otherwise sizes text via the coarse char-count heuristic.
+        $font = $context->fontResolver?->resolve(
+            $box->style->get('font-family'),
+            $this->intrinsicFontWeight($box->style),
+            $this->intrinsicFontStyle($box->style),
+        ) ?? $context->defaultFont;
         if ($font === null) {
             // No font registered — fall back to a character-count
             // heuristic so Grid `auto` tracks still get a usable
@@ -4190,6 +4197,37 @@ final class BlockLayout
             $minAdvance = max($minAdvance, $shaped->totalAdvance);
         }
         return ['min' => $minAdvance, 'max' => $maxAdvance];
+    }
+
+    private function intrinsicFontWeight(CascadedValues $style): int
+    {
+        $weight = $style->get('font-weight');
+        if ($weight instanceof \Phpdftk\Css\Value\Number) {
+            return max(1, min(1000, (int) round($weight->value)));
+        }
+        if ($weight instanceof \Phpdftk\Css\Value\Integer) {
+            return max(1, min(1000, $weight->value));
+        }
+        if ($weight instanceof Keyword) {
+            return match (strtolower($weight->name)) {
+                'bold', 'bolder' => 700,
+                'lighter' => 300,
+                default => 400,
+            };
+        }
+        return 400;
+    }
+
+    private function intrinsicFontStyle(CascadedValues $style): string
+    {
+        $value = $style->get('font-style');
+        if ($value instanceof Keyword) {
+            $name = strtolower($value->name);
+            if ($name === 'italic' || $name === 'oblique') {
+                return $name;
+            }
+        }
+        return 'normal';
     }
 
     /**
