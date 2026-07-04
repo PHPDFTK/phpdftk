@@ -5097,6 +5097,33 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(80.0, $cells['b']->geometry->x, 0.001);
     }
 
+    public function testInlineBlockMarginsSpaceAtomicItems(): void
+    {
+        // CSS 2.2 §10.8 — an inline-block's horizontal margins add to the
+        // inline advance it occupies; its margin box (with vertical margins)
+        // sets line height. In the no-font inline path these were dropped, so
+        // adjacent inline-blocks touched. Two 40px inline-blocks with 10px
+        // side / 5px vertical margins → content boxes at x=10 and
+        // x = 10 + 40 + 10 + 10 = 70; content top at y=5 (top margin).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="box"><span></span><span></span></div></body></html>',
+            '.box > span { display: inline-block; width: 40px; height: 30px; margin: 5px 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $div = $this->find($box, 'div');
+        self::assertNotNull($div);
+        $spans = array_values(array_filter(
+            $div->children,
+            static fn($c) => $c instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox,
+        ));
+        self::assertCount(2, $spans);
+        self::assertSame(10.0, $spans[0]->geometry->marginLeft);
+        self::assertSame(5.0, $spans[0]->geometry->marginTop);
+        self::assertSame(10.0, $spans[0]->geometry->x);
+        self::assertSame(5.0, $spans[0]->geometry->y);
+        self::assertSame(70.0, $spans[1]->geometry->x);
+    }
+
     public function testFlexResolvesAtomicItemMargins(): void
     {
         // CSS Display 3 §2.7 — an inline-block flex item is blockified. Its

@@ -287,10 +287,20 @@ final class InlineLayout
                 $atomicBorderLeft = $token['atomicBorderLeft'] ?? 0.0;
                 $atomicPadRight = $token['atomicPadRight'] ?? 0.0;
                 $atomicBorderRight = $token['atomicBorderRight'] ?? 0.0;
+                $atomicMarginLeft = $token['atomicMarginLeft'] ?? 0.0;
+                $atomicMarginRight = $token['atomicMarginRight'] ?? 0.0;
+                $atomicMarginTop = $token['atomicMarginTop'] ?? 0.0;
+                $atomicMarginBottom = $token['atomicMarginBottom'] ?? 0.0;
+                // `$currentX` sits at the item's margin-box start; step past
+                // the left margin (plus border + padding) to the content box.
                 $atomic->geometry->x = $parent->geometry->x + $currentX
-                    + $atomicBorderLeft + $atomicPadLeft;
+                    + $atomicMarginLeft + $atomicBorderLeft + $atomicPadLeft;
+                // CSS 2.2 §10.8 — the inline-block's baseline (no in-flow line
+                // boxes here) is its bottom margin edge, so the margin box
+                // bottom aligns with the line baseline; the border box bottom
+                // sits a bottom-margin above it.
                 $atomic->geometry->y = $parent->geometry->y + $y
-                    + $atomicAscent - $atomicOuterHeight
+                    + $atomicAscent - $atomicOuterHeight - $atomicMarginBottom
                     + $atomicBorderTop + $atomicPadTop;
                 $atomic->geometry->width = $atomicContentWidth;
                 $atomic->geometry->height = $atomicContentHeight;
@@ -302,6 +312,10 @@ final class InlineLayout
                 $atomic->geometry->borderRight = $atomicBorderRight;
                 $atomic->geometry->borderTop = $atomicBorderTop;
                 $atomic->geometry->borderBottom = $atomicBorderBottom;
+                $atomic->geometry->marginLeft = $atomicMarginLeft;
+                $atomic->geometry->marginRight = $atomicMarginRight;
+                $atomic->geometry->marginTop = $atomicMarginTop;
+                $atomic->geometry->marginBottom = $atomicMarginBottom;
             }
             $currentX += $width;
             $atLineStart = false;
@@ -458,6 +472,15 @@ final class InlineLayout
             $borderRight = self::atomicBorderWidth($child->style, 'right');
             $verticalInset = $padTop + $padBottom + $borderTop + $borderBottom;
             $horizontalInset = $padLeft + $padRight + $borderLeft + $borderRight;
+            // CSS 2.2 §10.8 — an inline-block's margins take part in layout:
+            // horizontal margins add to the inline advance it occupies, and
+            // its margin box (with vertical margins) is what contributes to
+            // line height. This no-font fallback previously dropped them, so
+            // adjacent inline-blocks touched instead of showing their gaps.
+            $marginTop = self::atomicLength($child->style->get('margin-top'));
+            $marginBottom = self::atomicLength($child->style->get('margin-bottom'));
+            $marginLeft = self::atomicLength($child->style->get('margin-left'));
+            $marginRight = self::atomicLength($child->style->get('margin-right'));
             // CSS Sizing 3 §6.2 — under `box-sizing: border-box` the
             // declared width/height already includes the inset, so the
             // content box shrinks; otherwise the inset grows the outer box.
@@ -493,21 +516,25 @@ final class InlineLayout
             [$contentWidth, $contentHeight] = $this->clampAtomicReplaced($child->style, $contentWidth, $contentHeight);
             $outerWidth = $contentWidth + $horizontalInset;
             $outerHeight = $contentHeight + $verticalInset;
+            // The item's inline footprint is its margin box; the block-axis
+            // footprint (line-height contribution) is likewise the margin box.
+            $outerAdvance = $marginLeft + $outerWidth + $marginRight;
+            $marginBoxHeight = $marginTop + $outerHeight + $marginBottom;
             // CSS 2.1 §9.4.2 — wrap to a new line when the current line
             // already holds content and this box would overflow the IFC
             // available width. (A single box wider than the line still
             // gets its own line rather than an infinite loop.)
             if ($currentX > 0.0
-                && $currentX + $outerWidth > $this->currentAvailableWidth + 0.01
+                && $currentX + $outerAdvance > $this->currentAvailableWidth + 0.01
             ) {
                 $lineTop += $lineHeight;
                 $currentX = 0.0;
                 $lineHeight = 0.0;
             }
-            // Offset the content box by the top-left inset so the border
-            // box's top-left edge stays at the box origin.
-            $child->geometry->x = $parent->geometry->x + $currentX + $borderLeft + $padLeft;
-            $child->geometry->y = $parent->geometry->y + $lineTop + $borderTop + $padTop;
+            // Offset the content box by the left/top margin + inset so the
+            // border box's top-left edge sits inside the margin box.
+            $child->geometry->x = $parent->geometry->x + $currentX + $marginLeft + $borderLeft + $padLeft;
+            $child->geometry->y = $parent->geometry->y + $lineTop + $marginTop + $borderTop + $padTop;
             $child->geometry->width = $contentWidth;
             $child->geometry->height = $contentHeight;
             $child->geometry->paddingTop = $padTop;
@@ -518,9 +545,13 @@ final class InlineLayout
             $child->geometry->borderBottom = $borderBottom;
             $child->geometry->borderLeft = $borderLeft;
             $child->geometry->borderRight = $borderRight;
-            $currentX += $outerWidth;
-            if ($outerHeight > $lineHeight) {
-                $lineHeight = $outerHeight;
+            $child->geometry->marginTop = $marginTop;
+            $child->geometry->marginBottom = $marginBottom;
+            $child->geometry->marginLeft = $marginLeft;
+            $child->geometry->marginRight = $marginRight;
+            $currentX += $outerAdvance;
+            if ($marginBoxHeight > $lineHeight) {
+                $lineHeight = $marginBoxHeight;
             }
             if ($lineTop + $lineHeight > $maxHeight) {
                 $maxHeight = $lineTop + $lineHeight;
@@ -1264,6 +1295,15 @@ final class InlineLayout
             $atomicBorderLeft = self::atomicBorderWidth($box->style, 'left');
             $atomicBorderRight = self::atomicBorderWidth($box->style, 'right');
             $horizontalInset = $atomicPadLeft + $atomicPadRight + $atomicBorderLeft + $atomicBorderRight;
+            // CSS 2.2 §10.8 — an inline-block's margins participate in layout:
+            // horizontal margins add to the inline advance it occupies on the
+            // line; vertical margins are part of its margin box (which
+            // determines its line-height contribution). Previously dropped, so
+            // adjacent inline-blocks touched instead of showing their gaps.
+            $atomicMarginLeft = self::atomicLength($box->style->get('margin-left'));
+            $atomicMarginRight = self::atomicLength($box->style->get('margin-right'));
+            $atomicMarginTop = self::atomicLength($box->style->get('margin-top'));
+            $atomicMarginBottom = self::atomicLength($box->style->get('margin-bottom'));
             $atomicBorderBox = self::atomicIsBorderBoxSizing($box->style);
             if ($declaredWidth > 0.0) {
                 if ($atomicBorderBox) {
@@ -1292,7 +1332,9 @@ final class InlineLayout
                     $shapingCtx->fontSizePt,
                     $shapingCtx->direction,
                     [],
-                    $atomicOuterWidth,
+                    // Advance = margin-box inline size so the line-breaker and
+                    // fitter allocate the item's full horizontal footprint.
+                    $atomicMarginLeft + $atomicOuterWidth + $atomicMarginRight,
                 ),
                 'isWhitespace' => false,
                 'kind' => LineBreakKind::Allowed,
@@ -1312,6 +1354,10 @@ final class InlineLayout
                 'atomicPadRight' => $atomicPadRight,
                 'atomicBorderLeft' => $atomicBorderLeft,
                 'atomicBorderRight' => $atomicBorderRight,
+                'atomicMarginLeft' => $atomicMarginLeft,
+                'atomicMarginRight' => $atomicMarginRight,
+                'atomicMarginTop' => $atomicMarginTop,
+                'atomicMarginBottom' => $atomicMarginBottom,
                 'atomicBorderBox' => $atomicBorderBox,
             ];
             return;
