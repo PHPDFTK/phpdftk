@@ -2680,6 +2680,20 @@ final class BlockLayout
                 $childCtx = $itemCtx->withContainingBlock($basis, $cbHeight);
             }
             $this->layoutBox($child, $childCtx);
+            // CSS Display 3 §2.7 — an inline-level box that is a flex item
+            // is blockified. `layoutBox`'s atomic-inline path sizes the
+            // content but leaves the box-model edges at zero, so the flex
+            // algorithm's outer sizes (and thus the grow/shrink decision
+            // and item placement) silently drop the item's margins. Resolve
+            // the margins here for atomic (inline-block / replaced) items so
+            // `outerWidth()` / `outerHeight()` reflect the real outer size.
+            if ($child instanceof AtomicInlineBox) {
+                $cg = $child->geometry;
+                $cg->marginLeft = $this->flexItemMarginEdge($child->style, 'margin-left', $geo->width);
+                $cg->marginRight = $this->flexItemMarginEdge($child->style, 'margin-right', $geo->width);
+                $cg->marginTop = $this->flexItemMarginEdge($child->style, 'margin-top', $geo->width);
+                $cg->marginBottom = $this->flexItemMarginEdge($child->style, 'margin-bottom', $geo->width);
+            }
             // Capture the laid-out content block size BEFORE the basis
             // override clobbers it. For a column flex item this is the
             // item's true min-content height (line-box aware, and free
@@ -5249,6 +5263,23 @@ final class BlockLayout
             $result[$i] = $frozen[$i] ?? $baseOuter[$i];
         }
         return $result;
+    }
+
+    /**
+     * A flex item's margin edge in pixels. `auto` margins contribute 0 to
+     * the base outer size (CSS Flexbox 1 §8.1 distributes free space into
+     * them during alignment, after sizing); `<length>` / `<percentage>`
+     * resolve against the container's inline size. Used to populate the
+     * box-model edges of atomic (inline-block / replaced) flex items, which
+     * the atomic-inline layout path otherwise leaves at zero.
+     */
+    private function flexItemMarginEdge(CascadedValues $style, string $prop, float $cbInlineSize): float
+    {
+        $value = $style->get($prop);
+        if ($this->isAuto($value)) {
+            return 0.0;
+        }
+        return $this->resolveLength($value, $cbInlineSize);
     }
 
     /**

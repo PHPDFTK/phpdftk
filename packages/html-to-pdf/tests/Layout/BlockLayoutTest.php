@@ -5097,6 +5097,30 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(80.0, $cells['b']->geometry->x, 0.001);
     }
 
+    public function testFlexResolvesAtomicItemMargins(): void
+    {
+        // CSS Display 3 §2.7 — an inline-block flex item is blockified. Its
+        // `margin` must reach geometry so the flex algorithm's outer sizes
+        // and placement include it (previously dropped for atomic items).
+        // Two 100px inline-block items, 10px side margins, wide container →
+        // item 0 content at x=10; item 1 at 10 + 100 + 10 + 10 = 130.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="flex">'
+                . '<span class="a">x</span><span class="b">y</span>'
+                . '</div></body></html>',
+            '.flex { display: flex; width: 600px; }
+             .flex > span { display: inline-block; width: 100px; height: 50px; margin: 0 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'div');
+        self::assertNotNull($flex);
+        self::assertCount(2, $flex->children);
+        self::assertSame(10.0, $flex->children[0]->geometry->marginLeft);
+        self::assertSame(10.0, $flex->children[0]->geometry->marginRight);
+        self::assertSame(10.0, $flex->children[0]->geometry->x);
+        self::assertSame(130.0, $flex->children[1]->geometry->x);
+    }
+
     public function testFlexRowLaysOutItemsHorizontally(): void
     {
         // Three 100-wide items in a 600-wide flex container with
