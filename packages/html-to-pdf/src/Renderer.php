@@ -175,7 +175,10 @@ final class Renderer
             $chWidthRatio = $zeroWidth !== null && $zeroWidth > 0
                 ? $zeroWidth / $upem
                 : 0.5;
-            $lengthContext = $lengthContext->withFontMetrics($xHeightRatio, $chWidthRatio);
+            $capHeightRatio = $defaultFont->capHeight > 0
+                ? $defaultFont->capHeight / $upem
+                : 0.7;
+            $lengthContext = $lengthContext->withFontMetrics($xHeightRatio, $chWidthRatio, $capHeightRatio);
         }
         $layoutCtx = new LayoutContext(
             containingBlockWidth: $pageWidth,

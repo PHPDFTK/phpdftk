@@ -4222,7 +4222,8 @@ final class BlockLayout
         $xRatio = $font->xHeight > 0 ? $font->xHeight / $upem : $base->xHeightRatio;
         $zero = $font->charWidths[0x30] ?? null;
         $chRatio = ($zero !== null && $zero > 0) ? (float) $zero / $upem : $base->chWidthRatio;
-        return $base->withFontMetrics($xRatio, $chRatio);
+        $capRatio = $font->capHeight > 0 ? $font->capHeight / $upem : $base->capHeightRatio;
+        return $base->withFontMetrics($xRatio, $chRatio, $capRatio);
     }
 
     private function intrinsicFontWeight(CascadedValues $style): int
