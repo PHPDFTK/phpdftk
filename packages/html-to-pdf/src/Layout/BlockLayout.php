@@ -6543,7 +6543,14 @@ final class BlockLayout
                     || !$this->isAuto($absStyle->get('bottom'));
                 $hasLeftAnchor = !$this->isAuto($absStyle->get('left'))
                     || !$this->isAuto($absStyle->get('right'));
-                $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $originX;
+                // Static-X origin mirrors static-Y: an inline-level abspos with
+                // no left/right anchor starts at the inline END of the
+                // preceding inline content (`text<span abspos>`), not the
+                // container's inline-start.
+                $staticX = $hasLeftAnchor
+                    ? $originX
+                    : ($this->inlineStaticPositionX($prevInFlowChild) ?? $originX);
+                $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $staticX;
                 // Static-Y origin: the positioned-ancestor edge when the
                 // box has a top/bottom anchor, otherwise the in-flow
                 // static position. For an inline-level abspos that follows
@@ -6693,6 +6700,34 @@ final class BlockLayout
         }
         $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
         return $prevInFlowChild->geometry->y + $lastLine->y;
+    }
+
+    /**
+     * Inline-axis counterpart of {@see inlineStaticPositionY}. CSS 2.1
+     * §9.4.2 / §10.3.7 — the static inline position of an inline-level
+     * out-of-flow box is where the next inline box would begin: at the
+     * inline END of the preceding inline content's LAST line (e.g. the
+     * `text<span style=position:absolute>` box starts after `text`, not
+     * at the containing block's inline-start). Returns null when the
+     * preceding sibling established no line boxes so the caller falls
+     * back to the container's content origin.
+     */
+    private function inlineStaticPositionX(?Box $prevInFlowChild): ?float
+    {
+        if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
+            return null;
+        }
+        $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
+        // Inline fragments carry absolute x (parent origin + advance), so
+        // the line's inline end is the rightmost fragment edge.
+        $end = null;
+        foreach ($lastLine->fragments as $frag) {
+            $right = $frag->x + $frag->width;
+            if ($end === null || $right > $end) {
+                $end = $right;
+            }
+        }
+        return $end;
     }
 
     /**

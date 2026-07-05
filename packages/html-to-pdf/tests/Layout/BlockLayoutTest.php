@@ -2368,6 +2368,36 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(50.0, $c->geometry->y);
     }
 
+    public function testInlineAbsposStaticXFollowsPrecedingContent(): void
+    {
+        // CSS 2.1 §9.4.2 — an inline-level abspos with auto left/right takes
+        // its static INLINE position from the end of the preceding inline
+        // content, not the container's inline-start. With "AAAA" (4 glyphs)
+        // preceding it, the abspos starts well past x=0, not at the CB edge.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div style="position: relative; font-family: noto; '
+                . 'font-size: 40px; width: 600px; height: 200px">AAAA'
+                . '<span class="abs" style="position: absolute; top: 0; width: 50px; height: 30px">x</span>'
+                . '</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $abs = $this->find($box, 'span.abs');
+        self::assertNotNull($abs);
+        // Static x sits after "AAAA" (4 × ~0.68em at 40px ≈ 110px), not 0.
+        self::assertGreaterThan(50.0, $abs->geometry->x);
+    }
+
     public function testAbsolutePositionsBoxAtTopLeftOffsets(): void
     {
         // `position: absolute; top: 50px; left: 20px` puts the box at
