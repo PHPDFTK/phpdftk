@@ -55,6 +55,30 @@ blocks") did the CB-vertical case; this is the orthogonal-element case.
 **ROI: highest** (~234 tests, close AE, plausibly one systematic fix). Start
 here.
 
+### PARTIAL FIX SHIPPED (2026-07-04, commit 2f3f5b513): +18 via inline static-X
+
+DERIVED the static-position rectangle and shipped the fix. Key spec principle
+(CSS Writing Modes §7.4): **sizing uses the ELEMENT's writing mode; positioning
+uses the CONTAINING BLOCK's.** So the element's size already resolves in its own
+mode (vertical-rl: height=inline-size, width=block-size) — that was already
+correct. The bug was the *static position*: the CB content is
+`1 2 34<span abspos>`, and the span's static INLINE position is the end of the
+preceding text's last line (Ahem 80px, wraps at 320 → line 2 "34" → x=160), NOT
+the CB's inline-start (0). We computed static-Y that way but used the CB origin
+for X. Added `inlineStaticPositionX` (mirror of `inlineStaticPositionY`, rightmost
+fragment edge of the preceding line box). Result: **css-writing-modes 394→412
+(+18), css-position flat, 0 regressions.** NOT writing-mode-specific — it's a
+general inline-abspos static-X fix.
+
+REMAINING (~216 of the cluster still fail): the static-Y / over-constraint for
+the vertical element still lands some boxes wrong (vrl-216 renders y=212 but
+passes anyway; other inset combos need y=160 exactly). Next: the element-WM
+dispatch (below) PLUS correct §10.6.4/§10.3.7 over-constraint mapped to the CB's
+axes for the vertical element. Also: `inlineStaticPositionX` returns null in the
+NO-lineBox path (layoutAtomicOnly produces no line boxes), so a preceding
+inline-block without a font doesn't contribute — real WPT uses Ahem so it's fine,
+but a full fix would give layoutAtomicOnly line boxes.
+
 ### Push-in findings (2026-07-04) — dispatch is necessary but NOT sufficient
 
 Investigated `abs-pos-non-replaced-vrl-216` (ref: green box at `(160,160) 80×80`;
