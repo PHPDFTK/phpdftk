@@ -134,6 +134,39 @@ So the override-pass hunt SUCCEEDED (exact bug: margin-collapse cascade at
 shiftSubtree skip AND (b) the broader vertical-mode rendering. Neither shipped
 — the naive skip is net-negative.
 
+### CB-AWARE ATTEMPT (2026-07-05): the drag has TWO parts; recursion-skip alone is no-effect
+
+Made `shiftSubtree` CB-aware (extra `skipOutOfFlow` + `cbInSubtree` params: an
+out-of-flow descendant rides the shift only if a positioned ancestor sits
+INSIDE the shifted subtree; `absolute` checks `$cbHere`, `fixed` never rides).
+Result: **center-001 preserved** (131→131, unlike the naive −1), abspos 40→40,
+977 units — but **completely no-effect** (vrl-056 AE unchanged 0.0287; an
+isolated unit test of a nested abspos with an OUTER CB fails identically with
+and without the fix). Root reason: the drag has TWO paths, and the skip only
+covers one —
+
+1. **Direct out-of-flow child in the cascade loop** (~1122): the cascade calls
+   `shiftSubtree($absChild, -m)` DIRECTLY, and `shiftSubtree` shifts the box's
+   own geometry at the TOP, before any child/`skipOutOfFlow` check. So a direct
+   abspos sibling is dragged regardless of the recursion guard. (vrl-056's span
+   is nested in the anon block AND some path yields `$cbHere` true — needs a
+   trace; the isolated repro's abspos is a direct child.) Fixing this needs a
+   guard in the CASCADE LOOP, not just recursion — but a blanket direct-skip
+   is the naive fix that regressed center-001, so it must be CB-aware too, and
+   center-001's exact margin-collapse mechanism (it's a flex CB — may not even
+   be the same path) needs tracing first.
+2. **Nested out-of-flow via recursion**: the CB-aware recursion (built) is
+   correct for this, but no current WPT/unit case exercises it in a
+   pass/fail-changing way.
+
+CONCLUSION: the standalone drag fix is a no-payoff rabbit hole — the CB-aware
+recursion changes nothing measurable, the complete fix needs a CB-aware
+cascade-loop guard whose center-001 interaction is unresolved, AND the whole
+cluster is dominated by the vertical-mode RENDERING bug (green x=0..274 vs
+106px) regardless of the drag. **Do the drag fix AS PART OF Phase B** (vertical
+rendering), where it will have a measurable effect and a natural test — not
+standalone. Reverted; nothing shipped.
+
 Also (lower priority): `inlineStaticPositionX` returns null in the NO-lineBox
 path (`layoutAtomicOnly` produces no line boxes), so a preceding inline-block
 without a font doesn't contribute — real WPT uses Ahem so it's fine.
