@@ -55,6 +55,39 @@ blocks") did the CB-vertical case; this is the orthogonal-element case.
 **ROI: highest** (~234 tests, close AE, plausibly one systematic fix). Start
 here.
 
+### Push-in findings (2026-07-04) — dispatch is necessary but NOT sufficient
+
+Investigated `abs-pos-non-replaced-vrl-216` (ref: green box at `(160,160) 80×80`;
+ours `(0,212)`). Concrete state:
+
+- **Size is already correct** (80×80). The bug is purely *position*.
+- **Axis dispatch must key on the ELEMENT's writing mode, not the CB's.**
+  `resolveAbsoluteOffsets` (~2197) dispatches to `…Vertical` only when
+  `parentWritingMode->isVertical()`. Changing it to
+  `WritingMode::fromStyle($child->style)->isVertical() || $cbWm->isVertical()`
+  correctly routes this orthogonal element to the Vertical path (confirmed
+  reached, `elemVert=Y`) and is spec-correct — BUT **net-0** on the cluster
+  (394→394, 0 fixed / 0 regressed) and unit-safe. So dispatch alone changes
+  nothing; do not ship it standalone.
+- **The real blocker: orthogonal INLINE-LEVEL abspos static position.** The
+  element is `display:inline` + `position:absolute` (blockified). With
+  `left/right/width` all `auto`, the block-axis (physical X, horizontal) uses
+  the STATIC position; the correct x is 160 but our static position gives 0, and
+  the Vertical path's `dx` (2350) is also 0 for auto left/right. The y is also
+  wrong (212 vs 160) — the inline-axis over-constraint (top:2em wins, ignore
+  bottom) isn't being applied because the static-position + offset composition
+  for an inline-level orthogonal abspos is tangled (see the inline static-
+  position path at ~6511/6579, `inlineStaticPositionY` ~6695).
+- **x=160 is the crux** and is genuinely subtle: derive the static-position
+  rectangle for an orthogonal (vertical-rl-in-horizontal-CB) inline abspos per
+  CSS Position 3 §3 / Writing Modes §7 before coding. It is NOT simply 0 (inline
+  start) nor the CB centre.
+
+So the fix is: (a) dispatch on element WM [done, trivial], (b) compute the
+orthogonal inline-abspos static-position rectangle correctly, (c) make the
+Vertical path's offset compose with that static position. (b) is the hard part
+and where the ~234 will actually flip.
+
 ## B. Vertical inline layout ("Phase 4", ~150)
 
 Block-flow-direction, line-box-direction, text-align/indent-in-vertical, and
