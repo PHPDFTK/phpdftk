@@ -70,14 +70,38 @@ fragment edge of the preceding line box). Result: **css-writing-modes 394→412
 (+18), css-position flat, 0 regressions.** NOT writing-mode-specific — it's a
 general inline-abspos static-X fix.
 
-REMAINING (~216 of the cluster still fail): the static-Y / over-constraint for
-the vertical element still lands some boxes wrong (vrl-216 renders y=212 but
-passes anyway; other inset combos need y=160 exactly). Next: the element-WM
-dispatch (below) PLUS correct §10.6.4/§10.3.7 over-constraint mapped to the CB's
-axes for the vertical element. Also: `inlineStaticPositionX` returns null in the
-NO-lineBox path (layoutAtomicOnly produces no line boxes), so a preceding
-inline-block without a font doesn't contribute — real WPT uses Ahem so it's fine,
-but a full fix would give layoutAtomicOnly line boxes.
+REMAINING (~216 of the cluster still fail): the abspos static-Y. Post static-X
+the subset is 40/256; the 216 fails split into TWO sub-clusters by WHERE the
+`writing-mode` sits (confirmed by reading the markup + instrumenting the
+dispatch on `parentWritingMode`):
+
+- **CB-vertical** (e.g. `vrl-056`: `writing-mode:vertical-rl` on the CB, span
+  inherits) → the div lays its children via `stackChildrenListVertical`, whose
+  abspos branch (~6802) calls `resolveAbsoluteOffsets` → `…Vertical`.
+- **Orthogonal** (e.g. `vrl-224`: `writing-mode` on the SPAN only, CB
+  horizontal) → `stackChildrenList` + the horizontal path.
+
+### static-Y DIAGNOSED (2026-07-05): it's a MULTI-PASS OVERRIDE, not offset math
+
+For CB-vertical `vrl-056` (`top:auto; bottom:1em; height:1em`, cbH=320): a clean
+single-run trace (log both resolve returns + the Painter geometry) shows
+`resolveAbsoluteOffsetsVertical` fires **once** and returns **dy=160**
+(`320 − 80 − outerH80`) with the box laid at `gy=68` (the CB top) — i.e. the
+offset math is CORRECT (box should shift to CB+160 = 228). But the Painter sees
+**y=212** = the inline-static-Y (block-start of "1 2 34"'s last line). So a
+**later layout pass re-seats the span at its static position, discarding the
+abspos shift.** The fix is in the multi-pass ordering / preventing the
+re-seat — NOT in the §10.6.4/§10.3.7 offset resolution (which is right).
+RULED OUT: threading the CB's `writing-mode` onto the abspos context via
+`$absCb->withParentWritingMode($wm)` in `stackChildrenListVertical` — no-op
+(AE unchanged), so the dispatch was already vertical. Next attempt: find the
+pass that overrides the abspos y (instrument `shiftSubtree` + every `layoutBox`
+of the span; likely the vrl block-positioning subtree-shift at ~6836 or a
+second layout of the div) and make the abspos position authoritative.
+
+Also (lower priority): `inlineStaticPositionX` returns null in the NO-lineBox
+path (`layoutAtomicOnly` produces no line boxes), so a preceding inline-block
+without a font doesn't contribute — real WPT uses Ahem so it's fine.
 
 ### Push-in findings (2026-07-04) — dispatch is necessary but NOT sufficient
 
