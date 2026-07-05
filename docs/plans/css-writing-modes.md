@@ -94,10 +94,45 @@ abspos shift.** The fix is in the multi-pass ordering / preventing the
 re-seat — NOT in the §10.6.4/§10.3.7 offset resolution (which is right).
 RULED OUT: threading the CB's `writing-mode` onto the abspos context via
 `$absCb->withParentWritingMode($wm)` in `stackChildrenListVertical` — no-op
-(AE unchanged), so the dispatch was already vertical. Next attempt: find the
-pass that overrides the abspos y (instrument `shiftSubtree` + every `layoutBox`
-of the span; likely the vrl block-positioning subtree-shift at ~6836 or a
-second layout of the div) and make the abspos position authoritative.
+(AE unchanged), so the dispatch was already vertical.
+
+### OVERRIDE-PASS HUNT (2026-07-05): found the exact pass, but two more problems
+
+Traced the span's `geometry.y` through every mutation (each `layoutBox` /
+`shiftSubtree` / paint) in one run:
+
+```
+layoutBox originY=68 gy=0            (laid at CB top)
+shiftSubtree dy=160  gy=68  -> 228   (correct abspos offset, from resolveAbsoluteOffsetsVertical)
+shiftSubtree dy=-16  gy=228 -> 212   (THE OVERRIDE — backtrace: layoutBlock:1123)
+PAINT gy=212
+```
+
+**The override is the FIRST-CHILD MARGIN-COLLAPSE cascade** (`layoutBlock`
+~1103–1130): when the CB's first in-flow child has a positive top margin it
+shifts all following siblings up by `-childTopMargin` (~1122). The abspos span
+is nested inside the anonymous block wrapping the "1 2 34" text, so
+`shiftSubtree` drags it along (CSS 2.1 §8.3.1/§9.3 — an out-of-flow box's
+position is CB-relative and must NOT ride an in-flow margin-collapse shift).
+
+TWO blockers remain, both confirmed empirically:
+1. **The naive fix is too broad.** Adding `skipOutOfFlow` to `shiftSubtree`
+   (skip out-of-flow descendants in the margin-collapse cascade) is unit-safe
+   (977) and net-0 on the cluster, but **regresses `css-position/position-
+   absolute-center-001`** — an abspos whose CB is *inside* the shifted subtree
+   SHOULD ride along. The correct fix is **CB-AWARE**: skip an out-of-flow
+   descendant only when its containing block is NOT within the shifted subtree.
+2. **Even with Y fixed, the CB-vertical rendering is broadly wrong.** Measured
+   our-test vs ref green (page px) for `vrl-056`: ours `x=0..274` (274px wide!)
+   vs ref `x=213..319` (106px, right side). So the whole vertical+abspos+rtl
+   *rendering* (not just the abspos Y) is off — the green content is mis-sized
+   and mis-placed along X too. The CB-vertical sub-cluster needs the vertical-
+   mode inline/abspos rendering fixed (overlaps Phase B), not just the Y offset.
+
+So the override-pass hunt SUCCEEDED (exact bug: margin-collapse cascade at
+~1122 drags nested abspos), but flipping the cluster needs (a) the CB-aware
+shiftSubtree skip AND (b) the broader vertical-mode rendering. Neither shipped
+— the naive skip is net-negative.
 
 Also (lower priority): `inlineStaticPositionX` returns null in the NO-lineBox
 path (`layoutAtomicOnly` produces no line boxes), so a preceding inline-block
