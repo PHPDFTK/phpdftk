@@ -368,32 +368,68 @@ final class InlineLayout
     private function applyVerticalLineShift(array $lines, float $availableWidth, Box $parent): array
     {
         $wm = WritingMode::fromStyle($parent->style);
-        // Only `vrl` / `sideways-rl` (block direction -1) need the
-        // shift; horizontal-tb and `vlr` / `sideways-lr` already place
-        // lines at the visually-correct block-start when fragments
-        // start at x = 0.
-        if (!$wm->isVertical() || $wm->blockDirection() !== -1) {
+        if (!$wm->isVertical()) {
             return $lines;
         }
-        // CSS WM 4 §3 — in vertical writing modes, line boxes stack
-        // along the block axis (right-to-left for vrl), NOT along
-        // the inline axis. Each line occupies a vertical column at
-        // y = 0 (top of the container); subsequent lines are pushed
-        // further left by the cumulative block-extent (= sum of
-        // prior line heights). The painter pairs this with a 90°
-        // text-matrix rotation so glyphs flow downward inside each
-        // column.
+        // CSS WM 4 §3 — transpose the horizontal IFC to the vertical block flow.
+        // Each line becomes a vertical column: the line's INLINE offset (the
+        // fragment's x — where `text-indent` / `text-align` placed it) moves to
+        // the vertical axis (`line.y`, which the painter reads as the column's
+        // vertical start), and columns stack along the BLOCK axis (physical x),
+        // each occupying the line's cross-size (`height`). `vlr` / `sideways-lr`
+        // grow rightward from the left content edge; `vrl` / `sideways-rl` grow
+        // leftward from the right edge (block-start = right). The painter's
+        // vertical branch (paintFragment) rotates glyphs 90° CW, reads
+        // `fragment.x` as the column's left edge and `line.y` as its top.
+        //
+        // Phase B increment 1: single-fragment lines (single glyph / single
+        // atomic — the text-indent / text-align near-miss cluster) transpose
+        // exactly. Multi-fragment vertical advance is increment 2; those lines
+        // keep the legacy `vrl` right-shift (or pass through for `vlr`).
+        $rtl = $wm->blockDirection() === -1;
         $out = [];
         $cumBlock = 0.0;
         foreach ($lines as $line) {
-            $lineWidth = $line->totalWidth();
-            $shift = $availableWidth - $lineWidth - $cumBlock;
-            if ($shift <= 0.0) {
-                $out[] = new LineBox(0.0, $line->height, $line->fragments);
+            // Transpose needs a real cross-size to place the column along the
+            // block axis; a degenerate line box (`line-height: 0`) has none, so
+            // fall back to the legacy path rather than divide the block axis by
+            // zero-height columns.
+            if (count($line->fragments) === 1 && $line->height > 0.0) {
+                $f = $line->fragments[0];
+                $blockLeft = $rtl
+                    ? max(0.0, $availableWidth - $cumBlock - $line->height)
+                    : $cumBlock;
+                $out[] = new LineBox($f->x, $line->height, [
+                    new InlineFragment(
+                        $blockLeft,
+                        $f->width,
+                        $f->shapedRun,
+                        $f->baselineShift,
+                        $f->href,
+                        $f->isBold,
+                        $f->isItalic,
+                        $f->decorationLines,
+                        $f->textColor,
+                        $f->backgroundColor,
+                        $f->linkTitle,
+                        $f->decorationColor,
+                        $f->isWhitespace,
+                    ),
+                ]);
                 $cumBlock += $line->height;
                 continue;
             }
-            $out[] = new LineBox(0.0, $line->height, $this->shiftFragments($line->fragments, $shift));
+            if ($rtl) {
+                $lineWidth = $line->totalWidth();
+                $shift = $availableWidth - $lineWidth - $cumBlock;
+                $out[] = new LineBox(
+                    0.0,
+                    $line->height,
+                    $shift > 0.0 ? $this->shiftFragments($line->fragments, $shift) : $line->fragments,
+                );
+            } else {
+                $out[] = $line;
+            }
             $cumBlock += $line->height;
         }
         return $out;

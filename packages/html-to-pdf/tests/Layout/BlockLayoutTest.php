@@ -2368,6 +2368,41 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(50.0, $c->geometry->y);
     }
 
+    public function testVerticalLrTransposesInlineOffsetToVerticalAxis(): void
+    {
+        // CSS Writing Modes 4 §3 (Phase B) — a vertical-lr inline formatting
+        // context transposes the inline offset (here `text-indent: 40px`) from
+        // the horizontal axis onto the vertical axis (LineBox.y, which the
+        // painter reads as the column's top), and places the single-glyph column
+        // at the block-start (fragment.x = 0). Before the transpose the indent
+        // stayed on fragment.x, painting the glyph rightward instead of down.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div class="v" style="writing-mode: vertical-lr; '
+                . 'text-indent: 40px; font-family: noto; font-size: 20px; '
+                . 'width: 200px; height: 200px">A</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $div = $this->find($box, 'div.v');
+        self::assertNotNull($div);
+        self::assertNotEmpty($div->lineBoxes);
+        $line = $div->lineBoxes[0];
+        // Inline offset (>= the 40px text-indent) transposed onto the vertical axis.
+        self::assertGreaterThanOrEqual(40.0, $line->y);
+        // The single-glyph column sits at the block-start (left) edge for vertical-lr.
+        self::assertSame(0.0, $line->fragments[0]->x);
+    }
+
     public function testInlineAbsposStaticXFollowsPrecedingContent(): void
     {
         // CSS 2.1 §9.4.2 — an inline-level abspos with auto left/right takes
