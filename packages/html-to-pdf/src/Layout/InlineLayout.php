@@ -799,6 +799,20 @@ final class InlineLayout
     {
         $align = $this->textAlignKeyword($parent);
         $alignLast = $this->textAlignLastKeyword($parent, $align);
+        // CSS Writing Modes 4 §3 — `text-align` aligns along the INLINE axis.
+        // In a vertical writing mode the inline axis is vertical, so alignment
+        // slack is measured against the container's inline size (its physical
+        // height), not the block-axis `availableWidth` the horizontal model
+        // was handed. (Increment 1 transposes the resulting inline offset onto
+        // the vertical axis downstream in `applyVerticalLineShift`.)
+        $wm = WritingMode::fromStyle($parent->style);
+        // The container's geometry height isn't committed yet during inline
+        // layout, but its cascaded `height` is already px-resolved in style
+        // (like `resolveTextIndent` reads). Use it as the vertical inline size.
+        $parentHeight = $parent->style->get('height');
+        $inlineExtent = $wm->isVertical() && $parentHeight instanceof Length && $parentHeight->value > 0.0
+            ? $parentHeight->value
+            : $availableWidth;
         // CSS Text 3 §7.2: `justify-all` is `justify` for every line
         // including the trailing one. Normalise to `justify` for the
         // body lines and force the last-line alignment to `justify`
@@ -839,7 +853,7 @@ final class InlineLayout
             // alignment slack this means we measure the line's
             // visible content edge, NOT the full fragment tail.
             $used = $this->lineUsedWidth($line);
-            $slack = $availableWidth - $used;
+            $slack = $inlineExtent - $used;
             if ($slack <= 0.0) {
                 $out[] = $line;
                 continue;

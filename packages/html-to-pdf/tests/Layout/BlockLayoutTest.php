@@ -2403,6 +2403,37 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(0.0, $line->fragments[0]->x);
     }
 
+    public function testVerticalTextAlignCentersAgainstInlineHeight(): void
+    {
+        // CSS Writing Modes 4 §3 — `text-align` aligns along the INLINE axis,
+        // which is vertical for vertical-lr, so `center` centres the glyph
+        // against the container's HEIGHT (inline size), not its width. A glyph
+        // in a 100px-wide × 300px-tall container centres near line.y ≈ 143
+        // (against 300) — far past the ≈43 a (wrong) width-based centre gives.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div class="v" style="writing-mode: vertical-lr; '
+                . 'text-align: center; font-family: noto; font-size: 20px; '
+                . 'width: 100px; height: 300px">A</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $div = $this->find($box, 'div.v');
+        self::assertNotNull($div);
+        self::assertNotEmpty($div->lineBoxes);
+        // Centred against height (300) → > 100; a width-based centre (100) is ~43.
+        self::assertGreaterThan(100.0, $div->lineBoxes[0]->y);
+    }
+
     public function testInlineAbsposStaticXFollowsPrecedingContent(): void
     {
         // CSS 2.1 §9.4.2 — an inline-level abspos with auto left/right takes
