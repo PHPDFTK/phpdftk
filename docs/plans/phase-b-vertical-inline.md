@@ -87,10 +87,28 @@ fragments) — recommend it.
    glyphs at the physical position with the rotation matrix. Target: the ~28
    near-miss `text-indent-vlr` / `text-align-vlr` (single glyph). Verifies the
    transpose end-to-end with the least surface.
-2. **Multi-glyph vertical advance** — glyphs within a fragment stack along +y
-   (inline) instead of +x. Painter emits each glyph with the rotated matrix at
-   the cumulative inline advance. Target: `line-box-direction` (~36, currently
-   0.78).
+2. **Multi-glyph / multi-fragment vertical advance** — ATTEMPTED 2026-07-07,
+   reverted (net +1 but not clean). Findings:
+   - Single-fragment-multi-GLYPH already works: the painter rotates a fragment's
+     glyph run 90°CW, so multiple glyphs in one fragment stack vertically. The
+     gap is multi-FRAGMENT lines (text split by spaces/styling) and multi-LINE.
+   - Extending the transpose to emit one LineBox per fragment (each at its
+     inline-advance vertical position, sharing the column; `withColumnX` helper)
+     is net **+1** (fixes writing-mode-vertical-{lr-002,rl-003}, regresses
+     height-width-inline-non-replaced-vlr-003) — NOT clean.
+   - The regression is WHITESPACE: a trailing Ahem space fragment (glyphs=1 —
+     our Ahem-square renderer paints space as a filled square) stacks into the
+     column as a stray square. But `skipWhitespace` then breaks
+     writing-mode-vertical-rl-003 (which needs its whitespace fragment). The two
+     want OPPOSITE treatment → needs real trailing-vs-interior whitespace
+     collapse in the transposed column (or fix Ahem space to render blank),
+     not a blanket skip.
+   - `line-box-direction` (~36, the headline target) is ALSO multi-LINE +
+     FLOATED: it needs (a) line-breaking measured against the INLINE extent
+     (height), not the block-axis availableWidth — the same swap as increment
+     1's text-align, but availableWidth is overloaded (the transpose uses it for
+     the block extent, so thread BOTH extents), and (b) float support in the
+     vertical container. Bigger than a transpose tweak.
 3. **Text-align / text-indent along the vertical inline axis** — fold into (1);
    `applyTextAlign` already computes an inline offset — route it to the inline
    (now vertical) axis.
