@@ -76,7 +76,13 @@ fragments) — recommend it.
 
 ## Increments (ordered by ROI / dependency)
 
-1. **Model + single-glyph transpose** — add physical `(x,y)` + `orientation` to
+1. **Model + single-glyph transpose** — ✅ SHIPPED 2026-07-06 (commits 8df312685
+   + 39c0cdfcd): reworked `applyVerticalLineShift` into a real transpose (inline
+   offset → `line.y`, column → `fragment.x`; `line-height:0` guarded to legacy),
+   and routed `text-align` slack through the inline extent (the container's
+   px-resolved `height`, since geometry height isn't committed during inline
+   layout). css-writing-modes **412 → 420 (+8)**, 0 regressions, 2 unit tests.
+   [Below is the original scoping for this increment.] — add physical `(x,y)` + `orientation` to
    `InlineFragment`; implement the table above for single-line content; paint
    glyphs at the physical position with the rotation matrix. Target: the ~28
    near-miss `text-indent-vlr` / `text-align-vlr` (single glyph). Verifies the
