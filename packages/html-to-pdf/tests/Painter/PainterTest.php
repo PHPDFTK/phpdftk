@@ -63,6 +63,35 @@ final class PainterTest extends TestCase
         self::assertContains('f', $opcodes, 'emits fill');
     }
 
+    public function testClipPathRectAndXywhEmitClip(): void
+    {
+        // CSS Shapes 2 §4.5/§4.6 — `clip-path: rect(...)` / `xywh(...)` clip the
+        // box to a rectangle. Regression: neither shape had a painter case, so
+        // applyClipPath returned false and NO clip was emitted (the whole box
+        // rendered unclipped). Each must now emit a rectangle + clip (`W`).
+        foreach (['rect(25% 50% 75% 12.5%)', 'xywh(10% 10% 50% 50%)'] as $clip) {
+            $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+            $sheet = $this->css->parseStylesheet(
+                'html, body, div { display: block; }
+                 div { background-color: green; width: 100px; height: 100px; clip-path: ' . $clip . '; }',
+                Origin::UserAgent,
+            );
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+            $writer = new PdfWriter();
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            $painter = new Painter(792.0);
+            $painter->paint($root, $stream);
+
+            $opcodes = $this->operatorTokens($stream->getOperators());
+            self::assertContains('W', $opcodes, "$clip emits a clip (W) operator");
+            self::assertContains('re', $opcodes, "$clip emits the clip rectangle");
+        }
+    }
+
     public function testNoOperatorsWhenNoBackgroundOrBorder(): void
     {
         $doc = $this->html->parseDocument('<html><body><div></div></body></html>');

@@ -1830,7 +1830,53 @@ final class Painter
             $stream->endPath();
             return true;
         }
+        if ($shape instanceof \Phpdftk\Css\Value\RectShape) {
+            // CSS Shapes 2 §4.5 — rect(top right bottom left): each is an edge
+            // POSITION from the box origin (top/bottom against height, left/right
+            // against width). `auto` resolves to the matching box edge: top/left
+            // → 0, right/bottom → the box size.
+            $e = $shape->edges;
+            $top = $this->rectEdge($e[0] ?? null, $bh, 0.0);
+            $right = $this->rectEdge($e[1] ?? null, $bw, $bw);
+            $bottom = $this->rectEdge($e[2] ?? null, $bh, $bh);
+            $left = $this->rectEdge($e[3] ?? null, $bw, 0.0);
+            $w = max(0.0, $right - $left);
+            $h = max(0.0, $bottom - $top);
+            $stream->saveGraphicsState();
+            $stream->rectangle($bx + $left, $ph - ($by + $top) - $h, $w, $h);
+            $stream->clip();
+            $stream->endPath();
+            return true;
+        }
+        if ($shape instanceof \Phpdftk\Css\Value\XywhShape) {
+            // CSS Shapes 2 §4.6 — xywh(x y width height): clip rectangle by
+            // origin + size (x/width against box width, y/height against height).
+            $x = $this->shapeLengthPercent($shape->x, $bw);
+            $y = $this->shapeLengthPercent($shape->y, $bh);
+            $w = $this->shapeLengthPercent($shape->width, $bw);
+            $h = $this->shapeLengthPercent($shape->height, $bh);
+            $stream->saveGraphicsState();
+            $stream->rectangle($bx + $x, $ph - ($by + $y) - $h, $w, $h);
+            $stream->clip();
+            $stream->endPath();
+            return true;
+        }
         return false;
+    }
+
+    /**
+     * Resolve one `rect()` edge to an absolute position (px) against `$basis`.
+     * A non-length value (the `auto` keyword, or a missing edge) resolves to
+     * `$auto` — the matching box edge per CSS Shapes 2 §4.5.
+     */
+    private function rectEdge(?\Phpdftk\Css\Value\Value $value, float $basis, float $auto): float
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Length
+            || $value instanceof \Phpdftk\Css\Value\Percentage
+        ) {
+            return $this->lengthOrPercentageToFloat($value, $basis);
+        }
+        return $auto;
     }
 
     /**
