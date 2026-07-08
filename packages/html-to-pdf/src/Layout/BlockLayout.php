@@ -65,6 +65,17 @@ final class BlockLayout
     private ?array $currentColumnWidths = null;
 
     /**
+     * Per-column `min-width` floors declared on `table-column` /
+     * `table-column-group` boxes (CSS Tables 3 §4.4 — a column's used
+     * width is at least its min-width). Each entry is a pixel floor or
+     * null. Applied to auto columns during content distribution and to
+     * the table's intrinsic min/max so an auto table shrink-wraps to it.
+     *
+     * @var list<?float>|null
+     */
+    private ?array $currentColumnMinWidths = null;
+
+    /**
      * Set to true once the auto-width content-measurement pass has
      * run for the current table. Reset alongside `currentColumnWidths`
      * in the table layout branch so each table re-measures.
@@ -93,6 +104,17 @@ final class BlockLayout
      */
     private array $currentTableRowHeights = [];
 
+    /**
+     * Memo of `measureTableMinMax` results keyed by table `spl_object_id`,
+     * so the shrink-to-fit predicate and the width-resolution branch don't
+     * re-measure. Table intrinsic min/max are content-derived (independent
+     * of available width / position) so the memo is stable within a layout
+     * pass; cleared at the start of each {@see layout()} call.
+     *
+     * @var array<int, array{min: float, max: float, hasContent: bool}>
+     */
+    private array $tableIntrinsicMemo = [];
+
     public function __construct(
         private readonly Cascade $cascade,
         private readonly InlineLayout $inlineLayout = new InlineLayout(),
@@ -105,8 +127,9 @@ final class BlockLayout
      */
     public function layout(Box $root, LayoutContext $context): float
     {
+        $this->tableIntrinsicMemo = [];
         // Ensure the root's style has lengths resolved against the context.
-        $this->cascade->resolveLengths($root->style, $context->lengthContext);
+        $this->cascade->resolveLengths($root->style, $this->boxLengthContext($root, $context));
         // Phase 1 simplification: a single FloatContext for the whole
         // document tree (CSS 2.1 §9.5 floats stay inside their BFC;
         // proper BFC scoping is a follow-up). Lazily attach when the
@@ -316,6 +339,7 @@ final class BlockLayout
             // table-level concept).
             $prev = $this->currentTableColumns;
             $prevWidths = $this->currentColumnWidths;
+            $prevMinWidths = $this->currentColumnMinWidths;
             $prevAutoResolved = $this->currentAutoWidthsResolved;
             $prevGrid = $this->currentTableCellGrid;
             $prevRowHeights = $this->currentTableRowHeights;
@@ -331,12 +355,25 @@ final class BlockLayout
             // `<colgroup width="N">`. `null` entries fall through to
             // the auto-distribution path in `layoutTableRow`.
             $this->currentColumnWidths = $this->collectColumnWidths($box, $this->currentTableColumns);
+            // Overlay `display: table-column` widths (non-`<col>` columns the
+            // tag-based collector above can't see) onto still-auto columns.
+            $boxWidths = $this->collectColumnBoxWidths($box, $this->currentTableColumns, $context->lengthContext);
+            foreach ($boxWidths as $i => $w) {
+                if ($w !== null && ($this->currentColumnWidths[$i] ?? null) === null) {
+                    $this->currentColumnWidths[$i] = $w;
+                }
+            }
+            $this->currentColumnMinWidths = $this->collectColumnMinWidths($box, $this->currentTableColumns, $context->lengthContext);
             try {
                 $height = $this->layoutBlock($box, $context);
                 // CSS Tables 3 §11.1 — extend rowspan cells to cover
                 // every row they span. Done after rows are positioned
                 // so we know each row's height.
                 $this->finalizeRowspanHeights();
+                // CSS 2.1 §17.5.3 — a table taller than its rows'
+                // content distributes the extra height over the rows, so
+                // cell backgrounds/borders fill the specified table box.
+                $height = $this->distributeTableExtraHeight($box, $height);
                 // CSS Tables 3 §11.2 `border-collapse: collapse` — Phase-1
                 // simplification: suppress every cell's right + bottom
                 // border edges except the last column / last row, so
@@ -348,6 +385,7 @@ final class BlockLayout
             } finally {
                 $this->currentTableColumns = $prev;
                 $this->currentColumnWidths = $prevWidths;
+                $this->currentColumnMinWidths = $prevMinWidths;
                 $this->currentAutoWidthsResolved = $prevAutoResolved;
                 $this->currentTableCellGrid = $prevGrid;
                 $this->currentTableRowHeights = $prevRowHeights;
@@ -470,7 +508,7 @@ final class BlockLayout
                 ->withOrigin($cellX, $geo->y);
             // Resolve cell-level CSS lengths against the cell's containing
             // block before recursing (mirrors `layoutBlock`'s pre-pass).
-            $this->cascade->resolveLengths($cell->style, $cellCtx->lengthContext);
+            $this->cascade->resolveLengths($cell->style, $this->boxLengthContext($cell, $cellCtx));
             $h = $this->layoutBlock($cell, $cellCtx);
             // Cells that span multiple rows don't contribute their full
             // height to *this* row's max — the rowspan post-pass extends
@@ -563,7 +601,7 @@ final class BlockLayout
                     $context->containingBlockHeight,
                 )
                 ->withOrigin($geo->x, $cursorY);
-            $this->cascade->resolveLengths($cell->style, $cellCtx->lengthContext);
+            $this->cascade->resolveLengths($cell->style, $this->boxLengthContext($cell, $cellCtx));
             $this->layoutBlock($cell, $cellCtx);
             $cellOuterHeight = $cell->geometry->outerHeight();
             $maxCellBlockExtent = max($maxCellBlockExtent, $cell->geometry->outerWidth());
@@ -650,7 +688,7 @@ final class BlockLayout
             );
             if ($containedWidth !== null) {
                 $contentWidth = min($contentWidth, $containedWidth);
-            } elseif ($this->blockNeedsShrinkToFit($box, $style)) {
+            } elseif ($this->blockNeedsShrinkToFit($box, $style, $context)) {
                 // CSS 2.1 §10.3.5 (floats) and §10.3.7 (abspos with
                 // both insets `auto`): when `width: auto`, the box
                 // shrink-to-fits — content-box width is
@@ -662,6 +700,14 @@ final class BlockLayout
                 // collapsing to a 100×100 square).
                 $mm = $this->measureContentMinMax($box, $context);
                 $contentWidth = min($mm['max'], max($mm['min'], $contentWidth));
+                // CSS 2.1 §17.5.2 — once an auto-width table's used width is
+                // computed it is a *resolved* width, so §10.3.3 auto-margin
+                // distribution (`margin: 0 auto` centring) applies. Clear
+                // the auto flag so the centring block below runs. (Floats /
+                // abspos are excluded there by their own guards.)
+                if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+                    $widthAuto = false;
+                }
             }
         } elseif ($widthKeyword !== null) {
             // CSS Sizing 4 §6.3 — `width: max-content | min-content |
@@ -1059,8 +1105,16 @@ final class BlockLayout
             && $geo->paddingTop === 0.0
             && $geo->borderTop === 0.0
         ) {
+            // CSS 2.1 §8.3.1 — an out-of-flow (abs-pos / float) child's
+            // margins never collapse. Using an out-of-flow first child as
+            // the collapse source doubles the parent's negative margin and
+            // pushes the whole subtree off-page (the `top-*` positioning
+            // reftests), so don't collapse through it.
             $first = $box->children[0];
-            if ($first instanceof BlockBox && $first->geometry->marginTop > 0.0) {
+            if ($first instanceof BlockBox
+                && !$this->isOutOfFlow($first)
+                && $first->geometry->marginTop > 0.0
+            ) {
                 $childTopMargin = $first->geometry->marginTop;
                 $this->shiftSubtree($first, -$childTopMargin);
                 // Cascade the shift across all siblings so spacing between
@@ -1268,8 +1322,14 @@ final class BlockLayout
             && $geo->paddingBottom === 0.0
             && $geo->borderBottom === 0.0
         ) {
+            // CSS 2.1 §8.3.1 — as for the top edge, an out-of-flow last
+            // child's margin never collapses through the parent (and must
+            // not shrink the parent's auto height).
             $last = $box->children[count($box->children) - 1];
-            if ($last instanceof BlockBox && $last->geometry->marginBottom > 0.0) {
+            if ($last instanceof BlockBox
+                && !$this->isOutOfFlow($last)
+                && $last->geometry->marginBottom > 0.0
+            ) {
                 $childBottomMargin = $last->geometry->marginBottom;
                 $extra = max(0.0, $childBottomMargin - $geo->marginBottom);
                 if ($extra > 0.0) {
@@ -2170,11 +2230,14 @@ final class BlockLayout
         // that exclude margin distribution.
         $heightIsDefinite = !$this->isHeightAutoLike($heightStyleValue)
             || ($heightKw !== null && $heightKw !== 'stretch');
+        // Only margin-TOP-auto changes the box's top edge here: a lone
+        // margin-bottom:auto leaves the top at `top + margin-top`, which the
+        // plain `top` branch above already produced. margin-top:auto (with
+        // or without margin-bottom:auto) makes the top depend on the slack.
         if (!$this->isAuto($top)
             && !$this->isAuto($bottom)
             && $heightIsDefinite
             && $this->isAuto($marginTopValue)
-            && $this->isAuto($marginBottomValue)
         ) {
             $topPx = $this->resolveLength($top, $cbHeight);
             $bottomPx = $this->resolveLength($bottom, $cbHeight);
@@ -2188,7 +2251,13 @@ final class BlockLayout
                 + $geo->height
                 + $geo->paddingBottom + $geo->borderBottom;
             $slackH = $cbHeight - $topPx - $bottomPx - $outerH;
-            $dy = $originY + $topPx + ($slackH / 2.0) - $cursorY;
+            // CSS 2.1 §10.6.5 — distribute the slack to the auto margin(s):
+            // both auto → equal halves; a single auto margin absorbs all
+            // the slack (the other margin keeps its resolved value).
+            $marginTop = $this->isAuto($marginBottomValue)
+                ? $slackH / 2.0
+                : $slackH - $geo->marginBottom;
+            $dy = $originY + $topPx + $marginTop - $cursorY;
         }
 
         $dx = 0.0;
@@ -2567,7 +2636,7 @@ final class BlockLayout
         $basisCbMain = $isColumn ? $itemCbHeight : $geo->width;
         $mainProp = $isColumn ? 'height' : 'width';
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $itemCtx->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $itemCtx));
             // CSS Flexbox 1 §9.2 — the flex base size: explicit
             // `flex-basis` wins, else the main-axis size when
             // declared, else max-content for row-direction items
@@ -2611,6 +2680,20 @@ final class BlockLayout
                 $childCtx = $itemCtx->withContainingBlock($basis, $cbHeight);
             }
             $this->layoutBox($child, $childCtx);
+            // CSS Display 3 §2.7 — an inline-level box that is a flex item
+            // is blockified. `layoutBox`'s atomic-inline path sizes the
+            // content but leaves the box-model edges at zero, so the flex
+            // algorithm's outer sizes (and thus the grow/shrink decision
+            // and item placement) silently drop the item's margins. Resolve
+            // the margins here for atomic (inline-block / replaced) items so
+            // `outerWidth()` / `outerHeight()` reflect the real outer size.
+            if ($child instanceof AtomicInlineBox) {
+                $cg = $child->geometry;
+                $cg->marginLeft = $this->flexItemMarginEdge($child->style, 'margin-left', $geo->width);
+                $cg->marginRight = $this->flexItemMarginEdge($child->style, 'margin-right', $geo->width);
+                $cg->marginTop = $this->flexItemMarginEdge($child->style, 'margin-top', $geo->width);
+                $cg->marginBottom = $this->flexItemMarginEdge($child->style, 'margin-bottom', $geo->width);
+            }
             // Capture the laid-out content block size BEFORE the basis
             // override clobbers it. For a column flex item this is the
             // item's true min-content height (line-box aware, and free
@@ -2955,7 +3038,7 @@ final class BlockLayout
             ->withContainingBlock($pa->width, $pa->height)
             ->withPositionedAncestor($pa);
         foreach ($absChildren as $child) {
-            $this->cascade->resolveLengths($child->style, $absCtx->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $absCtx));
             $absStyle = $child->style;
             $hasTopAnchor = !$this->isAuto($absStyle->get('top'))
                 || !$this->isAuto($absStyle->get('bottom'));
@@ -3386,7 +3469,7 @@ final class BlockLayout
             $childCtx = $context
                 ->withContainingBlock($cellWidth, $cellHeight)
                 ->withOrigin($cellX, $cellY);
-            $this->cascade->resolveLengths($p['box']->style, $childCtx->lengthContext);
+            $this->cascade->resolveLengths($p['box']->style, $this->boxLengthContext($p['box'], $childCtx));
             $this->layoutBox($p['box'], $childCtx);
 
             $childGeo = $p['box']->geometry;
@@ -3971,6 +4054,14 @@ final class BlockLayout
         if ($contained !== null) {
             return ['min' => $contained, 'max' => $contained];
         }
+        // CSS 2.1 §17.5.2 — a table's intrinsic width is the sum of its
+        // columns' min/max-content (not the widest stacked row, which the
+        // generic block aggregation would compute). Route to the dedicated
+        // table measurer so auto-width tables shrink-to-fit correctly.
+        if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+            $mm = $this->measureTableMinMax($box, $context);
+            return ['min' => $mm['min'], 'max' => $mm['max']];
+        }
         if ($box instanceof AtomicInlineBox || $box instanceof InlineBox) {
             return $this->aggregateChildrenMinMax($box, $context, inline: true);
         }
@@ -4022,7 +4113,14 @@ final class BlockLayout
             return ['min' => 0.0, 'max' => 0.0];
         }
         $whiteSpace = $this->resolveTextBoxWhiteSpace($box);
-        $font = $context->defaultFont;
+        // Resolve the box's own font-family (e.g. an @font-face `Ahem`) so the
+        // intrinsic size matches what actually paints; the context default
+        // font alone otherwise sizes text via the coarse char-count heuristic.
+        $font = $context->fontResolver?->resolve(
+            $box->style->get('font-family'),
+            $this->intrinsicFontWeight($box->style),
+            $this->intrinsicFontStyle($box->style),
+        ) ?? $context->defaultFont;
         if ($font === null) {
             // No font registered — fall back to a character-count
             // heuristic so Grid `auto` tracks still get a usable
@@ -4113,6 +4211,64 @@ final class BlockLayout
             $minAdvance = max($minAdvance, $shaped->totalAdvance);
         }
         return ['min' => $minAdvance, 'max' => $maxAdvance];
+    }
+
+    /**
+     * A LengthContext whose `ch` / `ex` ratios come from the box's OWN
+     * resolved font (CSS Values 4 §6.1 — `ch` is the '0' glyph advance, `ex`
+     * the x-height, in the element's first available font). The base context
+     * only carries the document default-font ratios (or the 0.5 fallback),
+     * so a box using an @font-face family (e.g. Ahem, where `1ch` = `1em`)
+     * would otherwise mis-resolve `ch`/`ex` lengths.
+     */
+    private function boxLengthContext(Box $box, LayoutContext $layoutCtx): LengthContext
+    {
+        $base = $layoutCtx->lengthContext;
+        $font = $layoutCtx->fontResolver?->resolve(
+            $box->style->get('font-family'),
+            $this->intrinsicFontWeight($box->style),
+            $this->intrinsicFontStyle($box->style),
+        ) ?? $layoutCtx->defaultFont;
+        if ($font === null || $font->unitsPerEm <= 0) {
+            return $base;
+        }
+        $upem = (float) $font->unitsPerEm;
+        $xRatio = $font->xHeight > 0 ? $font->xHeight / $upem : $base->xHeightRatio;
+        $zero = $font->charWidths[0x30] ?? null;
+        $chRatio = ($zero !== null && $zero > 0) ? (float) $zero / $upem : $base->chWidthRatio;
+        $capRatio = $font->capHeight > 0 ? $font->capHeight / $upem : $base->capHeightRatio;
+        return $base->withFontMetrics($xRatio, $chRatio, $capRatio);
+    }
+
+    private function intrinsicFontWeight(CascadedValues $style): int
+    {
+        $weight = $style->get('font-weight');
+        if ($weight instanceof \Phpdftk\Css\Value\Number) {
+            return max(1, min(1000, (int) round($weight->value)));
+        }
+        if ($weight instanceof \Phpdftk\Css\Value\Integer) {
+            return max(1, min(1000, $weight->value));
+        }
+        if ($weight instanceof Keyword) {
+            return match (strtolower($weight->name)) {
+                'bold', 'bolder' => 700,
+                'lighter' => 300,
+                default => 400,
+            };
+        }
+        return 400;
+    }
+
+    private function intrinsicFontStyle(CascadedValues $style): string
+    {
+        $value = $style->get('font-style');
+        if ($value instanceof Keyword) {
+            $name = strtolower($value->name);
+            if ($name === 'italic' || $name === 'oblique') {
+                return $name;
+            }
+        }
+        return 'normal';
     }
 
     /**
@@ -5110,6 +5266,23 @@ final class BlockLayout
     }
 
     /**
+     * A flex item's margin edge in pixels. `auto` margins contribute 0 to
+     * the base outer size (CSS Flexbox 1 §8.1 distributes free space into
+     * them during alignment, after sizing); `<length>` / `<percentage>`
+     * resolve against the container's inline size. Used to populate the
+     * box-model edges of atomic (inline-block / replaced) flex items, which
+     * the atomic-inline layout path otherwise leaves at zero.
+     */
+    private function flexItemMarginEdge(CascadedValues $style, string $prop, float $cbInlineSize): float
+    {
+        $value = $style->get($prop);
+        if ($this->isAuto($value)) {
+            return 0.0;
+        }
+        return $this->resolveLength($value, $cbInlineSize);
+    }
+
+    /**
      * Resolve `flex-basis` per CSS Flexbox 1 §7.2. Returns `null` for
      * `auto` / `content` / unrecognised values (the caller keeps the
      * layoutBox-derived width); a non-negative float for explicit
@@ -5189,7 +5362,7 @@ final class BlockLayout
      * §10.3.5 (floats), §10.3.7 (abspos with both insets `auto`),
      * and §10.3.9 (inline-block).
      */
-    private function blockNeedsShrinkToFit(Box $box, CascadedValues $style): bool
+    private function blockNeedsShrinkToFit(Box $box, CascadedValues $style, LayoutContext $context): bool
     {
         if ($this->floatSide($box) !== null) {
             return true;
@@ -5206,6 +5379,13 @@ final class BlockLayout
             && in_array(strtolower($display->name), ['inline-block', 'inline-table'], true)
         ) {
             return true;
+        }
+        // CSS 2.1 §17.5.2 — an auto-width block-level table shrink-to-fits
+        // to its columns' content rather than filling its container. Guard
+        // on measured content so a genuinely empty grid keeps the legacy
+        // fill behaviour (empty border/scaffold tables).
+        if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+            return $this->measureTableMinMax($box, $context)['hasContent'];
         }
         return false;
     }
@@ -6333,7 +6513,7 @@ final class BlockLayout
         // is the line it would sit on, not the bottom of the block).
         $prevInFlowChild = null;
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $childContext->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
             // CSS 2.1 §9.6 — `position: absolute` (and `fixed`, which
             // behaves identically in a print context with no scrolling)
             // removes the box from normal flow. Lay it out at the
@@ -6363,7 +6543,14 @@ final class BlockLayout
                     || !$this->isAuto($absStyle->get('bottom'));
                 $hasLeftAnchor = !$this->isAuto($absStyle->get('left'))
                     || !$this->isAuto($absStyle->get('right'));
-                $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $originX;
+                // Static-X origin mirrors static-Y: an inline-level abspos with
+                // no left/right anchor starts at the inline END of the
+                // preceding inline content (`text<span abspos>`), not the
+                // container's inline-start.
+                $staticX = $hasLeftAnchor
+                    ? $originX
+                    : ($this->inlineStaticPositionX($prevInFlowChild) ?? $originX);
+                $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $staticX;
                 // Static-Y origin: the positioned-ancestor edge when the
                 // box has a top/bottom anchor, otherwise the in-flow
                 // static position. For an inline-level abspos that follows
@@ -6516,6 +6703,34 @@ final class BlockLayout
     }
 
     /**
+     * Inline-axis counterpart of {@see inlineStaticPositionY}. CSS 2.1
+     * §9.4.2 / §10.3.7 — the static inline position of an inline-level
+     * out-of-flow box is where the next inline box would begin: at the
+     * inline END of the preceding inline content's LAST line (e.g. the
+     * `text<span style=position:absolute>` box starts after `text`, not
+     * at the containing block's inline-start). Returns null when the
+     * preceding sibling established no line boxes so the caller falls
+     * back to the container's content origin.
+     */
+    private function inlineStaticPositionX(?Box $prevInFlowChild): ?float
+    {
+        if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
+            return null;
+        }
+        $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
+        // Inline fragments carry absolute x (parent origin + advance), so
+        // the line's inline end is the rightmost fragment edge.
+        $end = null;
+        foreach ($lastLine->fragments as $frag) {
+            $right = $frag->x + $frag->width;
+            if ($end === null || $right > $end) {
+                $end = $right;
+            }
+        }
+        return $end;
+    }
+
+    /**
      * Vertical-mode counterpart to {@see stackChildrenList} — CSS
      * Writing Modes 4 §3 (block axis is physical x in vertical-rl /
      * vertical-lr / sideways-rl / sideways-lr).
@@ -6577,7 +6792,7 @@ final class BlockLayout
         $prevBlockEndMargin = 0.0;
         $hasPrev = false;
         foreach ($children as $child) {
-            $this->cascade->resolveLengths($child->style, $childContext->lengthContext);
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
             // CSS 2.1 §9.6 — out-of-flow children are positioned
             // independently of the in-flow stacking cursor. Mirror
             // the horizontal stacker's abs-pos branch: lay out at
@@ -6864,6 +7079,13 @@ final class BlockLayout
         // committed position carries no relative term, so this applies
         // exactly once.
         $this->applyRelativeOffsetsToInlineAtomics($parent, $childContext);
+        // CSS 2.1 §10.1 — an `inline-block` that is a positioned containing
+        // block (e.g. `position: relative`) hosts its abs-pos descendants,
+        // but InlineLayout treats the atomic as opaque and never lays them
+        // out. Do it here relative to the atomic's padding box so they size
+        // + paint (a `position:relative` inline-block with an `inset:0`
+        // absolutely-positioned child renders that child).
+        $this->layoutAbsposInInlineAtomics($parent, $childContext);
         return $height;
     }
 
@@ -6895,6 +7117,63 @@ final class BlockLayout
      * precedence, percentage resolution and sticky fallback all match
      * the block-level relative path.
      */
+    /**
+     * Walk inline-level descendants and lay out the abs-pos children of
+     * any positioned `AtomicInlineBox` (inline-block) relative to it.
+     * Mirrors {@see applyRelativeOffsetsToInlineAtomics}'s traversal.
+     */
+    private function layoutAbsposInInlineAtomics(Box $box, LayoutContext $context): void
+    {
+        foreach ($box->children as $child) {
+            if ($child instanceof AtomicInlineBox) {
+                $this->layoutAtomicAbsposChildren($child, $context);
+                continue;
+            }
+            if ($child instanceof InlineBox) {
+                $this->layoutAbsposInInlineAtomics($child, $context);
+            }
+        }
+    }
+
+    /**
+     * Lay out the direct abs-pos (`position: absolute|fixed`) children of a
+     * positioned inline-block, using its padding box as the containing
+     * block (CSS 2.1 §10.1 / §10.6.4). No-op when the atomic isn't a
+     * positioned containing block or has no abs-pos children.
+     */
+    private function layoutAtomicAbsposChildren(AtomicInlineBox $atomic, LayoutContext $context): void
+    {
+        $position = $atomic->style->get('position');
+        if (!($position instanceof Keyword)
+            || !in_array(strtolower($position->name), ['relative', 'absolute', 'fixed', 'sticky'], true)
+        ) {
+            return;
+        }
+        $g = $atomic->geometry;
+        $cbWidth = $g->paddingLeft + $g->width + $g->paddingRight;
+        $cbHeight = $g->paddingTop + $g->height + $g->paddingBottom;
+        $originX = $g->x - $g->paddingLeft;
+        $originY = $g->y - $g->paddingTop;
+        $absCtx = $context
+            ->withContainingBlock($cbWidth, $cbHeight)
+            ->withOrigin($originX, $originY);
+        foreach ($atomic->children as $child) {
+            $childPos = $child->style->get('position');
+            if (!($childPos instanceof Keyword)
+                || !in_array(strtolower($childPos->name), ['absolute', 'fixed'], true)
+            ) {
+                continue;
+            }
+            $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $absCtx));
+            $this->applyAbsoluteCornerAnchorSize($child, $absCtx);
+            $this->layoutBox($child, $absCtx);
+            [$dx, $dy] = $this->resolveAbsoluteOffsets($child, $absCtx, $originX, $originY, $originY);
+            if ($dx !== 0.0 || $dy !== 0.0) {
+                $this->shiftSubtree($child, $dy, $dx);
+            }
+        }
+    }
+
     private function applyInlineRelativeOffset(Box $box, LayoutContext $context): void
     {
         $position = $box->style->get('position');
@@ -7194,6 +7473,136 @@ final class BlockLayout
     }
 
     /**
+     * Collect per-column `min-width` floors from `table-column` /
+     * `table-column-group` boxes (works for both `<col>` and
+     * `display: table-column` on any element, since both become a
+     * {@see TableColumnBox}). A group's min-width applies to each column
+     * it spans; a column's own min-width overrides. Non-`min-width`
+     * columns stay null.
+     *
+     * @return list<?float>
+     */
+    private function collectColumnMinWidths(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        int $totalColumns,
+        \Phpdftk\Css\Cascade\LengthContext $lengthContext,
+    ): array {
+        /** @var list<?float> $mins */
+        $mins = array_fill(0, $totalColumns, null);
+        if ($totalColumns === 0) {
+            return $mins;
+        }
+        $col = 0;
+        foreach ($table->children as $tc) {
+            if (!($tc instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox)) {
+                continue;
+            }
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableColumnBox> $groupCols */
+            $groupCols = array_values(array_filter(
+                $tc->children,
+                static fn(Box $c): bool => $c instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox,
+            ));
+            if ($groupCols !== []) {
+                // A column-group whose children are columns: the group's
+                // floor applies to every column it holds, refined per column.
+                $groupMin = $this->columnBoxMinWidth($tc, $lengthContext);
+                foreach ($groupCols as $colBox) {
+                    $span = $this->columnSpan($colBox);
+                    $min = $this->columnBoxMinWidth($colBox, $lengthContext) ?? $groupMin;
+                    for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                        $mins[$col] = $min;
+                    }
+                }
+                continue;
+            }
+            // A bare column (or an empty column-group standing in for one).
+            $span = $this->columnSpan($tc);
+            $min = $this->columnBoxMinWidth($tc, $lengthContext);
+            for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                $mins[$col] = $min;
+            }
+        }
+        return $mins;
+    }
+
+    private function columnSpan(Box $colBox): int
+    {
+        $spanAttr = $colBox->element?->getAttribute('span');
+        if ($spanAttr !== null && preg_match('/^\d+$/', trim($spanAttr)) === 1) {
+            return max(1, (int) trim($spanAttr));
+        }
+        return 1;
+    }
+
+    private function columnBoxMinWidth(Box $colBox, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
+    {
+        return $this->columnBoxLength($colBox, 'min-width', $lengthContext);
+    }
+
+    /**
+     * A table-column box's `width` in pixels (from `display: table-column`
+     * on any element — the tag-based `<col>` path in {@see
+     * collectColumnWidths} misses non-`<col>` columns), or null.
+     *
+     * @return list<?float>
+     */
+    private function collectColumnBoxWidths(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        int $totalColumns,
+        \Phpdftk\Css\Cascade\LengthContext $lengthContext,
+    ): array {
+        /** @var list<?float> $widths */
+        $widths = array_fill(0, $totalColumns, null);
+        if ($totalColumns === 0) {
+            return $widths;
+        }
+        $col = 0;
+        foreach ($table->children as $tc) {
+            if (!($tc instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox)) {
+                continue;
+            }
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableColumnBox> $groupCols */
+            $groupCols = array_values(array_filter(
+                $tc->children,
+                static fn(Box $c): bool => $c instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox,
+            ));
+            if ($groupCols !== []) {
+                $groupWidth = $this->columnBoxLength($tc, 'width', $lengthContext);
+                foreach ($groupCols as $colBox) {
+                    $span = $this->columnSpan($colBox);
+                    $w = $this->columnBoxLength($colBox, 'width', $lengthContext) ?? $groupWidth;
+                    for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                        $widths[$col] = $w;
+                    }
+                }
+                continue;
+            }
+            $span = $this->columnSpan($tc);
+            $w = $this->columnBoxLength($tc, 'width', $lengthContext);
+            for ($i = 0; $i < $span && $col < $totalColumns; $i++, $col++) {
+                $widths[$col] = $w;
+            }
+        }
+        return $widths;
+    }
+
+    /**
+     * A table-column box's length property in pixels, or null. Resolved via
+     * {@see LengthResolver::toPx} because column boxes are layout no-ops
+     * and so never went through the cascade's `resolveLengths` pass — the
+     * declared value is still in author units (e.g. `1in` → Length(1, in)).
+     */
+    private function columnBoxLength(Box $colBox, string $property, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
+    {
+        $value = $colBox->style->get($property);
+        if (!($value instanceof Length)) {
+            return null;
+        }
+        $px = \Phpdftk\Css\Cascade\LengthResolver::toPx($value, $lengthContext);
+        return $px > 0.0 ? $px : null;
+    }
+
+    /**
      * CSS Tables 3 §10.4 — for each `null` (auto) entry in
      * `currentColumnWidths`, measure the max-content of cells
      * anchored in that column via `measureMinMaxContent`. Auto
@@ -7236,7 +7645,10 @@ final class BlockLayout
             if ($info === null) {
                 continue;
             }
-            $mm = $this->measureMinMaxContent($cell, $context);
+            // Border-box contribution: a column's width becomes the cell's
+            // containing block, and layoutBlock subtracts the cell's own
+            // padding+border from it — so the column must include them.
+            $mm = $this->cellColumnContribution($cell, $context);
             $share = $mm['max'] / max(1, $info['colspan']);
             for (
                 $c = $info['col'];
@@ -7245,6 +7657,16 @@ final class BlockLayout
             ) {
                 if ($colMax[$c] < $share) {
                     $colMax[$c] = $share;
+                }
+            }
+        }
+        // CSS Tables 3 §4.4 — a column's used width is at least its declared
+        // min-width. Floor auto columns before the zero-content early-return
+        // so an empty column with a min-width still sizes.
+        if ($this->currentColumnMinWidths !== null) {
+            foreach ($this->currentColumnMinWidths as $i => $mw) {
+                if ($mw !== null && $i < $totalColumns && $colMax[$i] < $mw) {
+                    $colMax[$i] = $mw;
                 }
             }
         }
@@ -7273,6 +7695,145 @@ final class BlockLayout
                 $this->currentColumnWidths[$i] = $colMax[$i] * $scale;
             }
         }
+    }
+
+    /**
+     * A table cell's *border-box* min/max-content contribution to its
+     * column. `measureMinMaxContent` returns the content-box intrinsic
+     * (it deliberately ignores the box's own padding/border); a column's
+     * width becomes the cell's containing block and `layoutBlock`
+     * subtracts the cell's padding+border from it, so the column must
+     * include them. Shared by `resolveAutoColumnContentWidths` (column
+     * distribution) and `measureTableMinMax` (table intrinsic) so both
+     * measure the same unit — the precondition for a shrunk table width
+     * to compose with the column-distribution pass.
+     *
+     * @return array{min: float, max: float}
+     */
+    private function cellColumnContribution(\Phpdftk\HtmlToPdf\Box\TableCellBox $cell, LayoutContext $context): array
+    {
+        $mm = $this->measureMinMaxContent($cell, $context);
+        // Horizontal padding+border of the cell itself. Percentage
+        // padding has no resolved basis during intrinsic measurement —
+        // resolve against 0 (→0), matching the px-padding common case.
+        $inset = $this->resolveLength($cell->style->get('padding-left'), 0.0)
+            + $this->resolveLength($cell->style->get('padding-right'), 0.0)
+            + $this->resolveBorderWidth($cell->style, 'left')
+            + $this->resolveBorderWidth($cell->style, 'right');
+        $min = $mm['min'] + $inset;
+        $max = $mm['max'] + $inset;
+        // CSS Sizing — a cell's own `min-width` floors its column
+        // contribution, so an empty cell with `min-width: 1in` sizes its
+        // column. Resolve via toPx: intrinsic measurement can run before
+        // the cell's resolveLengths pass, so units may be author-declared.
+        $cellMinWidth = $cell->style->get('min-width');
+        if ($cellMinWidth instanceof Length) {
+            $floor = \Phpdftk\Css\Cascade\LengthResolver::toPx($cellMinWidth, $context->lengthContext);
+            $min = max($min, $floor);
+            $max = max($max, $floor);
+        }
+        return ['min' => $min, 'max' => $max];
+    }
+
+    /**
+     * CSS 2.1 §17.5.2 automatic table-width — intrinsic min/max content
+     * width of a table-root, for the shrink-to-fit pass. Builds its own
+     * cell grid (pure, no shared-state mutation) so it is correct even
+     * when the table is measured as a descendant of another box's
+     * intrinsic pass. Per-column min/max accumulate from each anchored
+     * cell's border-box contribution (colspan distributed); an explicit
+     * px column width contributes its width to both min and max.
+     *
+     * `hasContent` distinguishes a genuinely empty grid (which must keep
+     * the legacy fill-the-container behaviour — see
+     * `resolveAutoColumnContentWidths`) from a measured-but-narrow table.
+     *
+     * v1 gaps (documented in docs/plans/table-shrink-to-fit.md):
+     * border-spacing, caption CAPMIN, and percentage columns are not
+     * folded into the intrinsic.
+     *
+     * @return array{min: float, max: float, hasContent: bool}
+     */
+    private function measureTableMinMax(\Phpdftk\HtmlToPdf\Box\TableBox $table, LayoutContext $context): array
+    {
+        $cacheId = spl_object_id($table);
+        if (isset($this->tableIntrinsicMemo[$cacheId])) {
+            return $this->tableIntrinsicMemo[$cacheId];
+        }
+        [$grid, $cellRefs] = $this->buildCellGrid($table);
+        $totalColumns = max(0, $this->maxColumnsFromGrid($grid));
+        if ($totalColumns === 0) {
+            return $this->tableIntrinsicMemo[$cacheId]
+                = ['min' => 0.0, 'max' => 0.0, 'hasContent' => false];
+        }
+        $explicit = $this->collectColumnWidths($table, $totalColumns);
+        $boxWidths = $this->collectColumnBoxWidths($table, $totalColumns, $context->lengthContext);
+        foreach ($boxWidths as $i => $w) {
+            if ($w !== null && ($explicit[$i] ?? null) === null) {
+                $explicit[$i] = $w;
+            }
+        }
+        $colMin = array_fill(0, $totalColumns, 0.0);
+        $colMax = array_fill(0, $totalColumns, 0.0);
+        $hasContent = false;
+        foreach ($cellRefs as $cellId => $cell) {
+            $info = $grid[$cellId] ?? null;
+            if ($info === null) {
+                continue;
+            }
+            $mm = $this->cellColumnContribution($cell, $context);
+            if ($mm['max'] > 0.0) {
+                $hasContent = true;
+            }
+            $minShare = $mm['min'] / max(1, $info['colspan']);
+            $maxShare = $mm['max'] / max(1, $info['colspan']);
+            for (
+                $c = $info['col'];
+                $c < $info['col'] + $info['colspan'] && $c < $totalColumns;
+                $c++
+            ) {
+                $colMin[$c] = max($colMin[$c], $minShare);
+                $colMax[$c] = max($colMax[$c], $maxShare);
+            }
+        }
+        // CSS Tables 3 §4.4 — floor each column by its declared min-width so
+        // an auto table shrink-wraps to at least the column min-widths.
+        $columnMins = $this->collectColumnMinWidths($table, $totalColumns, $context->lengthContext);
+        for ($c = 0; $c < $totalColumns; $c++) {
+            $mw = $columnMins[$c] ?? null;
+            if ($mw !== null) {
+                $colMin[$c] = max($colMin[$c], $mw);
+                $colMax[$c] = max($colMax[$c], $mw);
+                $hasContent = true;
+            }
+        }
+        $min = 0.0;
+        $max = 0.0;
+        for ($c = 0; $c < $totalColumns; $c++) {
+            $fixed = $explicit[$c] ?? null;
+            if ($fixed !== null) {
+                // Explicit px column: contributes a fixed width to both.
+                $min += max($fixed, $colMin[$c]);
+                $max += max($fixed, $colMax[$c]);
+                $hasContent = true;
+            } else {
+                $min += $colMin[$c];
+                $max += $colMax[$c];
+            }
+        }
+        // CSS 2.1 §17.5.2 / Sizing — the table box's OWN min-width floors
+        // its used width, so an auto table with only empty cells shrink-
+        // wraps to its min-width instead of filling the container. (Table
+        // boxes go through layout, but resolve via toPx defensively in case
+        // this runs before the table's own resolveLengths pass.)
+        $tableMin = $this->columnBoxLength($table, 'min-width', $context->lengthContext);
+        if ($tableMin !== null) {
+            $min = max($min, $tableMin);
+            $max = max($max, $tableMin);
+            $hasContent = true;
+        }
+        return $this->tableIntrinsicMemo[$cacheId]
+            = ['min' => $min, 'max' => $max, 'hasContent' => $hasContent];
     }
 
     /**
@@ -7389,9 +7950,27 @@ final class BlockLayout
      */
     private function precomputeTableCellGrid(\Phpdftk\HtmlToPdf\Box\TableBox $table): array
     {
+        [$grid, $cellRefs] = $this->buildCellGrid($table);
+        $this->resolvedCellReferences = $cellRefs;
+        return $grid;
+    }
+
+    /**
+     * Pure grid builder — same algorithm as {@see precomputeTableCellGrid}
+     * but returns `[grid, cellRefs]` without mutating any `current*` /
+     * `resolvedCellReferences` shared state. Used by the intrinsic-width
+     * measurement so a table measured as a *descendant* of another box's
+     * sizing pass (nested table / float-containing-table) doesn't clobber
+     * the actively-laying-out table's cell references.
+     *
+     * @return array{0: array<int, array{row: int, col: int, rowspan: int, colspan: int}>, 1: array<int, \Phpdftk\HtmlToPdf\Box\TableCellBox>}
+     */
+    private function buildCellGrid(\Phpdftk\HtmlToPdf\Box\TableBox $table): array
+    {
         /** @var array<int, array{row: int, col: int, rowspan: int, colspan: int}> $grid */
         $grid = [];
-        $this->resolvedCellReferences = [];
+        /** @var array<int, \Phpdftk\HtmlToPdf\Box\TableCellBox> $cellRefs */
+        $cellRefs = [];
         /** @var list<array<int, bool>> $occupancy occupancy[row][col] */
         $occupancy = [];
         $rowIndex = 0;
@@ -7419,7 +7998,7 @@ final class BlockLayout
                     'rowspan' => $rowspan,
                     'colspan' => $colspan,
                 ];
-                $this->resolvedCellReferences[$cellId] = $cell;
+                $cellRefs[$cellId] = $cell;
                 // Mark every covered (row, col) as occupied.
                 for ($r = 0; $r < $rowspan; $r++) {
                     $absRow = $rowIndex + $r;
@@ -7434,7 +8013,7 @@ final class BlockLayout
             }
             $rowIndex++;
         }
-        return $grid;
+        return [$grid, $cellRefs];
     }
 
     /**
@@ -7540,6 +8119,94 @@ final class BlockLayout
      * their natural Y slots so the spanning cell just visually
      * stretches downward.
      */
+    /**
+     * CSS 2.1 §17.5.3 — when a table's specified height exceeds the sum
+     * of its rows' content heights, the surplus is distributed over the
+     * rows (here proportionally to their current heights, evenly when all
+     * are zero). Each row grows, is shifted down past the grown rows above
+     * it, and its cells stretch to fill (honouring `vertical-align` for
+     * the added slack) so cell backgrounds/borders fill the table box.
+     *
+     * A no-op unless the table has a definite `height` larger than its
+     * content. Returns the (possibly larger) height for the caller.
+     *
+     * v1 gaps: border-spacing rows aren't grown; rowspan cells already
+     * finalized aren't re-extended (rare combined with an explicit table
+     * height).
+     */
+    private function distributeTableExtraHeight(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        float $contentHeight,
+    ): float {
+        // v1: only a definite `<length>` table height distributes. A
+        // percentage height needs a definite containing-block height that
+        // is usually absent here; resolving it against the viewport would
+        // wrongly inflate the table, so it's deferred.
+        $heightVal = $table->style->get('height');
+        if (!($heightVal instanceof Length) || $heightVal->value <= 0.0) {
+            return $contentHeight;
+        }
+        $explicit = $heightVal->value;
+        $geo = $table->geometry;
+        // Under border-box the specified height includes the table's own
+        // border+padding; the rows fill the remaining content area.
+        $targetRows = $explicit;
+        if ($this->isBorderBoxSizing($table->style)) {
+            $targetRows = $explicit
+                - $geo->borderTop - $geo->borderBottom
+                - $geo->paddingTop - $geo->paddingBottom;
+        }
+        $rows = $this->collectTableRows($table);
+        if ($rows === []) {
+            return $contentHeight;
+        }
+        $current = 0.0;
+        foreach ($rows as $row) {
+            $current += $row->geometry->height;
+        }
+        $slack = $targetRows - $current;
+        if ($slack <= 0.001) {
+            return $contentHeight;
+        }
+        $rowCount = count($rows);
+        $accShift = 0.0;
+        foreach ($rows as $row) {
+            $rowH = $row->geometry->height;
+            $share = $current > 0.0
+                ? $slack * ($rowH / $current)
+                : $slack / $rowCount;
+            if ($accShift > 0.001) {
+                $this->shiftSubtree($row, $accShift);
+            }
+            $row->geometry->height = $rowH + $share;
+            foreach ($row->children as $cell) {
+                if (!($cell instanceof \Phpdftk\HtmlToPdf\Box\TableCellBox)) {
+                    continue;
+                }
+                $cell->geometry->height += $share;
+                // Honour vertical-align for the newly-added slack (the
+                // initial per-row stretch already placed content for the
+                // pre-distribution height).
+                $valign = $cell->style->get('vertical-align');
+                $vshift = 0.0;
+                if ($valign instanceof Keyword) {
+                    $vshift = match (strtolower($valign->name)) {
+                        'middle' => $share / 2.0,
+                        'bottom', 'baseline' => $share,
+                        default => 0.0,
+                    };
+                }
+                if ($vshift > 0.001) {
+                    foreach ($cell->children as $child) {
+                        $this->shiftSubtree($child, $vshift);
+                    }
+                }
+            }
+            $accShift += $share;
+        }
+        return max($contentHeight, $targetRows);
+    }
+
     private function finalizeRowspanHeights(): void
     {
         $grid = $this->currentTableCellGrid;

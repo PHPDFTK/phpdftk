@@ -287,10 +287,20 @@ final class InlineLayout
                 $atomicBorderLeft = $token['atomicBorderLeft'] ?? 0.0;
                 $atomicPadRight = $token['atomicPadRight'] ?? 0.0;
                 $atomicBorderRight = $token['atomicBorderRight'] ?? 0.0;
+                $atomicMarginLeft = $token['atomicMarginLeft'] ?? 0.0;
+                $atomicMarginRight = $token['atomicMarginRight'] ?? 0.0;
+                $atomicMarginTop = $token['atomicMarginTop'] ?? 0.0;
+                $atomicMarginBottom = $token['atomicMarginBottom'] ?? 0.0;
+                // `$currentX` sits at the item's margin-box start; step past
+                // the left margin (plus border + padding) to the content box.
                 $atomic->geometry->x = $parent->geometry->x + $currentX
-                    + $atomicBorderLeft + $atomicPadLeft;
+                    + $atomicMarginLeft + $atomicBorderLeft + $atomicPadLeft;
+                // CSS 2.2 §10.8 — the inline-block's baseline (no in-flow line
+                // boxes here) is its bottom margin edge, so the margin box
+                // bottom aligns with the line baseline; the border box bottom
+                // sits a bottom-margin above it.
                 $atomic->geometry->y = $parent->geometry->y + $y
-                    + $atomicAscent - $atomicOuterHeight
+                    + $atomicAscent - $atomicOuterHeight - $atomicMarginBottom
                     + $atomicBorderTop + $atomicPadTop;
                 $atomic->geometry->width = $atomicContentWidth;
                 $atomic->geometry->height = $atomicContentHeight;
@@ -302,6 +312,10 @@ final class InlineLayout
                 $atomic->geometry->borderRight = $atomicBorderRight;
                 $atomic->geometry->borderTop = $atomicBorderTop;
                 $atomic->geometry->borderBottom = $atomicBorderBottom;
+                $atomic->geometry->marginLeft = $atomicMarginLeft;
+                $atomic->geometry->marginRight = $atomicMarginRight;
+                $atomic->geometry->marginTop = $atomicMarginTop;
+                $atomic->geometry->marginBottom = $atomicMarginBottom;
             }
             $currentX += $width;
             $atLineStart = false;
@@ -354,32 +368,68 @@ final class InlineLayout
     private function applyVerticalLineShift(array $lines, float $availableWidth, Box $parent): array
     {
         $wm = WritingMode::fromStyle($parent->style);
-        // Only `vrl` / `sideways-rl` (block direction -1) need the
-        // shift; horizontal-tb and `vlr` / `sideways-lr` already place
-        // lines at the visually-correct block-start when fragments
-        // start at x = 0.
-        if (!$wm->isVertical() || $wm->blockDirection() !== -1) {
+        if (!$wm->isVertical()) {
             return $lines;
         }
-        // CSS WM 4 §3 — in vertical writing modes, line boxes stack
-        // along the block axis (right-to-left for vrl), NOT along
-        // the inline axis. Each line occupies a vertical column at
-        // y = 0 (top of the container); subsequent lines are pushed
-        // further left by the cumulative block-extent (= sum of
-        // prior line heights). The painter pairs this with a 90°
-        // text-matrix rotation so glyphs flow downward inside each
-        // column.
+        // CSS WM 4 §3 — transpose the horizontal IFC to the vertical block flow.
+        // Each line becomes a vertical column: the line's INLINE offset (the
+        // fragment's x — where `text-indent` / `text-align` placed it) moves to
+        // the vertical axis (`line.y`, which the painter reads as the column's
+        // vertical start), and columns stack along the BLOCK axis (physical x),
+        // each occupying the line's cross-size (`height`). `vlr` / `sideways-lr`
+        // grow rightward from the left content edge; `vrl` / `sideways-rl` grow
+        // leftward from the right edge (block-start = right). The painter's
+        // vertical branch (paintFragment) rotates glyphs 90° CW, reads
+        // `fragment.x` as the column's left edge and `line.y` as its top.
+        //
+        // Phase B increment 1: single-fragment lines (single glyph / single
+        // atomic — the text-indent / text-align near-miss cluster) transpose
+        // exactly. Multi-fragment vertical advance is increment 2; those lines
+        // keep the legacy `vrl` right-shift (or pass through for `vlr`).
+        $rtl = $wm->blockDirection() === -1;
         $out = [];
         $cumBlock = 0.0;
         foreach ($lines as $line) {
-            $lineWidth = $line->totalWidth();
-            $shift = $availableWidth - $lineWidth - $cumBlock;
-            if ($shift <= 0.0) {
-                $out[] = new LineBox(0.0, $line->height, $line->fragments);
+            // Transpose needs a real cross-size to place the column along the
+            // block axis; a degenerate line box (`line-height: 0`) has none, so
+            // fall back to the legacy path rather than divide the block axis by
+            // zero-height columns.
+            if (count($line->fragments) === 1 && $line->height > 0.0) {
+                $f = $line->fragments[0];
+                $blockLeft = $rtl
+                    ? max(0.0, $availableWidth - $cumBlock - $line->height)
+                    : $cumBlock;
+                $out[] = new LineBox($f->x, $line->height, [
+                    new InlineFragment(
+                        $blockLeft,
+                        $f->width,
+                        $f->shapedRun,
+                        $f->baselineShift,
+                        $f->href,
+                        $f->isBold,
+                        $f->isItalic,
+                        $f->decorationLines,
+                        $f->textColor,
+                        $f->backgroundColor,
+                        $f->linkTitle,
+                        $f->decorationColor,
+                        $f->isWhitespace,
+                    ),
+                ]);
                 $cumBlock += $line->height;
                 continue;
             }
-            $out[] = new LineBox(0.0, $line->height, $this->shiftFragments($line->fragments, $shift));
+            if ($rtl) {
+                $lineWidth = $line->totalWidth();
+                $shift = $availableWidth - $lineWidth - $cumBlock;
+                $out[] = new LineBox(
+                    0.0,
+                    $line->height,
+                    $shift > 0.0 ? $this->shiftFragments($line->fragments, $shift) : $line->fragments,
+                );
+            } else {
+                $out[] = $line;
+            }
             $cumBlock += $line->height;
         }
         return $out;
@@ -409,14 +459,29 @@ final class InlineLayout
     {
         $currentX = 0.0;
         $maxHeight = 0.0;
+        // Line-box tracking: atomics flow left-to-right and wrap to a new
+        // line when the next one won't fit in the IFC available width
+        // (CSS 2.1 §9.4.2). `$lineTop` is the current line's top offset
+        // from the parent's content top; `$lineHeight` its tallest box.
+        $lineTop = 0.0;
+        $lineHeight = 0.0;
         foreach ($parent->children as $child) {
             if (!($child instanceof AtomicInlineBox)) {
                 continue;
             }
             $widthValue = $child->style->get('width');
-            $width = $widthValue instanceof Length && $widthValue->value > 0.0
-                ? $widthValue->value
-                : 0.0;
+            // A percentage width (e.g. `<img width="100%">`) resolves
+            // against the inline-formatting-context's available width —
+            // the same basis the shaped path uses. Without this a
+            // percentage-sized replaced element collapses to 0 in the
+            // no-font fallback and paints nothing.
+            $width = match (true) {
+                $widthValue instanceof Length && $widthValue->value > 0.0
+                    => $widthValue->value,
+                $widthValue instanceof \Phpdftk\Css\Value\Percentage && $widthValue->value > 0.0
+                    => $this->currentAvailableWidth * ($widthValue->value / 100.0),
+                default => 0.0,
+            };
             if ($width <= 0.0) {
                 // Atomic-content painters have their own intrinsic-
                 // size fallbacks (svg attrs / viewBox; math defaults).
@@ -424,22 +489,108 @@ final class InlineLayout
                 // so the painter's fallback chain still runs.
                 continue;
             }
+            // Border + padding insets. This fallback historically ignored
+            // borders entirely, so an inline-block sized partly by its
+            // border/padding (e.g. the CSS2 `border-{top,bottom}-width`
+            // tests, or a square with a uniform border) collapsed to its
+            // content box and painted no border. Fold both axes' insets
+            // into the box: grow the height/advance by the inset and offset
+            // the content box so the border box's top-left edge stays at
+            // the box origin. Both axes are handled symmetrically so a
+            // uniformly-bordered inline-block keeps a centred content box.
+            $padTop = self::atomicLength($child->style->get('padding-top'));
+            $padBottom = self::atomicLength($child->style->get('padding-bottom'));
+            $padLeft = self::atomicLength($child->style->get('padding-left'));
+            $padRight = self::atomicLength($child->style->get('padding-right'));
+            $borderTop = self::atomicBorderWidth($child->style, 'top');
+            $borderBottom = self::atomicBorderWidth($child->style, 'bottom');
+            $borderLeft = self::atomicBorderWidth($child->style, 'left');
+            $borderRight = self::atomicBorderWidth($child->style, 'right');
+            $verticalInset = $padTop + $padBottom + $borderTop + $borderBottom;
+            $horizontalInset = $padLeft + $padRight + $borderLeft + $borderRight;
+            // CSS 2.2 §10.8 — an inline-block's margins take part in layout:
+            // horizontal margins add to the inline advance it occupies, and
+            // its margin box (with vertical margins) is what contributes to
+            // line height. This no-font fallback previously dropped them, so
+            // adjacent inline-blocks touched instead of showing their gaps.
+            $marginTop = self::atomicLength($child->style->get('margin-top'));
+            $marginBottom = self::atomicLength($child->style->get('margin-bottom'));
+            $marginLeft = self::atomicLength($child->style->get('margin-left'));
+            $marginRight = self::atomicLength($child->style->get('margin-right'));
+            // CSS Sizing 3 §6.2 — under `box-sizing: border-box` the
+            // declared width/height already includes the inset, so the
+            // content box shrinks; otherwise the inset grows the outer box.
+            $borderBox = self::atomicIsBorderBoxSizing($child->style);
+            $contentWidth = $borderBox ? max(0.0, $width - $horizontalInset) : $width;
+            $outerWidth = $contentWidth + $horizontalInset;
             $heightValue = $child->style->get('height');
-            $height = $heightValue instanceof Length && $heightValue->value > 0.0
-                ? $heightValue->value
-                : $width;
+            // A unitless `0` cascades as Integer, not Length, but is still
+            // an explicit length (the only valid unitless one).
+            $declaredHeight = match (true) {
+                $heightValue instanceof Length => $heightValue->value,
+                $heightValue instanceof \Phpdftk\Css\Value\Integer => (float) $heightValue->value,
+                default => null,
+            };
+            if ($declaredHeight !== null) {
+                // Explicit height (including `0`) is authoritative.
+                $declaredHeight = max(0.0, $declaredHeight);
+                $contentHeight = $borderBox
+                    ? max(0.0, $declaredHeight - $verticalInset)
+                    : $declaredHeight;
+            } else {
+                // Auto height with no measurable content (no shaping font):
+                // square the OUTER box to its width — the historical
+                // contract the shaped path also follows — but never below
+                // the inset, since a border box can't be shorter than its
+                // own border + padding (the CSS2 border-width tests).
+                $contentHeight = max(0.0, max($outerWidth, $verticalInset) - $verticalInset);
+            }
             // CSS Sizing 3 §5.2 — replaced min/max-width / -height clamps
             // (incl. min/max-content transferred through the intrinsic
             // ratio). Without this `max-width: min-content` on a sized
             // <canvas>/<img> is ignored.
-            [$width, $height] = $this->clampAtomicReplaced($child->style, $width, $height);
-            $child->geometry->x = $parent->geometry->x + $currentX;
-            $child->geometry->y = $parent->geometry->y;
-            $child->geometry->width = $width;
-            $child->geometry->height = $height;
-            $currentX += $width;
-            if ($height > $maxHeight) {
-                $maxHeight = $height;
+            [$contentWidth, $contentHeight] = $this->clampAtomicReplaced($child->style, $contentWidth, $contentHeight);
+            $outerWidth = $contentWidth + $horizontalInset;
+            $outerHeight = $contentHeight + $verticalInset;
+            // The item's inline footprint is its margin box; the block-axis
+            // footprint (line-height contribution) is likewise the margin box.
+            $outerAdvance = $marginLeft + $outerWidth + $marginRight;
+            $marginBoxHeight = $marginTop + $outerHeight + $marginBottom;
+            // CSS 2.1 §9.4.2 — wrap to a new line when the current line
+            // already holds content and this box would overflow the IFC
+            // available width. (A single box wider than the line still
+            // gets its own line rather than an infinite loop.)
+            if ($currentX > 0.0
+                && $currentX + $outerAdvance > $this->currentAvailableWidth + 0.01
+            ) {
+                $lineTop += $lineHeight;
+                $currentX = 0.0;
+                $lineHeight = 0.0;
+            }
+            // Offset the content box by the left/top margin + inset so the
+            // border box's top-left edge sits inside the margin box.
+            $child->geometry->x = $parent->geometry->x + $currentX + $marginLeft + $borderLeft + $padLeft;
+            $child->geometry->y = $parent->geometry->y + $lineTop + $marginTop + $borderTop + $padTop;
+            $child->geometry->width = $contentWidth;
+            $child->geometry->height = $contentHeight;
+            $child->geometry->paddingTop = $padTop;
+            $child->geometry->paddingBottom = $padBottom;
+            $child->geometry->paddingLeft = $padLeft;
+            $child->geometry->paddingRight = $padRight;
+            $child->geometry->borderTop = $borderTop;
+            $child->geometry->borderBottom = $borderBottom;
+            $child->geometry->borderLeft = $borderLeft;
+            $child->geometry->borderRight = $borderRight;
+            $child->geometry->marginTop = $marginTop;
+            $child->geometry->marginBottom = $marginBottom;
+            $child->geometry->marginLeft = $marginLeft;
+            $child->geometry->marginRight = $marginRight;
+            $currentX += $outerAdvance;
+            if ($marginBoxHeight > $lineHeight) {
+                $lineHeight = $marginBoxHeight;
+            }
+            if ($lineTop + $lineHeight > $maxHeight) {
+                $maxHeight = $lineTop + $lineHeight;
             }
         }
         return [[], $maxHeight];
@@ -648,6 +799,20 @@ final class InlineLayout
     {
         $align = $this->textAlignKeyword($parent);
         $alignLast = $this->textAlignLastKeyword($parent, $align);
+        // CSS Writing Modes 4 §3 — `text-align` aligns along the INLINE axis.
+        // In a vertical writing mode the inline axis is vertical, so alignment
+        // slack is measured against the container's inline size (its physical
+        // height), not the block-axis `availableWidth` the horizontal model
+        // was handed. (Increment 1 transposes the resulting inline offset onto
+        // the vertical axis downstream in `applyVerticalLineShift`.)
+        $wm = WritingMode::fromStyle($parent->style);
+        // The container's geometry height isn't committed yet during inline
+        // layout, but its cascaded `height` is already px-resolved in style
+        // (like `resolveTextIndent` reads). Use it as the vertical inline size.
+        $parentHeight = $parent->style->get('height');
+        $inlineExtent = $wm->isVertical() && $parentHeight instanceof Length && $parentHeight->value > 0.0
+            ? $parentHeight->value
+            : $availableWidth;
         // CSS Text 3 §7.2: `justify-all` is `justify` for every line
         // including the trailing one. Normalise to `justify` for the
         // body lines and force the last-line alignment to `justify`
@@ -688,7 +853,7 @@ final class InlineLayout
             // alignment slack this means we measure the line's
             // visible content edge, NOT the full fragment tail.
             $used = $this->lineUsedWidth($line);
-            $slack = $availableWidth - $used;
+            $slack = $inlineExtent - $used;
             if ($slack <= 0.0) {
                 $out[] = $line;
                 continue;
@@ -1180,6 +1345,15 @@ final class InlineLayout
             $atomicBorderLeft = self::atomicBorderWidth($box->style, 'left');
             $atomicBorderRight = self::atomicBorderWidth($box->style, 'right');
             $horizontalInset = $atomicPadLeft + $atomicPadRight + $atomicBorderLeft + $atomicBorderRight;
+            // CSS 2.2 §10.8 — an inline-block's margins participate in layout:
+            // horizontal margins add to the inline advance it occupies on the
+            // line; vertical margins are part of its margin box (which
+            // determines its line-height contribution). Previously dropped, so
+            // adjacent inline-blocks touched instead of showing their gaps.
+            $atomicMarginLeft = self::atomicLength($box->style->get('margin-left'));
+            $atomicMarginRight = self::atomicLength($box->style->get('margin-right'));
+            $atomicMarginTop = self::atomicLength($box->style->get('margin-top'));
+            $atomicMarginBottom = self::atomicLength($box->style->get('margin-bottom'));
             $atomicBorderBox = self::atomicIsBorderBoxSizing($box->style);
             if ($declaredWidth > 0.0) {
                 if ($atomicBorderBox) {
@@ -1208,7 +1382,9 @@ final class InlineLayout
                     $shapingCtx->fontSizePt,
                     $shapingCtx->direction,
                     [],
-                    $atomicOuterWidth,
+                    // Advance = margin-box inline size so the line-breaker and
+                    // fitter allocate the item's full horizontal footprint.
+                    $atomicMarginLeft + $atomicOuterWidth + $atomicMarginRight,
                 ),
                 'isWhitespace' => false,
                 'kind' => LineBreakKind::Allowed,
@@ -1228,6 +1404,10 @@ final class InlineLayout
                 'atomicPadRight' => $atomicPadRight,
                 'atomicBorderLeft' => $atomicBorderLeft,
                 'atomicBorderRight' => $atomicBorderRight,
+                'atomicMarginLeft' => $atomicMarginLeft,
+                'atomicMarginRight' => $atomicMarginRight,
+                'atomicMarginTop' => $atomicMarginTop,
+                'atomicMarginBottom' => $atomicMarginBottom,
                 'atomicBorderBox' => $atomicBorderBox,
             ];
             return;

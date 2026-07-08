@@ -102,6 +102,7 @@ final class LengthResolver
             // {@see LengthContext::withFontMetrics}.
             LengthUnit::Ex => $v * $ctx->currentFontSize * $ctx->xHeightRatio,
             LengthUnit::Ch => $v * $ctx->currentFontSize * $ctx->chWidthRatio,
+            LengthUnit::Cap => $v * $ctx->currentFontSize * $ctx->capHeightRatio,
             LengthUnit::Lh, LengthUnit::Rlh => $v * $ctx->currentFontSize * 1.2,
             LengthUnit::Vw, LengthUnit::Svw, LengthUnit::Lvw, LengthUnit::Dvw
                 => $v * ($ctx->viewportWidth / 100.0),

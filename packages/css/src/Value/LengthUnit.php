@@ -25,6 +25,7 @@ enum LengthUnit: string
     case Rem = 'rem';
     case Ex = 'ex';
     case Ch = 'ch';
+    case Cap = 'cap';
     case Lh = 'lh';
     case Rlh = 'rlh';
 

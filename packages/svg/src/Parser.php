@@ -97,6 +97,9 @@ final class Parser
             'polyline' => new Polyline(),
             'polygon' => new Polygon(),
             'g' => new Group(),
+            // SVG 2 §7.5 — a nested `<svg>` establishes a new viewport /
+            // user space. (The root `<svg>` is built as SvgDocument above.)
+            'svg' => new NestedSvg(),
             'path' => new Path(),
             'text' => new Text\TextElement(),
             'tspan' => new Text\Tspan(),

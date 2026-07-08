@@ -39,6 +39,18 @@ final class Shaper
         }
 
         $codepoints = self::decodeUtf8($text);
+        // Unicode Default_Ignorable_Code_Point — zero-width formatting /
+        // control characters (ZWSP, ZWNJ/ZWJ, bidi controls, word joiner,
+        // BOM, variation selectors, …) render as no visible glyph and add
+        // no advance (so they also get no letter-spacing). Drop them before
+        // GID lookup so they don't fall through to a `.notdef` box.
+        $codepoints = array_values(array_filter(
+            $codepoints,
+            static fn(array $cp): bool => !self::isDefaultIgnorable($cp['codepoint']),
+        ));
+        if ($codepoints === []) {
+            return new ShapedRun($font, $context->fontSizePt, $context->direction, [], 0.0);
+        }
         $gids = [];
         foreach ($codepoints as $cp) {
             $gids[] = self::lookupGid($cp['codepoint'], $font);
@@ -99,6 +111,32 @@ final class Shaper
     private static function lookupGid(int $codepoint, FontFaceData $font): int
     {
         return $font->fullUnicodeToGid[$codepoint] ?? 0;
+    }
+
+    /**
+     * Unicode `Default_Ignorable_Code_Point` (DerivedCoreProperties) — the
+     * formatting / control characters that must render as no visible glyph
+     * and zero advance. Excludes U+00AD SOFT HYPHEN (handled by the
+     * line-break / hyphenation logic, which needs to see it).
+     */
+    private static function isDefaultIgnorable(int $cp): bool
+    {
+        return $cp === 0x034F                       // combining grapheme joiner
+            || $cp === 0x061C                       // arabic letter mark
+            || ($cp >= 0x115F && $cp <= 0x1160)     // hangul choseong/jungseong fillers
+            || ($cp >= 0x17B4 && $cp <= 0x17B5)     // khmer inherent vowels
+            || ($cp >= 0x180B && $cp <= 0x180F)     // mongolian free variation selectors + vowel sep
+            || ($cp >= 0x200B && $cp <= 0x200F)     // ZWSP, ZWNJ, ZWJ, LRM, RLM
+            || ($cp >= 0x202A && $cp <= 0x202E)     // bidi embedding / override
+            || ($cp >= 0x2060 && $cp <= 0x206F)     // word joiner, invisible ops, deprecated fmt
+            || $cp === 0x3164                       // hangul filler
+            || ($cp >= 0xFE00 && $cp <= 0xFE0F)     // variation selectors
+            || $cp === 0xFEFF                       // zero width no-break space (BOM)
+            || $cp === 0xFFA0                       // halfwidth hangul filler
+            || ($cp >= 0xFFF0 && $cp <= 0xFFF8)     // reserved
+            || ($cp >= 0x1BCA0 && $cp <= 0x1BCA3)   // shorthand format controls
+            || ($cp >= 0x1D173 && $cp <= 0x1D17A)   // musical symbols beam/slur controls
+            || ($cp >= 0xE0000 && $cp <= 0xE0FFF);  // tags + variation selectors supplement
     }
 
     /**

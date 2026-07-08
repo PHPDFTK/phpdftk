@@ -186,6 +186,20 @@ final class Translator
     /** @var array{w: float, h: float}|null */
     private ?array $effectiveViewport = null;
     private ?SvgDocument $document = null;
+    /**
+     * Stack of nested `<svg>` viewports (viewBox units), innermost last.
+     * Percentage lengths + `currentViewport()` resolve against the top.
+     *
+     * @var list<array{w: float, h: float}>
+     */
+    private array $viewportStack = [];
+    /**
+     * A `<use>`'s width/height override for the nested `<svg>` it
+     * references (SVG 2 §5.6.1), consumed by the next `paintNestedSvg`.
+     *
+     * @var array{w: float, h: float}|null
+     */
+    private ?array $pendingUseViewport = null;
     private ?GradientPainter $gradientPainter = null;
     private ?FontResolver $fontResolver = null;
     private bool $compensateTextFlip = false;
@@ -197,6 +211,125 @@ final class Translator
                 $this->paintElement($child, $stream);
             }
         }
+    }
+
+    /**
+     * SVG 2 §7.5 — a nested `<svg>` establishes a new viewport from its
+     * `x` / `y` / `width` / `height`, clips overflow to it, and (when it
+     * carries a `viewBox`) sets up a new user coordinate system via the
+     * viewBox-to-viewport scale + `preserveAspectRatio` alignment.
+     */
+    private function paintNestedSvg(\Phpdftk\Svg\NestedSvg $svg, ContentStream $stream): void
+    {
+        // A `<use>` that references this svg overrides its viewport size.
+        $override = $this->pendingUseViewport;
+        $this->pendingUseViewport = null;
+        $vp = $this->currentViewport();
+        $x = $this->resolveViewportLength($svg->getAttribute('x'), $vp['w'], 0.0);
+        $y = $this->resolveViewportLength($svg->getAttribute('y'), $vp['h'], 0.0);
+        // Width / height: a `<use>` override wins; otherwise the svg's own
+        // attributes, defaulting to 100% of the enclosing viewport.
+        $w = $override['w'] ?? $this->resolveViewportLength($svg->widthAttribute(), $vp['w'], $vp['w']);
+        $h = $override['h'] ?? $this->resolveViewportLength($svg->heightAttribute(), $vp['h'], $vp['h']);
+        if ($w <= 0.0 || $h <= 0.0) {
+            return; // A zero-sized viewport disables rendering (SVG 2 §7.5).
+        }
+
+        $stream->saveGraphicsState();
+        // Position the viewport, then clip overflow to it (the default
+        // `overflow: hidden` on a nested `<svg>`).
+        $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $x, $y);
+        $stream->rectangle(0.0, 0.0, $w, $h);
+        $stream->clip();
+        $stream->endPath();
+
+        $childViewport = ['w' => $w, 'h' => $h];
+        $viewBox = $svg->viewBox();
+        if ($viewBox !== null && $viewBox[2] > 0.0 && $viewBox[3] > 0.0) {
+            [$scaleX, $scaleY, $offsetX, $offsetY]
+                = $this->nestedViewBoxTransform($svg, $viewBox[2], $viewBox[3], $w, $h);
+            $stream->concatMatrix(
+                $scaleX,
+                0.0,
+                0.0,
+                $scaleY,
+                $offsetX - $viewBox[0] * $scaleX,
+                $offsetY - $viewBox[1] * $scaleY,
+            );
+            $childViewport = ['w' => $viewBox[2], 'h' => $viewBox[3]];
+        }
+
+        $this->viewportStack[] = $childViewport;
+        $this->paintChildren($svg, $stream);
+        array_pop($this->viewportStack);
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Resolve a nested-viewport length attribute: a `%` resolves against
+     * the given viewport dimension, a plain number is taken as-is, and an
+     * absent/empty value falls back to `$default`.
+     */
+    private function resolveViewportLength(?string $raw, float $viewport, float $default): float
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+        if (preg_match('/^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*%\s*$/', $raw, $m) === 1) {
+            return ((float) $m[1]) / 100.0 * $viewport;
+        }
+        $plain = self::parseLengthPrefixForViewport($raw);
+        return $plain ?? $default;
+    }
+
+    /**
+     * Nested viewBox-to-viewport mapping in SVG user space (y-down — the
+     * outer document transform applies the PDF flip). Returns
+     * `[scaleX, scaleY, offsetX, offsetY]`. Mirrors the root
+     * `applyPreserveAspectRatio` but without the PDF y-axis inversion,
+     * since a nested `<svg>` composes inside the already-flipped space.
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    private function nestedViewBoxTransform(
+        \Phpdftk\Svg\NestedSvg $svg,
+        float $srcW,
+        float $srcH,
+        float $dstW,
+        float $dstH,
+    ): array {
+        $sx = $srcW > 0.0 ? $dstW / $srcW : 1.0;
+        $sy = $srcH > 0.0 ? $dstH / $srcH : 1.0;
+        $par = strtolower(trim($svg->getAttribute('preserveAspectRatio') ?? ''));
+        if ($par === 'none') {
+            return [$sx, $sy, 0.0, 0.0];
+        }
+        $tokens = preg_split('/\s+/', $par) ?: [];
+        $align = $tokens[0] ?? '';
+        $slice = ($tokens[1] ?? 'meet') === 'slice';
+        $scale = $slice ? max($sx, $sy) : min($sx, $sy);
+        [$xRatio, $yRatio] = self::nestedAlignRatios($align);
+        return [
+            $scale,
+            $scale,
+            $xRatio * ($dstW - $scale * $srcW),
+            $yRatio * ($dstH - $scale * $srcH),
+        ];
+    }
+
+    /**
+     * `preserveAspectRatio` align keyword → `[xRatio, yRatio]` leftover
+     * fractions, in SVG y-down space (`yMin` → 0, `yMid` → 0.5,
+     * `yMax` → 1). Defaults to `xMidYMid`.
+     *
+     * @return array{0: float, 1: float}
+     */
+    private static function nestedAlignRatios(string $align): array
+    {
+        $align = $align === '' ? 'xmidymid' : $align;
+        $xRatio = str_contains($align, 'xmax') ? 1.0 : (str_contains($align, 'xmin') ? 0.0 : 0.5);
+        $yRatio = str_contains($align, 'ymax') ? 1.0 : (str_contains($align, 'ymin') ? 0.0 : 0.5);
+        return [$xRatio, $yRatio];
     }
 
     private function paintElement(Element $element, ContentStream $stream): void
@@ -611,6 +744,10 @@ final class Translator
      */
     private function currentViewport(): array
     {
+        // Innermost nested `<svg>` viewport wins for percentage resolution.
+        if ($this->viewportStack !== []) {
+            return $this->viewportStack[count($this->viewportStack) - 1];
+        }
         if ($this->document === null) {
             return ['w' => 0.0, 'h' => 0.0];
         }
@@ -799,6 +936,7 @@ final class Translator
             $element instanceof Polygon => $this->paintPolygon($element, $stream),
             $element instanceof Path => $this->paintPath($element, $stream),
             $element instanceof TextElement => $this->paintTextElement($element, $stream),
+            $element instanceof \Phpdftk\Svg\NestedSvg => $this->paintNestedSvg($element, $stream),
             $element instanceof Use_ => $this->paintUse($element, $stream),
             $element instanceof SvgImage => $this->paintImage($element, $stream),
             // `<defs>` and `<symbol>` are referenceable containers: they
@@ -968,13 +1106,26 @@ final class Translator
         // 3R, so 3Q honours the translation only.
         $x = $use->x();
         $y = $use->y();
-        if ($x === 0.0 && $y === 0.0) {
+        // SVG 2 §5.6.1 — when the referent is a nested `<svg>`, the use's
+        // width/height (if both set) become that svg's viewport.
+        $useW = $use->width();
+        $useH = $use->height();
+        $override = ($referent instanceof \Phpdftk\Svg\NestedSvg
+            && $useW !== null && $useH !== null && $useW > 0.0 && $useH > 0.0)
+            ? ['w' => $useW, 'h' => $useH]
+            : null;
+        if ($x === 0.0 && $y === 0.0 && $override === null) {
             $this->paintUseReferent($referent, $stream);
             return;
         }
         $stream->saveGraphicsState();
-        $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $x, $y);
+        if ($x !== 0.0 || $y !== 0.0) {
+            $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $x, $y);
+        }
+        $prevOverride = $this->pendingUseViewport;
+        $this->pendingUseViewport = $override;
         $this->paintUseReferent($referent, $stream);
+        $this->pendingUseViewport = $prevOverride;
         $stream->restoreGraphicsState();
     }
 

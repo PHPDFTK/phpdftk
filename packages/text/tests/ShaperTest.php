@@ -73,6 +73,30 @@ final class ShaperTest extends TestCase
         self::assertSame(0.0, $run->totalAdvance);
     }
 
+    public function testDefaultIgnorableCodePointsAreDropped(): void
+    {
+        // 'A' → GID 5; the font maps ZWSP (U+200B) to a real box glyph,
+        // but as a Default_Ignorable_Code_Point it must render as no glyph
+        // (zero advance), so 'A\u{200B}B\u{FEFF}' shapes to just A + B.
+        $font = $this->makeFont(
+            unicodeToGid: [0x41 => 5, 0x42 => 6, 0x200B => 9, 0xFEFF => 9],
+            glyphWidths: [5 => 500, 6 => 600, 9 => 1000],
+        );
+        $run = $this->shaper->shapeRun("A\u{200B}B\u{FEFF}", new ShapingContext($font, 12.0));
+        self::assertCount(2, $run->glyphs, 'ZWSP + BOM dropped, only A + B remain');
+        self::assertSame(5, $run->glyphs[0]->glyphId);
+        self::assertSame(6, $run->glyphs[1]->glyphId);
+        self::assertEqualsWithDelta(13.2, $run->totalAdvance, 0.001);
+    }
+
+    public function testAllDefaultIgnorableTextProducesEmptyRun(): void
+    {
+        $font = $this->makeFont(unicodeToGid: [0x200B => 9], glyphWidths: [9 => 1000]);
+        $run = $this->shaper->shapeRun("\u{200B}\u{200C}\u{200D}\u{FEFF}", new ShapingContext($font, 12.0));
+        self::assertSame([], $run->glyphs);
+        self::assertEqualsWithDelta(0.0, $run->totalAdvance, 0.001);
+    }
+
     public function testSimpleAsciiShape(): void
     {
         // 'A' (0x41) → GID 5 (width 500), 'B' (0x42) → GID 6 (width 600)

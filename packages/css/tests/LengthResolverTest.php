@@ -21,6 +21,20 @@ final class LengthResolverTest extends TestCase
         self::assertEqualsWithDelta(16.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Pc), $ctx), 0.001);
     }
 
+    public function testCapUnitResolvesAgainstCapHeightRatio(): void
+    {
+        // CSS Values 4 §6.1.1 — `cap` is the cap-height of the element's
+        // first available font. With a font's real metrics threaded in via
+        // withFontMetrics, `1cap` = font-size × (capHeight / upem). Ahem's
+        // cap-height is 0.8em, so `1cap` at 50px = 40px (not the 0.7 default).
+        $ctx = (new LengthContext(currentFontSize: 50.0))->withFontMetrics(1.0, 1.0, 0.8);
+        self::assertEqualsWithDelta(40.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Cap), $ctx), 0.001);
+
+        // Falls back to the 0.7em approximation when no font metrics are set.
+        $bare = new LengthContext(currentFontSize: 100.0);
+        self::assertEqualsWithDelta(70.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Cap), $bare), 0.001);
+    }
+
     public function testToPxClampsValuesAboveTheLayoutCeiling(): void
     {
         // Adversarial CSS: `padding: 2880804336vmax …` (one of the
