@@ -45,6 +45,13 @@ final readonly class LengthContext
          */
         public float $chWidthRatio = 0.5,
         /**
+         * Cap-height as a fraction of the em-square. CSS Values 4 §6.1.1 —
+         * `cap` is the cap-height of the element's first available font.
+         * Without font metrics we approximate with `0.7em`; layout code with
+         * the resolved font passes `font.capHeight / font.unitsPerEm`.
+         */
+        public float $capHeightRatio = 0.7,
+        /**
          * Inline / block size of the nearest size-query container
          * (`container-type: size` for both; `inline-size` populates
          * only the inline axis). CSS Containment 3 §6 — `cqw` / `cqi`
@@ -68,6 +75,7 @@ final readonly class LengthContext
             $this->percentageBasis,
             $this->xHeightRatio,
             $this->chWidthRatio,
+            $this->capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
         );
@@ -84,12 +92,13 @@ final readonly class LengthContext
             $px,
             $this->xHeightRatio,
             $this->chWidthRatio,
+            $this->capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
         );
     }
 
-    public function withFontMetrics(float $xHeightRatio, float $chWidthRatio): self
+    public function withFontMetrics(float $xHeightRatio, float $chWidthRatio, float $capHeightRatio = 0.7): self
     {
         return new self(
             $this->parentFontSize,
@@ -100,6 +109,7 @@ final readonly class LengthContext
             $this->percentageBasis,
             $xHeightRatio,
             $chWidthRatio,
+            $capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
         );
@@ -116,6 +126,7 @@ final readonly class LengthContext
             $this->percentageBasis,
             $this->xHeightRatio,
             $this->chWidthRatio,
+            $this->capHeightRatio,
             $inlineSize,
             $blockSize,
         );

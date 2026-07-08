@@ -13,6 +13,8 @@ use Phpdftk\HtmlToPdf\Box\BlockBox;
 use Phpdftk\HtmlToPdf\Box\Box;
 use Phpdftk\HtmlToPdf\Box\BoxGenerator;
 use Phpdftk\HtmlToPdf\Layout\BlockLayout;
+use Phpdftk\FontParser\OpenTypeParser;
+use Phpdftk\HtmlToPdf\Layout\FontResolver;
 use Phpdftk\HtmlToPdf\Layout\LayoutContext;
 use Phpdftk\Html\Parser as HtmlParser;
 use PHPUnit\Framework\TestCase;
@@ -48,6 +50,216 @@ final class BlockLayoutTest extends TestCase
         $box = $this->generator->generate($doc, [$sheet]);
         self::assertNotNull($box);
         return $box;
+    }
+
+    public function testAbsposAutoMarginTopAbsorbsVerticalSlack(): void
+    {
+        // CSS 2.1 §10.6.5 — over-constrained abs-pos (top, bottom, height
+        // all set) with margin-top:auto and a fixed margin-bottom: the auto
+        // margin-top absorbs the remaining slack.
+        // slack = 300 - 50(top) - 50(bottom) - 100(height) = 100;
+        // margin-top = slack - margin-bottom(50) = 50; box top = 50+50 = 100.
+        $box = $this->buildTree(
+            '<html><body><div id="cb"><div id="ap"></div></div></body></html>',
+            'html, body { display: block; }
+             #cb { position: relative; height: 300px; width: 300px; }
+             #ap { position: absolute; top: 50px; bottom: 50px; height: 100px;
+                   margin-top: auto; margin-bottom: 50px; width: 100%; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cb = $this->findById($box, 'cb');
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($cb);
+        self::assertNotNull($ap);
+        // Box top sits 100px below the containing block's content top.
+        self::assertEqualsWithDelta($cb->geometry->y + 100.0, $ap->geometry->y, 0.5);
+    }
+
+    public function testTableOwnMinWidthShrinkWraps(): void
+    {
+        // An auto table whose only cell is empty still shrink-wraps to the
+        // table's own min-width instead of filling the container.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; min-width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+    }
+
+    public function testCellMinWidthFloorsItsColumn(): void
+    {
+        // A cell's own min-width floors its column contribution, so an
+        // empty cell with min-width shrink-wraps the auto table.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; min-width: 96px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($t);
+        self::assertNotNull($cell);
+        self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
+    public function testTableColumnGroupWidthShrinkWrapsAutoTable(): void
+    {
+        // A `display: table-column-group` (on a div, not `<colgroup>`) with
+        // an explicit width sizes its column, so an auto table shrink-wraps
+        // to it — the tag-based `<col>` width collector can't see this.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="g"></div>'
+            . '<div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #g { display: table-column-group; width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+    }
+
+    public function testTableColumnMinWidthShrinkWrapsAutoTable(): void
+    {
+        // CSS Tables 3 §4.4 — a `display: table-column` (here on a div, not
+        // a `<col>`) with min-width floors its column, so an auto-width
+        // table with an otherwise-empty cell shrink-wraps to that width.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c"></div>'
+            . '<div id="r"><div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #c { display: table-column; min-width: 96px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($t);
+        self::assertNotNull($cell);
+        // Table (and its single cell) size to the 96px column min-width,
+        // not the full container width.
+        self::assertEqualsWithDelta(96.0, $t->geometry->width, 1.0);
+        self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
+    public function testChUnitResolvesAgainstBoxFont(): void
+    {
+        // CSS Values 4 §6.1 — `1ch` is the advance of the '0' glyph in the
+        // box's own font, not the global default-font ratio. NotoSans '0'
+        // advance / upem = 0.572, so `width: 4ch` at 50px = 114.4px, not the
+        // 0.5-fallback 100px.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div id="d">x</div></body></html>',
+            'html, body { display: block; } #d { display: block; font-family: noto; font-size: 50px; width: 4ch; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $d = $this->findById($box, 'd');
+        self::assertNotNull($d);
+        self::assertEqualsWithDelta(114.4, $d->geometry->width, 1.0);
+    }
+
+    public function testIntrinsicFloatSizingUsesResolvedFont(): void
+    {
+        // An auto-width (shrink-to-fit) float sizes to its text content. The
+        // intrinsic measurement must resolve the box's own font-family, not
+        // fall back to the coarse ~6px/char heuristic — otherwise the float's
+        // width diverges from what actually paints.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $html = '<html><body><div id="f">MMMMMM</div></body></html>';
+        $css = 'html, body { display: block; } #f { float: left; font-family: noto; font-size: 40px; }';
+
+        $withFont = $this->buildTree($html, $css);
+        $this->layout->layout($withFont, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $resolvedWidth = $this->findById($withFont, 'f')?->geometry->width ?? 0.0;
+
+        // No resolver → the 6px/char heuristic (~36px for "MMMMMM").
+        $noFont = $this->buildTree($html, $css);
+        $this->layout->layout($noFont, $this->defaultCtx);
+        $heuristicWidth = $this->findById($noFont, 'f')?->geometry->width ?? 0.0;
+
+        // NotoSans 'M' at 40px is far wider than 6px, so the resolved-font
+        // float is substantially wider than the heuristic float.
+        self::assertGreaterThan($heuristicWidth * 2.0, $resolvedWidth);
+    }
+
+    public function testOutOfFlowFirstChildDoesNotCollapseParentMargin(): void
+    {
+        // CSS 2.1 §8.3.1 — an out-of-flow (abs-pos) child's margins never
+        // collapse. A parent whose FIRST child is absolutely positioned
+        // must not collapse that child's margin-top through itself (doing
+        // so doubled the parent's negative margin and shoved the in-flow
+        // sibling off-page — the `top-*` positioning reftests).
+        $box = $this->buildTree(
+            '<html><body><div id="p"><div id="ap"></div><div id="c"></div></div></body></html>',
+            'html, body { display: block; }
+             div { position: relative; }
+             #p { margin-top: -96px; }
+             #ap { position: absolute; margin-top: 96px; height: 96px; width: 100%; }
+             #c { border-bottom: 96px solid black; top: 96px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        // #p sits at margin-top -96; #c (top: 96px relative) shifts back to
+        // y=0. If the abs-pos child's margin had collapsed through #p, #c
+        // would land near y=-96 (off-page).
+        self::assertEqualsWithDelta(0.0, $c->geometry->y, 0.5);
+    }
+
+    public function testAbsposChildOfInlineBlockLaysOutAgainstIt(): void
+    {
+        // CSS 2.1 §10.1 — a `position: relative` inline-block is the
+        // containing block for its abs-pos descendants, which must lay out
+        // (and paint) even though the inline-block isn't blockified. An
+        // `inset: 0` child stretches to fill the inline-block's 100×100
+        // padding box.
+        $box = $this->buildTree(
+            '<html><body><span id="ib"><span id="ap"></span></span></body></html>',
+            'html, body { display: block; }
+             #ib { display: inline-block; position: relative; width: 100px; height: 100px; }
+             #ap { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        // Stretched to the container's padding box (0,0)–(100,100).
+        self::assertEqualsWithDelta(0.0, $ap->geometry->x, 0.5);
+        self::assertEqualsWithDelta(0.0, $ap->geometry->y, 0.5);
+        self::assertEqualsWithDelta(100.0, $ap->geometry->width, 0.5);
+        self::assertEqualsWithDelta(100.0, $ap->geometry->height, 0.5);
     }
 
     public function testPageBreakBeforeAdvancesToNextPage(): void
@@ -1358,7 +1570,7 @@ final class BlockLayoutTest extends TestCase
         // With first row's first cell rowspan="2", the second row's
         // ONLY declared cell sits in column 1 (not column 0).
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<tr><td rowspan="2" style="height: 20px">x</td>'
                 . '<td style="height: 30px">a</td></tr>'
                 . '<tr><td class="r2c2" style="height: 30px">b</td></tr>'
@@ -1395,7 +1607,7 @@ final class BlockLayoutTest extends TestCase
         // Regression — tables without rowspan still position cells
         // sequentially in document order, one per column.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<tr><td class="a">a</td><td class="b">b</td></tr>'
                 . '</table></body></html>',
             'td { padding: 0 }',
@@ -1540,7 +1752,7 @@ final class BlockLayoutTest extends TestCase
         // (Equal coincidence here; we verify the explicit width
         // controls the FIRST column.)
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col width="200">'
                 . '<tr><td class="a">a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
@@ -1563,7 +1775,7 @@ final class BlockLayoutTest extends TestCase
     {
         // Explicit 100 + 100 → other column gets 600 - 200 = 400.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col width="100">'
                 . '<col width="100">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
@@ -1586,7 +1798,7 @@ final class BlockLayoutTest extends TestCase
     {
         // `<col span="2" width="150">` applies 150 to columns 0 and 1.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col span="2" width="150">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
@@ -1609,7 +1821,7 @@ final class BlockLayoutTest extends TestCase
         // `<colgroup>` wraps two `<col>` declarations — both should
         // apply.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<colgroup><col width="80"><col width="120"></colgroup>'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
@@ -1632,7 +1844,7 @@ final class BlockLayoutTest extends TestCase
         // Regression: without any `<col>`, each column gets an equal
         // share of the row width.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
             'td { padding: 0 }',
@@ -1653,7 +1865,7 @@ final class BlockLayoutTest extends TestCase
     {
         // Non-numeric `width` attribute should leave the column as auto.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col width="auto">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
@@ -1674,7 +1886,7 @@ final class BlockLayoutTest extends TestCase
         // Percentage widths are Phase 2; verified ignored for now so
         // the % col falls back to the auto share.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col width="50%">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
                 . '</table></body></html>',
@@ -1695,7 +1907,7 @@ final class BlockLayoutTest extends TestCase
         // Two cols with width 400 each on a 600-wide table → explicit
         // sum 800 > 600. Third (auto) column gets 0.
         $box = $this->buildTreeWithUa(
-            '<html><body><table>'
+            '<html><body><table style="width: 600px">'
                 . '<col width="400">'
                 . '<col width="400">'
                 . '<tr><td>a</td><td>b</td><td>c</td></tr>'
@@ -2156,6 +2368,102 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(50.0, $c->geometry->y);
     }
 
+    public function testVerticalLrTransposesInlineOffsetToVerticalAxis(): void
+    {
+        // CSS Writing Modes 4 §3 (Phase B) — a vertical-lr inline formatting
+        // context transposes the inline offset (here `text-indent: 40px`) from
+        // the horizontal axis onto the vertical axis (LineBox.y, which the
+        // painter reads as the column's top), and places the single-glyph column
+        // at the block-start (fragment.x = 0). Before the transpose the indent
+        // stayed on fragment.x, painting the glyph rightward instead of down.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div class="v" style="writing-mode: vertical-lr; '
+                . 'text-indent: 40px; font-family: noto; font-size: 20px; '
+                . 'width: 200px; height: 200px">A</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $div = $this->find($box, 'div.v');
+        self::assertNotNull($div);
+        self::assertNotEmpty($div->lineBoxes);
+        $line = $div->lineBoxes[0];
+        // Inline offset (>= the 40px text-indent) transposed onto the vertical axis.
+        self::assertGreaterThanOrEqual(40.0, $line->y);
+        // The single-glyph column sits at the block-start (left) edge for vertical-lr.
+        self::assertSame(0.0, $line->fragments[0]->x);
+    }
+
+    public function testVerticalTextAlignCentersAgainstInlineHeight(): void
+    {
+        // CSS Writing Modes 4 §3 — `text-align` aligns along the INLINE axis,
+        // which is vertical for vertical-lr, so `center` centres the glyph
+        // against the container's HEIGHT (inline size), not its width. A glyph
+        // in a 100px-wide × 300px-tall container centres near line.y ≈ 143
+        // (against 300) — far past the ≈43 a (wrong) width-based centre gives.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div class="v" style="writing-mode: vertical-lr; '
+                . 'text-align: center; font-family: noto; font-size: 20px; '
+                . 'width: 100px; height: 300px">A</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $div = $this->find($box, 'div.v');
+        self::assertNotNull($div);
+        self::assertNotEmpty($div->lineBoxes);
+        // Centred against height (300) → > 100; a width-based centre (100) is ~43.
+        self::assertGreaterThan(100.0, $div->lineBoxes[0]->y);
+    }
+
+    public function testInlineAbsposStaticXFollowsPrecedingContent(): void
+    {
+        // CSS 2.1 §9.4.2 — an inline-level abspos with auto left/right takes
+        // its static INLINE position from the end of the preceding inline
+        // content, not the container's inline-start. With "AAAA" (4 glyphs)
+        // preceding it, the abspos starts well past x=0, not at the CB edge.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div style="position: relative; font-family: noto; '
+                . 'font-size: 40px; width: 600px; height: 200px">AAAA'
+                . '<span class="abs" style="position: absolute; top: 0; width: 50px; height: 30px">x</span>'
+                . '</div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $abs = $this->find($box, 'span.abs');
+        self::assertNotNull($abs);
+        // Static x sits after "AAAA" (4 × ~0.68em at 40px ≈ 110px), not 0.
+        self::assertGreaterThan(50.0, $abs->geometry->x);
+    }
+
     public function testAbsolutePositionsBoxAtTopLeftOffsets(): void
     {
         // `position: absolute; top: 50px; left: 20px` puts the box at
@@ -2541,6 +2849,314 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($child);
         // body inherits definite from root → 10% of 800 = 80.
         self::assertSame(80.0, $child->geometry->y);
+    }
+
+    // ------------------------------------------------------------
+    // CSS 2.1 §9.4.3 — `position: relative` on INLINE-LEVEL atomic
+    // boxes (replaced `<img>`, `display: inline-block`). InlineLayout
+    // commits the atomic at its static flow position; the relative
+    // post-pass in `layoutInlineChildren` applies the offset.
+    // ------------------------------------------------------------
+
+    /**
+     * Negative: a `display: inline-block` atomic with no positioning
+     * must stay at its static flow position.
+     */
+    public function testStaticInlineBlockAtomicNotShifted(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><div id="ib" style="display: inline-block; width: 30px; height: 30px"></div></body></html>',
+            'html, body { display: block; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ib = $this->findById($box, 'ib');
+        self::assertNotNull($ib);
+        $parent = $this->find($box, 'body');
+        self::assertNotNull($parent);
+        // Static: first atomic sits at the inline container's content x.
+        self::assertSame($parent->geometry->x, $ib->geometry->x, 'static inline-block keeps flow x');
+    }
+
+    /**
+     * Negative: `position: relative` with all-`auto` offsets is a no-op
+     * (mirrors {@see testRelativeWithNoOffsetsIsNoOp} for blocks).
+     */
+    public function testRelativeInlineBlockWithAutoOffsetsNotShifted(): void
+    {
+        $staticX = $this->inlineAtomicX('display: inline-block; width: 30px; height: 30px');
+        $relX = $this->inlineAtomicX('display: inline-block; width: 30px; height: 30px; position: relative');
+        self::assertSame($staticX, $relX, 'auto offsets do not shift the atomic');
+    }
+
+    /**
+     * Positive: `top` / `left` shift an inline-block atomic (and its
+     * subtree) by the resolved offset.
+     */
+    public function testRelativeInlineBlockTopLeftShifts(): void
+    {
+        [$sx, $sy] = $this->inlineAtomicXY('display: inline-block; width: 30px; height: 30px');
+        [$rx, $ry] = $this->inlineAtomicXY(
+            'display: inline-block; width: 30px; height: 30px; position: relative; top: 10px; left: 20px',
+        );
+        self::assertSame($sx + 20.0, $rx, 'left: 20px shifts atomic right');
+        self::assertSame($sy + 10.0, $ry, 'top: 10px shifts atomic down');
+    }
+
+    /**
+     * Positive (negative-direction edge): `right` / `bottom` shift the
+     * atomic the opposite way.
+     */
+    public function testRelativeInlineBlockRightBottomShiftsNegatively(): void
+    {
+        [$sx, $sy] = $this->inlineAtomicXY('display: inline-block; width: 30px; height: 30px');
+        [$rx, $ry] = $this->inlineAtomicXY(
+            'display: inline-block; width: 30px; height: 30px; position: relative; right: 15px; bottom: 8px',
+        );
+        self::assertSame($sx - 15.0, $rx, 'right: 15px shifts atomic left');
+        self::assertSame($sy - 8.0, $ry, 'bottom: 8px shifts atomic up');
+    }
+
+    /**
+     * Negative: shifting one relatively-positioned atomic must not move
+     * a static sibling atomic on the same line.
+     */
+    public function testRelativeInlineBlockDoesNotShiftStaticSibling(): void
+    {
+        $box = $this->buildTree(
+            '<html><body>'
+                . '<div id="a" style="display: inline-block; width: 30px; height: 30px; position: relative; left: 100px"></div>'
+                . '<div id="b" style="display: inline-block; width: 30px; height: 30px"></div>'
+                . '</body></html>',
+            'html, body { display: block; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $a = $this->findById($box, 'a');
+        $b = $this->findById($box, 'b');
+        self::assertNotNull($a);
+        self::assertNotNull($b);
+        $parent = $this->find($box, 'body');
+        self::assertNotNull($parent);
+        // Sibling b keeps its static x (just after a's static box at 30).
+        self::assertSame($parent->geometry->x + 30.0, $b->geometry->x, 'static sibling unaffected by a relative shift');
+        // a moved right by 100 from its own static origin.
+        self::assertSame($parent->geometry->x + 100.0, $a->geometry->x, 'relative atomic shifted by left');
+    }
+
+    private function inlineAtomicX(string $style): float
+    {
+        return $this->inlineAtomicXY($style)[0];
+    }
+
+    /**
+     * @return array{0: float, 1: float}
+     */
+    private function inlineAtomicXY(string $style): array
+    {
+        $box = $this->buildTree(
+            '<html><body><div id="ib" style="' . $style . '"></div></body></html>',
+            'html, body { display: block; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ib = $this->findById($box, 'ib');
+        self::assertNotNull($ib);
+        return [$ib->geometry->x, $ib->geometry->y];
+    }
+
+    // ------------------------------------------------------------
+    // CSS2 §10.8 / CSS Inline 3 — line-box height honours the used
+    // `line-height` (no hardcoded 1.2 floor) and an inline-level
+    // abspos box takes its static position from the line it sits on.
+    // ------------------------------------------------------------
+
+    private function mongolianContext(): LayoutContext
+    {
+        $path = __DIR__ . '/../../../../tests/fixtures/fonts/NotoSansMongolian-Regular.otf';
+        if (!is_file($path)) {
+            self::markTestSkipped('Mongolian fixture font missing');
+        }
+        $font = (new \Phpdftk\FontParser\OpenTypeParser($path))->parse();
+        return new LayoutContext(
+            containingBlockWidth: 600.0,
+            containingBlockHeight: 800.0,
+            originX: 0.0,
+            originY: 0.0,
+            lengthContext: new \Phpdftk\Css\Cascade\LengthContext(),
+            defaultFont: $font,
+        );
+    }
+
+    private function firstLineHeight(string $pStyle): float
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="' . $pStyle . '">' . "\u{1820}" . '</p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        self::assertNotEmpty($p->lineBoxes, 'paragraph should produce a line box');
+        return $p->lineBoxes[0]->height;
+    }
+
+    /**
+     * Positive: an explicit `line-height: 1` (e.g. `font: 80px/1`) must
+     * NOT be inflated to 1.2× — the old hardcoded `max(lh, fontSize ×
+     * 1.2)` forced an 80px line to 96.
+     */
+    public function testExplicitLineHeightOneNotInflated(): void
+    {
+        self::assertEqualsWithDelta(80.0, $this->firstLineHeight('font-size: 80px; line-height: 1'), 0.01);
+    }
+
+    /**
+     * Negative: `line-height: normal` keeps the 1.2 default leading.
+     */
+    public function testNormalLineHeightUsesDefaultLeading(): void
+    {
+        self::assertEqualsWithDelta(96.0, $this->firstLineHeight('font-size: 80px; line-height: normal'), 0.01);
+    }
+
+    /**
+     * Positive: a `<number>` line-height scales per font size, so a
+     * larger inline child grows the line box (`max(parentLH, childFont ×
+     * number)`).
+     */
+    public function testNumberLineHeightGrowsWithLargerChildFont(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 16px; line-height: 1">'
+            . "\u{1820}" . '<span style="font-size: 40px">' . "\u{1820}" . '</span></p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        // line-height:1 × the 40px child = 40 (beats the 16px parent line).
+        self::assertEqualsWithDelta(40.0, $p->lineBoxes[0]->height, 0.01);
+    }
+
+    /**
+     * Negative (codex-flagged edge): an absolute `<length>` line-height
+     * does NOT scale with a larger child font — the authored length
+     * applies to every inline box on the line.
+     */
+    public function testFixedLengthLineHeightNotScaledByLargerChild(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 16px; line-height: 30px">'
+            . "\u{1820}" . '<span style="font-size: 30px">' . "\u{1820}" . '</span></p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        // Fixed 30px line-height — NOT 30 × (30/16) = 56.25.
+        self::assertEqualsWithDelta(30.0, $p->lineBoxes[0]->height, 0.01);
+    }
+
+    /**
+     * Positive: an inline-level `position: absolute` box with `top:
+     * auto` takes its static Y from the line of the preceding inline
+     * content — ON that line, not below the whole inline block.
+     */
+    public function testInlineAbsposStaticPositionSitsOnPrecedingLine(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><div id="cb" style="position: relative; width: 600px; font-size: 40px">'
+            . "\u{1820}\u{1820}"
+            . '<span id="ap" style="position: absolute; left: 5px">' . "\u{1820}" . '</span>'
+            . '</div></body></html>',
+            'html, body { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $cb = $this->findById($box, 'cb');
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($cb);
+        self::assertNotNull($ap);
+        // The abspos sits ON the single line of preceding text (its top),
+        // i.e. at the containing block's content top — NOT one line-height
+        // below it.
+        self::assertEqualsWithDelta($cb->geometry->y, $ap->geometry->y, 0.5, 'inline abspos sits on the content line');
+    }
+
+    // ------------------------------------------------------------
+    // CSS Writing Modes 4 §7.1 — abspos in a vertical-mode CB runs the
+    // §10.3.7 inline algorithm on physical Y and the §10.6.4 block
+    // algorithm on physical X (axes swapped vs horizontal-tb).
+    // ------------------------------------------------------------
+
+    /**
+     * @return array{0: float, 1: float} the abspos span's [x, y]
+     */
+    private function verticalAbsposGeo(string $cbExtraStyle, string $spanStyle): array
+    {
+        $box = $this->buildTree(
+            '<html><body><div id="cb" style="position: relative; width: 320px; height: 320px; '
+            . 'writing-mode: vertical-lr;' . $cbExtraStyle . '">'
+            . '<span id="ap" style="position: absolute;' . $spanStyle . '">x</span>'
+            . '</div></body></html>',
+            'html, body { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        return [$ap->geometry->x, $ap->geometry->y];
+    }
+
+    /**
+     * Block axis (physical X) over-constrained with `auto` margins →
+     * §10.6.4 EVEN split. left:40 right:120 width:80 → slack 80 → x = 60.
+     */
+    public function testVerticalCbBlockAxisEvenSplit(): void
+    {
+        [$x] = $this->verticalAbsposGeo(
+            '',
+            'left: 40px; right: 120px; width: 80px; height: 80px; top: auto; bottom: auto; margin: auto',
+        );
+        // 40 + (320 - 40 - 120 - 80)/2 = 40 + 40 = 80.
+        self::assertEqualsWithDelta(80.0, $x, 0.01);
+    }
+
+    /**
+     * Block axis over-constrained with NON-auto margins → honour the
+     * start inset (`left`), ignore `right`. x = 40.
+     */
+    public function testVerticalCbBlockAxisOverconstrainedHonoursStart(): void
+    {
+        [$x] = $this->verticalAbsposGeo(
+            '',
+            'left: 40px; right: 120px; width: 80px; height: 80px; top: auto; bottom: auto',
+        );
+        self::assertEqualsWithDelta(40.0, $x, 0.01);
+    }
+
+    /**
+     * Inline axis (physical Y) over-constrained with `auto` margins →
+     * §10.3.7 even split (positive slack). top:40 bottom:120 height:80 →
+     * slack 80 → y = 80.
+     */
+    public function testVerticalCbInlineAxisEvenSplit(): void
+    {
+        [, $y] = $this->verticalAbsposGeo(
+            '',
+            'top: 40px; bottom: 120px; height: 80px; width: 80px; left: auto; right: auto; margin: auto',
+        );
+        self::assertEqualsWithDelta(80.0, $y, 0.01);
+    }
+
+    /**
+     * Inline axis over-constrained, NEGATIVE slack, `direction: rtl` →
+     * the slack lands on margin-top (inline-start is `bottom` for rtl),
+     * so the box overflows past the top. top:0 bottom:0 height:400 →
+     * slack -80 → y = -80.
+     */
+    public function testVerticalCbInlineAxisRtlNegativeSlack(): void
+    {
+        [, $y] = $this->verticalAbsposGeo(
+            ' direction: rtl;',
+            'top: 0; bottom: 0; height: 400px; width: 80px; left: auto; right: auto; margin: auto',
+        );
+        self::assertEqualsWithDelta(-80.0, $y, 0.01);
     }
 
     public function testRelativePercentageOnBorderBoxSubtractsInsets(): void
@@ -4315,11 +4931,13 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $span->geometry->width, 0.001);
     }
 
-    public function testTableAutoWidthScalesColumnsToContentRatio(): void
+    public function testTableAutoWidthUsesColumnContentWidths(): void
     {
-        // Positive: two cells with intrinsic widths 50, 150 → column
-        // widths scale to fill 600pt total in the 1:3 ratio. Cell
-        // B's X position = column A's resolved width = 150.
+        // CSS 2.1 §17.5.2 — an auto-width table shrink-to-fits to its
+        // columns' content rather than scaling to fill the container.
+        // Two cells with intrinsic widths 50, 150 → columns stay at
+        // 50 / 150, table content = 200 (well under the 600 available).
+        // Cell B at x = column A's width = 50 (NOT a fill-scaled 150).
         $box = $this->buildTree(
             '<html><body><table>'
             . '<tr><td class="a" style="width: 50px"></td>'
@@ -4332,16 +4950,16 @@ final class BlockLayoutTest extends TestCase
         );
         $this->layout->layout($box, $this->defaultCtx);
         $cells = $this->collectCellsByClass($box);
-        // Cells keep their declared widths; column widths drive the
-        // X positions. Cell B at x = column A's resolved width.
-        self::assertEqualsWithDelta(150.0, $cells['b']->geometry->x, 0.001);
+        self::assertEqualsWithDelta(50.0, $cells['b']->geometry->x, 0.001);
     }
 
-    public function testTableAutoWidthShrinksWhenCellsExceedTableWidth(): void
+    public function testTableAutoWidthOverflowsWhenContentExceedsAvailable(): void
     {
-        // Positive (shrink direction): two cells with widths 500
-        // and 400 in a 600pt table → columns scale by 600/900 =
-        // 0.667 → 333, 267. Cell B's x = 333.
+        // CSS 2.1 §17.5.2 — the used width is
+        // `max(min-content, min(available, max-content))`. Two cells with
+        // explicit widths 500 + 400 give a min-content of 900 > the 600
+        // available, so the table overflows to 900 (it never shrinks below
+        // min-content). Columns stay at 500 / 400 → cell B's x = 500.
         $box = $this->buildTree(
             '<html><body><table>'
             . '<tr><td class="a" style="width: 500px"></td>'
@@ -4354,7 +4972,7 @@ final class BlockLayoutTest extends TestCase
         );
         $this->layout->layout($box, $this->defaultCtx);
         $cells = $this->collectCellsByClass($box);
-        self::assertEqualsWithDelta(333.333, $cells['b']->geometry->x, 0.5);
+        self::assertEqualsWithDelta(500.0, $cells['b']->geometry->x, 0.5);
     }
 
     public function testTableAutoWidthAllEmptyCellsFallsBackToEqualShare(): void
@@ -4379,6 +4997,131 @@ final class BlockLayoutTest extends TestCase
         // Positions: a at 0, b at 200, c at 400.
         self::assertSame(200.0, $cells['b']->geometry->x);
         self::assertSame(400.0, $cells['c']->geometry->x);
+    }
+
+    public function testTableAutoWidthShrinkWrapsBelowContainer(): void
+    {
+        // CSS 2.1 §17.5.2 — an auto-width table with content far narrower
+        // than its container shrink-wraps to the content, not the 600pt CB.
+        // Two cells 40 + 60 → table content width = 100.
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 40px"></td>'
+            . '<td class="b" style="width: 60px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; }
+             tr { display: table-row; }
+             td { display: table-cell; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $table = $this->find($box, 'table');
+        self::assertNotNull($table);
+        self::assertEqualsWithDelta(100.0, $table->geometry->width, 0.5);
+    }
+
+    public function testTableAutoWidthColumnIncludesCellPadding(): void
+    {
+        // The column width is the cell's *border-box* content: a 50-wide
+        // cell with 10px horizontal padding occupies a 70-wide column, so
+        // the shrink-wrapped table is 40 + 70 = 110 (NOT 90). Regression
+        // guard for the shared border-box cell-contribution helper.
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 40px"></td>'
+            . '<td class="b" style="width: 50px; padding-left: 10px; padding-right: 10px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; }
+             tr { display: table-row; }
+             td { display: table-cell; padding: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $table = $this->find($box, 'table');
+        self::assertNotNull($table);
+        self::assertEqualsWithDelta(110.0, $table->geometry->width, 0.5);
+    }
+
+    public function testTableAutoWidthMarginAutoCentres(): void
+    {
+        // CSS 2.1 §17.5.2 + §10.3.3 — once the auto table's used width is
+        // computed it is a resolved width, so `margin: 0 auto` centres it.
+        // 100-wide content in a 600pt CB → left margin (600−100)/2 = 250.
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 100px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; margin: 0 auto; }
+             tr { display: table-row; }
+             td { display: table-cell; padding: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $table = $this->find($box, 'table');
+        self::assertNotNull($table);
+        self::assertEqualsWithDelta(250.0, $table->geometry->x, 0.5);
+    }
+
+    public function testTableExplicitHeightFillsSingleRow(): void
+    {
+        // CSS 2.1 §17.5.3 — a table taller than its content distributes
+        // the surplus over its rows, so the single row + its cell grow to
+        // fill the 150px table (not just the ~text content height).
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 60px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; height: 150px; }
+             tr { display: table-row; }
+             td { display: table-cell; padding: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cells = $this->collectCellsByClass($box);
+        self::assertEqualsWithDelta(150.0, $cells['a']->geometry->height, 0.5);
+    }
+
+    public function testTableExplicitHeightDistributesAcrossRows(): void
+    {
+        // Two empty rows in a 200px table → each grows to ~100px and the
+        // second row is shifted down past the first.
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 40px"></td></tr>'
+            . '<tr><td class="b" style="width: 40px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; height: 200px; }
+             tr { display: table-row; }
+             td { display: table-cell; padding: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cells = $this->collectCellsByClass($box);
+        self::assertEqualsWithDelta(100.0, $cells['a']->geometry->height, 1.0);
+        self::assertEqualsWithDelta(100.0, $cells['b']->geometry->height, 1.0);
+        // Second row's cell sits below the first (~row 1 height).
+        self::assertGreaterThan(
+            $cells['a']->geometry->y + 90.0,
+            $cells['b']->geometry->y,
+        );
+    }
+
+    public function testTableExplicitHeightNoOpWhenContentTaller(): void
+    {
+        // A table height smaller than its content must NOT shrink the
+        // rows — the cell keeps its 80px content height.
+        $box = $this->buildTree(
+            '<html><body><table>'
+            . '<tr><td class="a" style="width: 40px; height: 80px"></td></tr>'
+            . '</table></body></html>',
+            'html, body, tbody { display: block; }
+             table { display: table; height: 10px; }
+             tr { display: table-row; }
+             td { display: table-cell; padding: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cells = $this->collectCellsByClass($box);
+        self::assertEqualsWithDelta(80.0, $cells['a']->geometry->height, 0.5);
     }
 
     public function testTableExplicitColWidthBypassesAutoMeasurement(): void
@@ -4407,10 +5150,11 @@ final class BlockLayoutTest extends TestCase
 
     public function testTableColspanCellDistributesMaxContentEquallyAcrossColumns(): void
     {
-        // Positive: a colspan="2" cell with width 200 contributes
-        // 100 of max-content to each of the 2 spanned columns. The
-        // third column has its own 50-wide cell. Sum 100+100+50 =
-        // 250 scaled to 600 → 240+240+120. Last cell at x = 480.
+        // A colspan="2" cell with width 200 contributes 100 of
+        // max-content to each of the 2 spanned columns. The third column
+        // has its own 50-wide cell. Under shrink-to-fit the table stays at
+        // its content sum 100+100+50 = 250 (no scaling to fill 600), so
+        // the last cell sits at x = 100+100 = 200.
         $box = $this->buildTree(
             '<html><body><table>'
             . '<tr><td class="span" colspan="2" style="width: 200px"></td>'
@@ -4423,7 +5167,7 @@ final class BlockLayoutTest extends TestCase
         );
         $this->layout->layout($box, $this->defaultCtx);
         $cells = $this->collectCellsByClass($box);
-        self::assertEqualsWithDelta(480.0, $cells['last']->geometry->x, 0.5);
+        self::assertEqualsWithDelta(200.0, $cells['last']->geometry->x, 0.5);
     }
 
     public function testTableMixedAutoAndExplicitColWidthsKeepsExplicit(): void
@@ -4447,6 +5191,57 @@ final class BlockLayoutTest extends TestCase
         $cells = $this->collectCellsByClass($box);
         self::assertEqualsWithDelta(80.0, $cells['a']->geometry->width, 0.001);
         self::assertEqualsWithDelta(80.0, $cells['b']->geometry->x, 0.001);
+    }
+
+    public function testInlineBlockMarginsSpaceAtomicItems(): void
+    {
+        // CSS 2.2 §10.8 — an inline-block's horizontal margins add to the
+        // inline advance it occupies; its margin box (with vertical margins)
+        // sets line height. In the no-font inline path these were dropped, so
+        // adjacent inline-blocks touched. Two 40px inline-blocks with 10px
+        // side / 5px vertical margins → content boxes at x=10 and
+        // x = 10 + 40 + 10 + 10 = 70; content top at y=5 (top margin).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="box"><span></span><span></span></div></body></html>',
+            '.box > span { display: inline-block; width: 40px; height: 30px; margin: 5px 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $div = $this->find($box, 'div');
+        self::assertNotNull($div);
+        $spans = array_values(array_filter(
+            $div->children,
+            static fn($c) => $c instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox,
+        ));
+        self::assertCount(2, $spans);
+        self::assertSame(10.0, $spans[0]->geometry->marginLeft);
+        self::assertSame(5.0, $spans[0]->geometry->marginTop);
+        self::assertSame(10.0, $spans[0]->geometry->x);
+        self::assertSame(5.0, $spans[0]->geometry->y);
+        self::assertSame(70.0, $spans[1]->geometry->x);
+    }
+
+    public function testFlexResolvesAtomicItemMargins(): void
+    {
+        // CSS Display 3 §2.7 — an inline-block flex item is blockified. Its
+        // `margin` must reach geometry so the flex algorithm's outer sizes
+        // and placement include it (previously dropped for atomic items).
+        // Two 100px inline-block items, 10px side margins, wide container →
+        // item 0 content at x=10; item 1 at 10 + 100 + 10 + 10 = 130.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="flex">'
+                . '<span class="a">x</span><span class="b">y</span>'
+                . '</div></body></html>',
+            '.flex { display: flex; width: 600px; }
+             .flex > span { display: inline-block; width: 100px; height: 50px; margin: 0 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'div');
+        self::assertNotNull($flex);
+        self::assertCount(2, $flex->children);
+        self::assertSame(10.0, $flex->children[0]->geometry->marginLeft);
+        self::assertSame(10.0, $flex->children[0]->geometry->marginRight);
+        self::assertSame(10.0, $flex->children[0]->geometry->x);
+        self::assertSame(130.0, $flex->children[1]->geometry->x);
     }
 
     public function testFlexRowLaysOutItemsHorizontally(): void
