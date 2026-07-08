@@ -82,3 +82,30 @@ clearing (most of) these nine. Ordered attack:
 
 Re-run this census (`wpt run --filter='css/**' --show-fails`) after each major
 push to re-rank. Raw fail list this run: captured to /tmp/css_census.txt.
+
+## Blind-spot probe verdict (2026-07-08) — NO easy bulk wins
+
+Probed all five (grep for the feature's core impl + sampled failing-test AEs).
+The bulk-win hypothesis is **mostly FALSE** — the codebase is more complete than
+fail-counts implied. Corrected classification:
+
+| Feature | fails | Verdict | Nature |
+|---|---|---|---|
+| clip-path | 120 | **IMPLEMENTED** (`Painter::applyClipPath`) | accuracy grind — rect/xywh 0.134, ellipse 0.28, SVG-clip 0.5; no <0.05 near-misses |
+| shape-outside | 170 | **IMPLEMENTED** (`FloatItem`/`FloatContext` exclusions) | advanced grind — fails are shape-image/gradient shapes (0.136) |
+| css-multicol | 269 | **IMPLEMENTED** (`isMultiColumnContainer`) | advanced grind — span-all / breaking / gap-decorations fail (0.18–0.63) |
+| gap-decorations (css-gaps) | 155 | parsed, rules NOT drawn | moderate feature — new spec, draw row/column rule lines (0.38–0.52) |
+| mask-image | 91 | **parse-only** (2 files) | feature build — compositing, hard |
+| anchor-position | 148 | **registered-only** (1 file, AE 0.95) | feature build — new positioning model, big |
+
+**Conclusion:** no "implement a missing feature → flip 150 tests cheaply" win
+exists. The path to 90% is a genuine grind across implemented engines plus two
+real feature builds (anchor-position, mask-image). The proven win pattern this
+project (static-X +18, table-shrink +42, Phase B +8) is **find the densest
+CLOSE sub-cluster inside an implemented feature and fix its one systematic bug**
+— e.g. clip-path rect/xywh all at identical 0.134 (one geometry bug?), or
+Phase B increments. So the right cadence is: drill the BIG buckets (grid 666,
+flexbox 552, CSS2 areas) into identical-AE sub-clusters and pick those off, not
+chase whole "blind-spot" features. anchor-position / mask-image are the only
+true greenfield features — high count but high cost; defer unless a cheap
+subset exists.
