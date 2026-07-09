@@ -829,6 +829,52 @@ final class Painter
             || $keyword === 'content';
     }
 
+    /**
+     * Paint order for a box's children. Grid items with a `z-index` other than
+     * `auto` paint in z-index order (CSS Grid 1 §4.4), ties broken by document
+     * order. For every other container the raw document order is returned
+     * unchanged. (Flex items also z-order per Flexbox 1 §5.4, but negative
+     * z-index on flex containers themselves needs stacking-context handling
+     * this simple child-sort lacks — deferred.)
+     *
+     * @return list<Box>
+     */
+    private function paintOrderChildren(Box $box): array
+    {
+        $children = $box->children;
+        if (count($children) < 2) {
+            return $children;
+        }
+        $display = $box->style->get('display');
+        $isGrid = $display instanceof Keyword
+            && str_contains(strtolower($display->name), 'grid');
+        if (!$isGrid) {
+            return $children;
+        }
+        $indexed = [];
+        foreach ($children as $i => $child) {
+            $indexed[] = [$i, $this->zIndexOf($child), $child];
+        }
+        usort(
+            $indexed,
+            static fn(array $a, array $b): int => ($a[1] <=> $b[1]) ?: ($a[0] <=> $b[0]),
+        );
+        return array_map(static fn(array $e): Box => $e[2], $indexed);
+    }
+
+    /** Integer `z-index`, or 0 for `auto` / missing / non-integer. */
+    private function zIndexOf(Box $box): int
+    {
+        $z = $box->style->get('z-index');
+        if ($z instanceof \Phpdftk\Css\Value\Integer) {
+            return $z->value;
+        }
+        if ($z instanceof \Phpdftk\Css\Value\Number) {
+            return (int) $z->value;
+        }
+        return 0;
+    }
+
     private function paintBox(Box $box, ContentStream $stream): void
     {
         // Off-page skip: the box's layout-Y range doesn't overlap this
@@ -916,7 +962,7 @@ final class Painter
             $stream->saveGraphicsState();
             $this->emitOverflowClipPath($stream, $box);
         }
-        foreach ($box->children as $child) {
+        foreach ($this->paintOrderChildren($box) as $child) {
             $this->paintBox($child, $stream);
         }
         if ($overflowClip) {
