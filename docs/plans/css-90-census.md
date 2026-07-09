@@ -183,7 +183,29 @@ squares ≈ 0.038, identical across every applies-to test using that display typ
 The table shrink-to-fit mechanism EXISTS (shipped +42, `measureTableMinMax` +
 shrink path, task #7) but is NOT triggering for these block-level `display:table`
 divs. Fix = make block-level auto-width tables use shrink-to-fit width (not fill
-the container) — extend/unblock the existing path. **HIGH RISK**: must not
-regress the +42; needs a careful before/after on CSS2 tables + the applies-to
-cluster. **HIGHEST-ROI next target** — potentially 50–150 of the 199 in one fix.
-Start fresh, design-first (like the original table shrink work).
+the container) — extend/unblock the existing path.
+
+### SHIPPED (2026-07-09) — +10 net css, zero regressions
+
+`blockNeedsShrinkToFit` (BlockLayout.php:~5387) gated table shrink-to-fit on
+`measureTableMinMax()['hasContent']` — the deliberate guard that kept *empty*
+grids filling the container (the "scaffold table" carve-out). Removed it: an
+auto-width block table now **always** shrink-to-fits, even when empty (an empty
+auto table is 0-wide per §17.5.2, so a row-group's right border lands at the
+table's left edge = the applies-to reference).
+
+Measured **paired same-env before/after** (`wpt run --filter` + stash):
+- `css/**`: pass 14976→14986 = **+10, fail −10, total constant** (no regression)
+- `css/CSS2`: +6 · `css/css-tables`: +1 (both paired, no regression)
+
+The +10 is smaller than the 199-fail cluster implied because most applies-to
+variants carry *secondary* bugs (only the table-geometry ones flip on the square
+position); the cluster is real but not monolithic. Unit fallout: 4 tests encoded
+the old empty-fill (`testTable*` split/colspan/align used empty cells as a lazy
+600px trigger) — given real `width:600px` so they still exercise column
+distribution; `…AllEmptyCellsFallsBackToEqualShare` repurposed →
+`…ShrinksToZero`. gates: lint+PHPStan clean, 980 html-to-pdf tests green.
+Baseline css floor ratcheted 14886→14896 (relative +10). css-90-push now +21.
+
+Remaining applies-to tail = the secondary-bug variants (border rendering, bg
+positioning on non-block display types) — separate drills, no single lever.

@@ -5380,12 +5380,13 @@ final class BlockLayout
         ) {
             return true;
         }
-        // CSS 2.1 §17.5.2 — an auto-width block-level table shrink-to-fits
-        // to its columns' content rather than filling its container. Guard
-        // on measured content so a genuinely empty grid keeps the legacy
-        // fill behaviour (empty border/scaffold tables).
+        // CSS 2.1 §17.5.2 — an auto-width block-level table always
+        // shrink-to-fits to its columns' content rather than filling its
+        // container, even when the grid is empty (an empty auto table is
+        // 0-wide, so e.g. a row-group's right border lands at the table's
+        // left edge — the CSS2.1 *-applies-to-* reference behaviour).
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
-            return $this->measureTableMinMax($box, $context)['hasContent'];
+            return true;
         }
         return false;
     }

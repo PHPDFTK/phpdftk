@@ -768,7 +768,7 @@ final class BlockLayoutTest extends TestCase
             . '<tr><td></td><td></td><td></td></tr>'
             . '</table></body></html>',
             'html, body, tbody { display: block; }
-             table { display: table; }
+             table { display: table; width: 600px; }
              tr { display: table-row; }
              td { display: table-cell; }',
         );
@@ -809,7 +809,7 @@ final class BlockLayoutTest extends TestCase
             . '<td colspan="2"></td><td></td><td></td>'
             . '</tr></table></body></html>',
             'html, body, tbody { display: block; }
-             table { display: table; }
+             table { display: table; width: 600px; }
              tr { display: table-row; }
              td { display: table-cell; }',
         );
@@ -841,7 +841,7 @@ final class BlockLayoutTest extends TestCase
         $box = $this->buildTree(
             '<html><body><table><tr><td></td><td></td><td></td></tr></table></body></html>',
             'html, body, tbody { display: block; }
-             table { display: table; }
+             table { display: table; width: 600px; }
              tr { display: table-row; }
              td { display: table-cell; }',
         );
@@ -4975,11 +4975,13 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(500.0, $cells['b']->geometry->x, 0.5);
     }
 
-    public function testTableAutoWidthAllEmptyCellsFallsBackToEqualShare(): void
+    public function testTableAutoWidthAllEmptyCellsShrinksToZero(): void
     {
-        // Negative: all-empty cells (zero max-content) — the
-        // measurement returns 0/0 so we fall back to the previous
-        // equal-share behaviour. 3 empty cells in 600pt = 200 each.
+        // CSS 2.1 §17.5.2 — an auto-width table whose cells are all empty
+        // (zero max-content) shrink-to-fits to a zero content width rather
+        // than filling the 600pt container. Every cell collapses to 0, all
+        // anchored at x=0. (Matches browsers and the CSS2.1 `*-applies-to-*`
+        // references — the previous equal-share fill fallback was wrong.)
         $box = $this->buildTree(
             '<html><body><table>'
             . '<tr><td class="a"></td><td class="b"></td><td class="c"></td></tr>'
@@ -4992,11 +4994,9 @@ final class BlockLayoutTest extends TestCase
         $this->layout->layout($box, $this->defaultCtx);
         $cells = $this->collectCellsByClass($box);
         foreach (['a', 'b', 'c'] as $key) {
-            self::assertEqualsWithDelta(200.0, $cells[$key]->geometry->width, 0.001);
+            self::assertLessThan(1.0, $cells[$key]->geometry->width);
+            self::assertEqualsWithDelta(0.0, $cells[$key]->geometry->x, 0.001);
         }
-        // Positions: a at 0, b at 200, c at 400.
-        self::assertSame(200.0, $cells['b']->geometry->x);
-        self::assertSame(400.0, $cells['c']->geometry->x);
     }
 
     public function testTableAutoWidthShrinkWrapsBelowContainer(): void
