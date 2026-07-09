@@ -249,3 +249,20 @@ replaced height h=1 is the most tractable next, ~8 tests; then width static-Y
 +16, ~15), OR (b) commit to a documented DEEP lever (margin-collapse-through-
 root unblocks ~77 flexbox_flex + broad CSS2). No more cheap wins. Recommend
 starting each abspos-replaced sub-bug as its own focused session.
+
+### abspos-replaced root cause PINPOINTED (Explore, 2026-07-09)
+
+The ~40-test 0.019 cluster's two img sub-bugs are ONE missing feature: **§10.3.8
+absolutely-positioned replaced-element sizing is not implemented.** An abspos
+`<img>` is an `AtomicInlineBox`; in `BlockLayout::layoutBox` it falls through to
+the default case (BlockLayout.php:413-425) which sets width and returns 0 height
+WITHOUT reading intrinsic ratio or applying §10.3.8 — so `height:auto` never
+becomes width/ratio (→ h=1.0). The in-flow path is correct
+(`InlineLayout::layoutAtomicOnly`→`clampAtomicReplaced`, ~458/552); the abspos
+path bypasses it. `applyAbsoluteCornerAnchorSize` (2101) only does §10.3.7
+corner-anchor, not §10.3.8 replaced. Fix = a `layoutAbsoluteReplacedAtomic()`
+helper wired into `stackChildrenList` (~6574) + vertical/flex variants.
+**Existing design branch: `origin/feat/abspos-replaced-sizing` (commit
+21882826a) scopes this as a 4-part feature — resume THERE, don't start cold.**
+This is a real feature build (~40 tests: width static-Y + height ratio), not a
+bounded fix. It is the highest-count concrete target left in CSS2/positioning.
