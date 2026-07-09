@@ -136,3 +136,28 @@ had no case for those shapes (returned false, no clip). css-90-push: **+11**.
 Deferred grid work, by size: grid intrinsic auto-repeat count (~80), flex/grid
 container stacking contexts, grid inline-axis placement (overlap). Next drill
 targets by fail count: css-flexbox (552), CSS2 floats/positioning/tables.
+
+## Flexbox drill (2026-07-08) — css-flexbox 552, NO cheap win
+
+Drilled css-flexbox. The big clusters are all deep/blocked/unimplemented — unlike
+grid (z-index paint bug) and masking (clip-path missing case), flexbox has no
+clean paint-layer fix:
+
+- **flexbox_flex + flexbox_flex-N (~77)** — the flex shorthand suite (`flex: 0 1
+  N%` etc.). Moderate identical-AE clusters (0.088×2, 0.102×3, 0.133×2 = a shared
+  LAYOUT offset). BLOCKED by margin-collapse-through-root (see
+  `docs/plans/margin-collapse-through-root.md`, the "53 painter mystery"). Deep.
+- **balance (30)** — CSS Flexbox 2 draft `flex-wrap: balance` + `flex-line-count`.
+  UNIMPLEMENTED (grep: no flex-line-count handling). New feature build.
+- **mbp-horiz (11), percentage-heights (14), intrinsic-size (11)** — gross layout
+  offsets (~0.18); flex box-model / intrinsic sizing, not near-misses.
+- **flexbox-writing-mode (14)** — Phase B adjacent (vertical flex).
+- **flex-aspect-ratio-img (~20)** — aspect-ratio images in flex.
+
+**Takeaway:** the clean census wins so far (clip-path +6, grid z-index +5) were
+PAINT-layer bugs, not layout. Layout-heavy buckets (flex sizing, grid lanes) are
+hard. Highest-value flexbox lever = the margin-collapse-through-root redesign
+(unblocks ~77 flexbox_flex + broad CSS2/positioning) but it's the documented deep
+dead-end. Recommend next drill target **CSS2** (floats/positioning/tables/
+backgrounds — implemented core, likely more paint/geometry identical-AE bugs)
+over more flexbox.
