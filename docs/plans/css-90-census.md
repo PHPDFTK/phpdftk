@@ -161,3 +161,29 @@ hard. Highest-value flexbox lever = the margin-collapse-through-root redesign
 dead-end. Recommend next drill target **CSS2** (floats/positioning/tables/
 backgrounds — implemented core, likely more paint/geometry identical-AE bugs)
 over more flexbox.
+
+## CSS2 drill (2026-07-08) — the "applies-to" cluster is the BIGGEST lever (199 fails)
+
+CSS2 backgrounds: many are `reftest-wait`+JS dynamic (background-root-1xx, AE=1.0)
+— settler-blocked false fails, skip. The real find is bucket-spanning:
+
+**"applies-to" tests: 199 census fails, one systematic TABLE bug.** These CSS2.1
+tests check a property (border-*, background-*, width, etc.) applies to each
+`display` type; they share a template and the shared ref `ref-filled-black-96px-
+square`. A dominant sub-cluster sits at IDENTICAL AE 0.0381759 (~13 of a 40-sample
+→ likely 50+), plus tight clusters at 0.044/0.048/0.058.
+
+ROOT CAUSE (confirmed on `border-right-width-applies-to-001`, display:table-row-
+group with border-right:1in): the test's `display:table` div renders at **w=612
+(full container)**; it must **shrink-to-fit** to its content (~0 for empty cells,
++96px border) per CSS 2.1 §17.5.2. Result: our 96px black square lands at the
+RIGHT (x≈516); the ref expects it at the LEFT (x≈0). Diff = two non-overlapping
+squares ≈ 0.038, identical across every applies-to test using that display type.
+
+The table shrink-to-fit mechanism EXISTS (shipped +42, `measureTableMinMax` +
+shrink path, task #7) but is NOT triggering for these block-level `display:table`
+divs. Fix = make block-level auto-width tables use shrink-to-fit width (not fill
+the container) — extend/unblock the existing path. **HIGH RISK**: must not
+regress the +42; needs a careful before/after on CSS2 tables + the applies-to
+cluster. **HIGHEST-ROI next target** — potentially 50–150 of the 199 in one fix.
+Start fresh, design-first (like the original table shrink work).
