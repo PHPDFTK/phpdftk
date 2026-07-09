@@ -209,3 +209,43 @@ Baseline css floor ratcheted 14886→14896 (relative +10). css-90-push now +21.
 
 Remaining applies-to tail = the secondary-bug variants (border rendering, bg
 positioning on non-block display types) — separate drills, no single lever.
+
+## Drill round 2 (2026-07-09, post table-shrink) — clean-lever era CONFIRMED over
+
+Probed three unmined/promising buckets with the identical-AE drill. Verdict:
+**no clean single-bug levers remain; identical-AE clusters are shared-reference
+artifacts spanning MULTIPLE distinct bugs** (same lesson as applies-to).
+
+- **css-transforms (355)** — transform-origin reftests mostly PASS or near-
+  threshold (0.0068 passes / 0.0105 barely fails); most numbered tests are
+  testharness/JS (no reftest ref). transform-box = moderate-AE grind (0.05–0.09,
+  many SVG/JS-mutation). No lever.
+- **css-backgrounds (176)** — densest cluster = 17 tests at 0.020838, but it's a
+  **shared-ref artifact**: all match `ref-filled-green-100px-square` and each
+  fails to produce the green square for a DIFFERENT reason (border-image `fill`
+  with `conic-gradient(green 0 0)` source — `paintBorderImage` only handles
+  raster `url()`, Painter.php:5098; box-shadow z-order on empty box; etc.).
+  Gradient border-image `fill` = only ~2 clean tests (021, outset-004); the rest
+  of the 7 are JS interpolation tests. Not worth a gradient-detection feature.
+- **CSS2/positioning** — biggest CLOSE clusters: 25 @ 0.0191622 + 15 @ 0.0190137
+  (~40 tests). Diagnosed: NOT one bug. Three separate causes at a shared AE:
+  1. `absolute-replaced-width-*` (~15): abspos inline replaced img renders at
+     **static-Y +16px** (y=19 vs expected ~3, the top-left corner). Subtle
+     inline-baseline/strut static-position bug (BlockLayout.php:6562,
+     `inlineStaticPositionY`). Real, ~15 tests, but fiddly.
+  2. `absolute-replaced-height-*` (~8): replaced **height resolves to h=1.0**
+     (should be 96) — abspos replaced percentage-height vs containing-block
+     resolution bug. Gross error, likely more tractable than #1.
+  3. `top/left/right-applies-to-*` (~15): NOT img-based; separate applies-to
+     template (shares the 0.019 AE coincidentally). Non-table display types —
+     the tail the table-shrink fix didn't reach.
+
+**Strategic conclusion:** the census-drill "find one systematic bug flipping a
+close cluster" cadence has been mined out — remaining identical-AE clusters are
+multi-bug. The 4 clean levers shipped this era (clip-path +6, grid z-index +5,
+table-shrink +10, static-X +18) are the last of that kind. Path to css 90%
+(+4200) is now EITHER (a) grind each residual sub-bug individually (abspos-
+replaced height h=1 is the most tractable next, ~8 tests; then width static-Y
++16, ~15), OR (b) commit to a documented DEEP lever (margin-collapse-through-
+root unblocks ~77 flexbox_flex + broad CSS2). No more cheap wins. Recommend
+starting each abspos-replaced sub-bug as its own focused session.
