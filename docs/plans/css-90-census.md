@@ -109,3 +109,30 @@ flexbox 552, CSS2 areas) into identical-AE sub-clusters and pick those off, not
 chase whole "blind-spot" features. anchor-position / mask-image are the only
 true greenfield features — high count but high cost; defer unless a cheap
 subset exists.
+
+## Grid drill (2026-07-08) — css-grid 666 → sub-clusters + 2 fixes
+
+Drilled css-grid: grid-lanes (330) · grid-items (112) · alignment (75) · subgrid
+(49). grid-lanes → **auto-repeat ~80** (the biggest) and grid-items →
+**z-axis-ordering ~15**.
+
+- **auto-repeat (~80) — BLOCKED.** All failing tests use INTRINSIC tracks
+  (`repeat(auto-fill, auto/max-content/minmax(intrinsic,intrinsic))`); the count
+  needs measured content max-content (chicken-egg: track size ↔ count).
+  `computeAutoFillCount` returns 1 for non-length tracks. A spec-correct minFloor
+  patch (use a `minmax(<fixed-px>,…)` floor for the count) is **net-0** — zero
+  failing tests use a fixed-px min. Deferred: needs grid intrinsic-track content
+  measurement. Reverted the patch.
+- **z-axis-ordering (~15) → SHIPPED +5** (commit 5072d4598). The painter walked
+  raw document order; grid items with z-index (CSS Grid §4.4) now paint in
+  z-index order. Flex items also z-order but negative-z on flex CONTAINERS needs
+  stacking-context handling (regressed flexible-box-float) — scoped to grid,
+  flex deferred. The `grid-INLINE-z-axis` variants (0.067) still fail: their
+  items don't overlap correctly in our layout (a grid PLACEMENT bug, separate).
+
+Also shipped: **clip-path rect()/xywh() +6** (commit 9c14e513b) — the painter
+had no case for those shapes (returned false, no clip). css-90-push: **+11**.
+
+Deferred grid work, by size: grid intrinsic auto-repeat count (~80), flex/grid
+container stacking contexts, grid inline-axis placement (overlap). Next drill
+targets by fail count: css-flexbox (552), CSS2 floats/positioning/tables.
