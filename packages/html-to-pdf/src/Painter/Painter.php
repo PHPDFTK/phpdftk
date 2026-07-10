@@ -875,7 +875,7 @@ final class Painter
         return 0;
     }
 
-    private function paintBox(Box $box, ContentStream $stream): void
+    private function paintBox(Box $box, ContentStream $stream, ?Box $parent = null): void
     {
         // Off-page skip: the box's layout-Y range doesn't overlap this
         // page's range. We still must descend into children for the
@@ -946,7 +946,7 @@ final class Painter
             }
             $this->paintOutline($box, $stream);
             $this->paintColumnRules($box, $stream);
-            $this->paintImage($box, $stream);
+            $this->paintImage($box, $stream, $parent);
             $this->paintListMarker($box, $stream);
             $this->paintLineBoxes($box, $stream);
             $this->collectBlockLinkRect($box);
@@ -963,7 +963,7 @@ final class Painter
             $this->emitOverflowClipPath($stream, $box);
         }
         foreach ($this->paintOrderChildren($box) as $child) {
-            $this->paintBox($child, $stream);
+            $this->paintBox($child, $stream, $box);
         }
         if ($overflowClip) {
             $stream->restoreGraphicsState();
@@ -1286,29 +1286,32 @@ final class Painter
      * box's geometry. No-op when the writer or page is not wired in, or
      * when the src isn't a `data:image/png|jpeg` URL we can paint.
      */
-    private function isFloated(Box $box): bool
-    {
-        $float = $box->style->get('float');
-        return $float instanceof \Phpdftk\Css\Value\Keyword
-            && in_array(strtolower($float->name), ['left', 'right', 'inline-start', 'inline-end'], true);
-    }
-
-    private function paintImage(Box $box, ContentStream $stream): void
+    private function paintImage(Box $box, ContentStream $stream, ?Box $parent = null): void
     {
         // Replaced elements render whether they are atomic-inline
-        // (`display: inline-block`) OR a FLOAT — a floated `<img>` /
-        // `<embed>` / `<object>` is blockified out of the inline flow into
-        // a BlockBox but must still paint its image (the css-images
-        // object-fit / object-position clusters float their replaced
-        // elements). Restricted to horizontal-flow floats: a `position:
-        // absolute` / grid replaced BlockBox — or a float in a VERTICAL
-        // writing mode — reaches paint through a geometry path whose
-        // positioning isn't correct yet, so painting it there regresses.
-        $isFloatedReplaced = $box instanceof \Phpdftk\HtmlToPdf\Box\BlockBox
-            && $this->isFloated($box)
+        // (`display: inline-block`) OR blockified into a BlockBox. An
+        // `<img>` / `<embed>` / `<object>` that is FLOATED, `display:
+        // block`, OR out-of-flow (`position: absolute` / `fixed`, which
+        // CSS Display §2.7 blockifies) becomes a BlockBox, but its
+        // geometry is still laid out by the normal block-flow path —
+        // including the CSS Sizing §4.2 aspect-ratio transfer that sizes a
+        // `width: 50%; height: auto` abspos image — so it paints at the
+        // right rect. Accept every such BlockBox replaced element.
+        //
+        // Two geometry paths are still wrong, so gate them out:
+        //  - a GRID / FLEX ITEM replaced BlockBox reaches paint with
+        //    grid/flex-track geometry not wired for direct raster
+        //    placement (painting it regressed css-grid −6); detect via the
+        //    parent box type;
+        //  - a VERTICAL-writing-mode replaced BlockBox (float/block WM
+        //    positioning is still wrong — see css-writing-modes follow-up).
+        $parentIsGridOrFlex = $parent instanceof \Phpdftk\HtmlToPdf\Box\GridBox
+            || $parent instanceof \Phpdftk\HtmlToPdf\Box\FlexBox;
+        $isBlockReplaced = $box instanceof \Phpdftk\HtmlToPdf\Box\BlockBox
+            && !$parentIsGridOrFlex
             && !WritingMode::fromStyle($box->style)->isVertical();
         if (!($box instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox)
-            && !$isFloatedReplaced
+            && !$isBlockReplaced
         ) {
             return;
         }
