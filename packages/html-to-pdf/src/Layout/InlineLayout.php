@@ -100,7 +100,12 @@ final class InlineLayout
         }
         $shapingCtx = new ShapingContext($font, $fontSize, features: $this->resolveOpenTypeFeatures($parent));
         $lineHeight = $this->resolveLineHeight($parent, $fontSize);
-        $lineHeightMultiplier = $this->lineHeightMultiplier($parent);
+        // CSS2 §10.8 strut: the block container's own font establishes a
+        // zero-width inline box that every line box contains, so an empty
+        // line or one of only-smaller text still reserves the block's line
+        // height. `lineMetrics` folds this in alongside the real fragments.
+        $strutAscent = ($font->ascent / max(1, $font->unitsPerEm)) * $fontSize;
+        $strutDescent = (abs($font->descent) / max(1, $font->unitsPerEm)) * $fontSize;
         $whiteSpace = $this->whiteSpaceKeyword($parent);
         // CSS Text 3 §4 — wrap permission table:
         //   normal / pre-wrap / pre-line / break-spaces → allow soft wrap
@@ -132,6 +137,7 @@ final class InlineLayout
             $letterSpacing,
             $wordSpacing,
             baselineShift: 0.0,
+            lineHeight: $lineHeight,
             href: null,
             isBold: $parentMatch['isBold'],
             isItalic: $parentMatch['isItalic'],
@@ -199,8 +205,8 @@ final class InlineLayout
                         ? $bounds['left'] + $textIndent
                         : end($currentFragments)->x + end($currentFragments)->width;
                 }
-                $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-                $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
+                [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -232,6 +238,7 @@ final class InlineLayout
                 $token['linkTitle'] ?? null,
                 $token['decorationColor'] ?? null,
                 (bool) $token['isWhitespace'],
+                $token['lineHeight'] ?? -1.0,
             );
             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
             // Side-channel: AtomicInlineBox positions get committed back to
@@ -320,8 +327,8 @@ final class InlineLayout
             $currentX += $width;
             $atLineStart = false;
             if ($isMandatory) {
-                $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-                $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
+                [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -332,8 +339,8 @@ final class InlineLayout
             }
         }
         if ($currentFragments !== []) {
-            $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-            $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
+            [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+            $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
             $y += $effective;
         }
 
@@ -414,6 +421,7 @@ final class InlineLayout
                         $f->linkTitle,
                         $f->decorationColor,
                         $f->isWhitespace,
+                        $f->lineHeight,
                     ),
                 ], $line->baseline);
                 $cumBlock += $line->height;
@@ -782,6 +790,8 @@ final class InlineLayout
             $fragment->backgroundColor,
             $fragment->linkTitle,
             $fragment->decorationColor,
+            $fragment->isWhitespace,
+            $fragment->lineHeight,
         );
     }
 
@@ -1072,39 +1082,6 @@ final class InlineLayout
     }
 
     /**
-     * The per-font-size multiplier for a `line-height` that scales with
-     * each inline box's own font size — `normal` (1.2) and `<number>`
-     * (the number) — or `null` when the value is an absolute `<length>`
-     * (or `<percentage>`, which CSS computes to an absolute length).
-     *
-     * A larger inline child grows the line box by `childFontSize ×
-     * multiplier` for the scalable forms; for the absolute forms the
-     * authored length applies regardless of font size, so the line box
-     * does not scale up with a larger child.
-     */
-    private function lineHeightMultiplier(Box $parent): ?float
-    {
-        $value = $parent->style->get('line-height');
-        if ($value instanceof \Phpdftk\Css\Value\Keyword
-            && strtolower($value->name) === 'normal'
-        ) {
-            return 1.2;
-        }
-        if ($value instanceof \Phpdftk\Css\Value\Number
-            || $value instanceof \Phpdftk\Css\Value\Integer
-        ) {
-            return $value->value;
-        }
-        // Absent / unrecognised → treat as the initial `normal`.
-        if (!($value instanceof Length)
-            && !($value instanceof \Phpdftk\Css\Value\Percentage)
-        ) {
-            return 1.2;
-        }
-        return null;
-    }
-
-    /**
      * Resolve the parent's `text-indent` CSS value against the available
      * width. Length resolves directly; Percentage resolves against the
      * block's content width per CSS Text 3 §3.1; everything else falls to 0.
@@ -1138,7 +1115,7 @@ final class InlineLayout
     {
         $out = [];
         foreach ($fragments as $f) {
-            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace);
+            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight);
         }
         return $out;
     }
@@ -1170,7 +1147,7 @@ final class InlineLayout
             // visible fragment's right edge becomes — they aren't
             // shifted (they hang past the line edge).
             $shift = $i <= $lastVisible ? $i * $delta : $lastVisible * $delta;
-            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace);
+            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight);
         }
         return $out;
     }
@@ -1191,6 +1168,7 @@ final class InlineLayout
         float $letterSpacing,
         float $wordSpacing,
         float $baselineShift,
+        float $lineHeight,
         ?string $href,
         bool $isBold,
         bool $isItalic,
@@ -1211,6 +1189,7 @@ final class InlineLayout
                 $letterSpacing,
                 $wordSpacing,
                 $baselineShift,
+                $lineHeight,
                 $href,
                 $isBold,
                 $isItalic,
@@ -1255,6 +1234,7 @@ final class InlineLayout
         float $letterSpacing,
         float $wordSpacing,
         float $baselineShift,
+        float $lineHeight,
         ?string $href,
         bool $isBold,
         bool $isItalic,
@@ -1291,6 +1271,7 @@ final class InlineLayout
             $breakAll = $this->isBreakAll($box);
             foreach ($this->tokeniseText($text, $shapingCtx, $letterSpacing, $wordSpacing, $breakAll, $splitWsBoundaries) as $token) {
                 $token['baselineShift'] = $baselineShift;
+                $token['lineHeight'] = $lineHeight;
                 $token['href'] = $href;
                 $token['isBold'] = $isBold;
                 $token['isItalic'] = $isItalic;
@@ -1317,6 +1298,7 @@ final class InlineLayout
                 ),
                 'isWhitespace' => false,
                 'kind' => LineBreakKind::Mandatory,
+                'lineHeight' => $lineHeight,
             ];
             return;
         }
@@ -1390,6 +1372,7 @@ final class InlineLayout
                 'isWhitespace' => false,
                 'kind' => LineBreakKind::Allowed,
                 'baselineShift' => $baselineShift,
+                'lineHeight' => $lineHeight,
                 'href' => $href,
                 'isBold' => $isBold,
                 'isItalic' => $isItalic,
@@ -1470,6 +1453,12 @@ final class InlineLayout
             // registered in the FontResolver, switch the shaping font.
             $childCtx = $shapingCtx;
             $boxFontSize = $this->boxFontSize($box) ?? $shapingCtx->fontSizePt;
+            // CSS Inline 3 §3 — `line-height` inherits (as a number it
+            // re-resolves against each box's own font-size), so resolve this
+            // inline box's used line-height here and carry it down. Fragments
+            // stamp it so `lineMetrics` can apply per-run half-leading
+            // instead of the block's uniform value.
+            $childLineHeight = $this->resolveLineHeight($box, $boxFontSize);
             $boxFont = $boxMatch['font'] ?? $shapingCtx->font;
             $fontSizeChanged = abs($boxFontSize - $shapingCtx->fontSizePt) > 0.001;
             $fontChanged = $boxFont !== $shapingCtx->font;
@@ -1485,6 +1474,7 @@ final class InlineLayout
                     $letterSpacing,
                     $wordSpacing,
                     $baselineShift + $boxShift,
+                    $childLineHeight,
                     $childHref,
                     $childBold,
                     $childItalic,
@@ -1500,65 +1490,6 @@ final class InlineLayout
     }
 
     /**
-     * Per CSS Inline 3 §3, the line box's used height is the maximum of the
-     * inline heights it contains. Use the parent's resolved line-height as
-     * the baseline, then grow if a fragment carries a larger font.
-     *
-     * A fragment with a larger font than the parent contributes its own
-     * line height. For a scalable `line-height` (`normal` / `<number>`,
-     * which inherit per-font-size) that contribution is `fragmentFontSize
-     * × $multiplier`; for an absolute `<length>` / `<percentage>`
-     * (`$multiplier === null`) the authored line-height applies regardless
-     * of font size, so the line box does not grow with a larger child.
-     *
-     * The old code used a hardcoded `max($parentLineHeight, maxFontSize ×
-     * 1.2)`, which ignored any explicit `line-height` below `normal`:
-     * `font: 80px/1` resolves the parent line-height to 80, yet
-     * `max(80, 80 × 1.2)` forced the line box to 96.
-     *
-     * @param list<InlineFragment> $fragments
-     */
-    private function lineHeightFor(array $fragments, float $parentLineHeight, ?float $multiplier): float
-    {
-        if ($multiplier === null) {
-            // Absolute line-height: the used value is the authored length
-            // for every inline box on the line, independent of font size.
-            return $parentLineHeight;
-        }
-        $maxFontSize = 0.0;
-        foreach ($fragments as $f) {
-            if ($f->shapedRun->fontSizePt > $maxFontSize) {
-                $maxFontSize = $f->shapedRun->fontSizePt;
-            }
-        }
-        return max($parentLineHeight, $maxFontSize * $multiplier);
-    }
-
-    /**
-     * The distance from a line box's top edge down to its single shared
-     * baseline (CSS2 §10.8). Every baseline-aligned fragment on the line
-     * places its own alphabetic baseline here, so mixed-size runs line up
-     * instead of each sitting at its own ascent. Absent half-leading (added
-     * in a later stage), the baseline sits at the maximum ascent over the
-     * line's fragments; for a single-size line that equals the sole
-     * fragment's ascent, so this is a no-op for the common case and only
-     * repositions the smaller runs on a mixed-size line.
-     *
-     * @param list<InlineFragment> $fragments
-     */
-    private function lineBaseline(array $fragments): float
-    {
-        $baseline = 0.0;
-        foreach ($fragments as $f) {
-            $a = $this->fragmentAscent($f);
-            if ($a > $baseline) {
-                $baseline = $a;
-            }
-        }
-        return $baseline;
-    }
-
-    /**
      * The alphabetic ascent of a fragment's shaping font in layout units:
      * `(font.ascent / unitsPerEm) × fontSizePt`. Mirrors the painter's own
      * ascent computation so the layout baseline and the painted baseline
@@ -1568,6 +1499,61 @@ final class InlineLayout
     {
         $font = $f->shapedRun->font;
         return ($font->ascent / max(1, $font->unitsPerEm)) * $f->shapedRun->fontSizePt;
+    }
+
+    /**
+     * The alphabetic descent of a fragment's shaping font in layout units:
+     * `(|font.descent| / unitsPerEm) × fontSizePt`. Positive (distance below
+     * the baseline), mirroring the painter's descent computation.
+     */
+    private function fragmentDescent(InlineFragment $f): float
+    {
+        $font = $f->shapedRun->font;
+        return (abs($font->descent) / max(1, $font->unitsPerEm)) * $f->shapedRun->fontSizePt;
+    }
+
+    /**
+     * CSS2 §10.8 line-box sizing with half-leading. Each inline box (and the
+     * block's own strut) contributes a content box of `ascent + descent`
+     * grown by its leading `L = lineHeight − (ascent + descent)`, split half
+     * above the ascent and half below the descent. The line's baseline sits
+     * at the greatest half-leading-expanded ascent over all contributors; its
+     * height runs from there down past the greatest expanded descent.
+     *
+     * The strut (the block container's own font metrics + line-height) always
+     * participates, so an empty line or a line of only-smaller text still
+     * reserves the block's line height. A fragment whose `lineHeight` is unset
+     * (the `-1.0` sentinel) falls back to no leading (`ascent + descent`), so
+     * synthetic fragments size to their glyph box; an explicit `line-height: 0`
+     * (a real `0.0`) is honoured as full negative leading.
+     *
+     * @param list<InlineFragment> $fragments
+     * @return array{float, float} [height, baseline]
+     */
+    private function lineMetrics(
+        array $fragments,
+        float $strutAscent,
+        float $strutDescent,
+        float $strutLineHeight,
+    ): array {
+        $strutLead = ($strutLineHeight - ($strutAscent + $strutDescent)) / 2.0;
+        $above = $strutAscent + $strutLead;
+        $below = $strutDescent + $strutLead;
+        foreach ($fragments as $f) {
+            $a = $this->fragmentAscent($f);
+            $d = $this->fragmentDescent($f);
+            $lh = $f->lineHeight >= 0.0 ? $f->lineHeight : ($a + $d);
+            $lead = ($lh - ($a + $d)) / 2.0;
+            $ea = $a + $lead;
+            $ed = $d + $lead;
+            if ($ea > $above) {
+                $above = $ea;
+            }
+            if ($ed > $below) {
+                $below = $ed;
+            }
+        }
+        return [$above + $below, $above];
     }
 
     /**

@@ -96,5 +96,18 @@ final readonly class InlineFragment
          * skip the trailing-ws gap.
          */
         public bool $isWhitespace = false,
+        /**
+         * The fragment's own used `line-height` in layout units (CSS Inline
+         * 3 §3), resolved against the inline box it came from — NOT the
+         * block's. Drives the half-leading extent math in `lineMetrics`:
+         * leading = lineHeight − (ascent + descent), split half above / half
+         * below the fragment's content box. The sentinel `-1.0` means "unset"
+         * — the line sizer then falls back to the fragment's font ascent +
+         * descent (no leading), preserving pre-half-leading behaviour for
+         * synthetic fragments (ellipsis, trims) that don't carry a resolved
+         * value. `-1.0` rather than `0.0` so an explicit `line-height: 0` is
+         * honoured as zero leading, not mistaken for unset.
+         */
+        public float $lineHeight = -1.0,
     ) {}
 }

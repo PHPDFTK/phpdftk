@@ -3017,9 +3017,15 @@ final class BlockLayoutTest extends TestCase
     }
 
     /**
-     * Positive: a `<number>` line-height scales per font size, so a
-     * larger inline child grows the line box (`max(parentLH, childFont ×
-     * number)`).
+     * Positive: a `<number>` line-height scales per font size, so a larger
+     * inline child grows the line box. Under the CSS2 §10.8 half-leading
+     * model the used height is not the naive `max(parentLH, childFont ×
+     * number)` but `max(expandedAscent) + max(expandedDescent)` over the
+     * strut + fragments, where `expanded = metric + (lineHeight − ascent −
+     * descent) / 2`. For NotoSansMongolian (ascent 1.457em, descent 0.293em)
+     * at line-height:1 the 40px child dominates the ascent (43.28) while the
+     * 16px strut's less-negative half-leading dominates the descent (−1.31),
+     * giving 41.968 — larger than the naive 40.
      */
     public function testNumberLineHeightGrowsWithLargerChildFont(): void
     {
@@ -3031,14 +3037,20 @@ final class BlockLayoutTest extends TestCase
         $this->layout->layout($box, $this->mongolianContext());
         $p = $this->findById($box, 'p');
         self::assertNotNull($p);
-        // line-height:1 × the 40px child = 40 (beats the 16px parent line).
-        self::assertEqualsWithDelta(40.0, $p->lineBoxes[0]->height, 0.01);
+        // Half-leading line box: 40px child ascent + 16px strut descent.
+        self::assertEqualsWithDelta(41.968, $p->lineBoxes[0]->height, 0.01);
     }
 
     /**
-     * Negative (codex-flagged edge): an absolute `<length>` line-height
-     * does NOT scale with a larger child font — the authored length
-     * applies to every inline box on the line.
+     * Negative (codex-flagged edge): an absolute `<length>` line-height is
+     * NOT scaled by the child's font-size ratio — it stays 30px per inline
+     * box, so the line box never reaches the naive 30 × (30/16) = 56.25.
+     * It does, however, grow modestly beyond 30 under the CSS2 §10.8
+     * half-leading model: the 30px child's tall ascent pushes the line's top
+     * up (expanded ascent 32.46) while the 16px strut's positive half-leading
+     * (line-height 30 > content 28) pushes the bottom down (expanded descent
+     * 5.69), for 38.148. The point of the test — no font-ratio scaling —
+     * still holds (38.148 ≪ 56.25).
      */
     public function testFixedLengthLineHeightNotScaledByLargerChild(): void
     {
@@ -3050,8 +3062,85 @@ final class BlockLayoutTest extends TestCase
         $this->layout->layout($box, $this->mongolianContext());
         $p = $this->findById($box, 'p');
         self::assertNotNull($p);
-        // Fixed 30px line-height — NOT 30 × (30/16) = 56.25.
-        self::assertEqualsWithDelta(30.0, $p->lineBoxes[0]->height, 0.01);
+        // Half-leading line box — grows past 30 but nowhere near 56.25.
+        self::assertEqualsWithDelta(38.148, $p->lineBoxes[0]->height, 0.01);
+    }
+
+    /**
+     * Positive: for a single-size line the used height still equals the
+     * line-height exactly (half-leading above + below sums back to the
+     * authored value). 20px font, line-height 2 → 40. This guards that the
+     * §10.8 model is a no-op on the common uniform line.
+     */
+    public function testSingleSizeLineHeightEqualsLineHeight(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 20px; line-height: 2">' . "\u{1820}" . '</p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        self::assertEqualsWithDelta(40.0, $p->lineBoxes[0]->height, 0.01);
+    }
+
+    /**
+     * Positive: the line's shared baseline sits at `ascent + half-leading`,
+     * NOT at the raw ascent. NotoSansMongolian ascent 1.457em at 20px = 29.14;
+     * line-height 40 gives half-leading (40 − 35) / 2 = 2.5, so baseline
+     * 31.64. This is the core half-leading placement the painter consumes.
+     */
+    public function testHalfLeadingBaselineIsAscentPlusHalfLeading(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 20px; line-height: 40px">' . "\u{1820}" . '</p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        self::assertEqualsWithDelta(31.64, $p->lineBoxes[0]->baseline, 0.05);
+    }
+
+    /**
+     * Negative: a smaller inline child does NOT shrink the line below the
+     * block's own strut. Parent font-size 40 / line-height normal (48), a
+     * tiny 8px child — the strut floors the line box at 48.
+     */
+    public function testStrutFloorsLineHeightAgainstSmallerChild(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 40px; line-height: normal">'
+            . "\u{1820}" . '<span style="font-size: 8px">' . "\u{1820}" . '</span></p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        // 40px strut: 1.2 × 40 = 48; the 8px child can't pull it down.
+        self::assertEqualsWithDelta(48.0, $p->lineBoxes[0]->height, 0.01);
+    }
+
+    /**
+     * Negative: `line-height: 0` collapses the strut's leading fully — the
+     * line box height is the font's own ascent + descent minus the (very
+     * negative) leading, i.e. the glyph box shrinks to zero contribution
+     * above+below summing to 0 for the strut, so the line height is driven
+     * purely by the single fragment's own zero-leading extent (a + d) offset
+     * — never negative. Confirms the model floors sanely at line-height 0.
+     */
+    public function testZeroLineHeightDoesNotProduceNegativeHeight(): void
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 20px; line-height: 0">' . "\u{1820}" . '</p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        // line-height 0 → above + below = 0 for the single 20px box.
+        self::assertEqualsWithDelta(0.0, $p->lineBoxes[0]->height, 0.01);
+        self::assertGreaterThanOrEqual(0.0, $p->lineBoxes[0]->height);
     }
 
     /**
