@@ -3144,6 +3144,94 @@ final class BlockLayoutTest extends TestCase
     }
 
     /**
+     * Build a line mixing a large baseline glyph (48px) and a small 16px
+     * glyph carrying `vertical-align: $vAlign`, and return the small
+     * fragment's half-leading-expanded extents alongside the line box, so the
+     * keyword-placement tests can assert the spec property directly from the
+     * fragment's own metrics rather than a magic number.
+     *
+     * @return array{LineBox, InlineFragment, float, float, float, float} [line, frag, a, d, ea, ed]
+     */
+    private function vAlignFixture(string $vAlign): array
+    {
+        $box = $this->buildTree(
+            '<html><body><p id="p" style="font-size: 16px">'
+            . '<span style="font-size: 48px">' . "\u{1820}" . '</span>'
+            . '<span style="font-size: 16px; vertical-align: ' . $vAlign . '">' . "\u{1820}" . '</span>'
+            . '</p></body></html>',
+            'html, body, p { display: block; }',
+        );
+        $this->layout->layout($box, $this->mongolianContext());
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        $line = $p->lineBoxes[0];
+        $frag = $line->fragments[1];
+        $font = $frag->shapedRun->font;
+        $upem = max(1, $font->unitsPerEm);
+        $fs = $frag->shapedRun->fontSizePt;
+        $a = ($font->ascent / $upem) * $fs;
+        $d = (abs($font->descent) / $upem) * $fs;
+        $lead = ($frag->lineHeight - ($a + $d)) / 2.0;
+        return [$line, $frag, $a, $d, $a + $lead, $d + $lead];
+    }
+
+    /**
+     * Positive: `vertical-align: top` pins the small fragment's (expanded)
+     * box top to the line box top (y = 0).
+     */
+    public function testVerticalAlignTopPinsFragmentToLineTop(): void
+    {
+        [$line, $frag, , , $ea] = $this->vAlignFixture('top');
+        $paintedTop = $line->baseline + $frag->baselineShift - $ea;
+        self::assertEqualsWithDelta(0.0, $paintedTop, 0.05);
+    }
+
+    /**
+     * Negative: `vertical-align: bottom` pins the fragment's (expanded) box
+     * bottom to the line box bottom (y = height), NOT the top.
+     */
+    public function testVerticalAlignBottomPinsFragmentToLineBottom(): void
+    {
+        [$line, $frag, , , , $ed] = $this->vAlignFixture('bottom');
+        $paintedBottom = $line->baseline + $frag->baselineShift + $ed;
+        self::assertEqualsWithDelta($line->height, $paintedBottom, 0.05);
+    }
+
+    /**
+     * Negative: `vertical-align: middle` centres the fragment's content box
+     * on the baseline minus half the parent's x-height. NotoSansMongolian
+     * x-height is 0.5em = 8px at 16px, so the centre sits 4px above baseline.
+     */
+    public function testVerticalAlignMiddleCentersOnHalfXHeight(): void
+    {
+        [$line, $frag, $a, $d] = $this->vAlignFixture('middle');
+        $center = $line->baseline + $frag->baselineShift + ($d - $a) / 2.0;
+        self::assertEqualsWithDelta($line->baseline - 4.0, $center, 0.05);
+    }
+
+    /**
+     * Negative (control): `vertical-align: baseline` leaves the fragment on
+     * the shared baseline — zero shift, so it does NOT move to top/bottom.
+     */
+    public function testVerticalAlignBaselineLeavesFragmentOnBaseline(): void
+    {
+        [, $frag] = $this->vAlignFixture('baseline');
+        self::assertEqualsWithDelta(0.0, $frag->baselineShift, 0.01);
+    }
+
+    /**
+     * Negative: `vertical-align: text-top` aligns the fragment's content-box
+     * top with the strut's content-box top (line.baseline − strutAscent).
+     * NotoSansMongolian ascent 1.457em at the 16px parent = 23.31.
+     */
+    public function testVerticalAlignTextTopAlignsToStrutAscent(): void
+    {
+        [$line, $frag, $a] = $this->vAlignFixture('text-top');
+        $fragContentTop = $line->baseline + $frag->baselineShift - $a;
+        self::assertEqualsWithDelta($line->baseline - 23.31, $fragContentTop, 0.05);
+    }
+
+    /**
      * Positive: an inline-level `position: absolute` box with `top:
      * auto` takes its static Y from the line of the preceding inline
      * content — ON that line, not below the whole inline block.

@@ -109,5 +109,16 @@ final readonly class InlineFragment
          * honoured as zero leading, not mistaken for unset.
          */
         public float $lineHeight = -1.0,
+        /**
+         * The line-relative `vertical-align` keyword for this fragment's
+         * originating inline box (CSS2 §10.8.1) — one of `top`, `bottom`,
+         * `middle`, `text-top`, `text-bottom`. The default `baseline` (also
+         * covers `sub`/`super`/`<length>`, which are folded into
+         * `baselineShift` during the tree walk since they compose through
+         * nesting). The keyword forms do NOT compose and are resolved against
+         * the line box / strut in `finalizeLine`, which overrides
+         * `baselineShift` for these fragments.
+         */
+        public string $verticalAlign = 'baseline',
     ) {}
 }

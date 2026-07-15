@@ -106,6 +106,12 @@ final class InlineLayout
         // height. `lineMetrics` folds this in alongside the real fragments.
         $strutAscent = ($font->ascent / max(1, $font->unitsPerEm)) * $fontSize;
         $strutDescent = (abs($font->descent) / max(1, $font->unitsPerEm)) * $fontSize;
+        // x-height drives `vertical-align: middle` (box centre aligns with the
+        // baseline minus half the parent's x-height). Fall back to 0.5em when
+        // the font carries no x-height metric.
+        $strutXHeight = $font->xHeight > 0
+            ? ($font->xHeight / max(1, $font->unitsPerEm)) * $fontSize
+            : $fontSize * 0.5;
         $whiteSpace = $this->whiteSpaceKeyword($parent);
         // CSS Text 3 §4 — wrap permission table:
         //   normal / pre-wrap / pre-line / break-spaces → allow soft wrap
@@ -138,6 +144,7 @@ final class InlineLayout
             $wordSpacing,
             baselineShift: 0.0,
             lineHeight: $lineHeight,
+            verticalAlign: 'baseline',
             href: null,
             isBold: $parentMatch['isBold'],
             isItalic: $parentMatch['isItalic'],
@@ -205,7 +212,7 @@ final class InlineLayout
                         ? $bounds['left'] + $textIndent
                         : end($currentFragments)->x + end($currentFragments)->width;
                 }
-                [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+                [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
@@ -239,6 +246,7 @@ final class InlineLayout
                 $token['decorationColor'] ?? null,
                 (bool) $token['isWhitespace'],
                 $token['lineHeight'] ?? -1.0,
+                $token['verticalAlign'] ?? 'baseline',
             );
             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
             // Side-channel: AtomicInlineBox positions get committed back to
@@ -327,7 +335,7 @@ final class InlineLayout
             $currentX += $width;
             $atLineStart = false;
             if ($isMandatory) {
-                [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+                [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
@@ -339,7 +347,7 @@ final class InlineLayout
             }
         }
         if ($currentFragments !== []) {
-            [$effective, $lineBase] = $this->lineMetrics($currentFragments, $strutAscent, $strutDescent, $lineHeight);
+            [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
             $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
             $y += $effective;
         }
@@ -422,6 +430,7 @@ final class InlineLayout
                         $f->decorationColor,
                         $f->isWhitespace,
                         $f->lineHeight,
+                        $f->verticalAlign,
                     ),
                 ], $line->baseline);
                 $cumBlock += $line->height;
@@ -792,6 +801,7 @@ final class InlineLayout
             $fragment->decorationColor,
             $fragment->isWhitespace,
             $fragment->lineHeight,
+            $fragment->verticalAlign,
         );
     }
 
@@ -1115,7 +1125,7 @@ final class InlineLayout
     {
         $out = [];
         foreach ($fragments as $f) {
-            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight);
+            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign);
         }
         return $out;
     }
@@ -1147,7 +1157,7 @@ final class InlineLayout
             // visible fragment's right edge becomes — they aren't
             // shifted (they hang past the line edge).
             $shift = $i <= $lastVisible ? $i * $delta : $lastVisible * $delta;
-            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight);
+            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign);
         }
         return $out;
     }
@@ -1169,6 +1179,7 @@ final class InlineLayout
         float $wordSpacing,
         float $baselineShift,
         float $lineHeight,
+        string $verticalAlign,
         ?string $href,
         bool $isBold,
         bool $isItalic,
@@ -1190,6 +1201,7 @@ final class InlineLayout
                 $wordSpacing,
                 $baselineShift,
                 $lineHeight,
+                $verticalAlign,
                 $href,
                 $isBold,
                 $isItalic,
@@ -1235,6 +1247,7 @@ final class InlineLayout
         float $wordSpacing,
         float $baselineShift,
         float $lineHeight,
+        string $verticalAlign,
         ?string $href,
         bool $isBold,
         bool $isItalic,
@@ -1272,6 +1285,7 @@ final class InlineLayout
             foreach ($this->tokeniseText($text, $shapingCtx, $letterSpacing, $wordSpacing, $breakAll, $splitWsBoundaries) as $token) {
                 $token['baselineShift'] = $baselineShift;
                 $token['lineHeight'] = $lineHeight;
+                $token['verticalAlign'] = $verticalAlign;
                 $token['href'] = $href;
                 $token['isBold'] = $isBold;
                 $token['isItalic'] = $isItalic;
@@ -1299,6 +1313,7 @@ final class InlineLayout
                 'isWhitespace' => false,
                 'kind' => LineBreakKind::Mandatory,
                 'lineHeight' => $lineHeight,
+                'verticalAlign' => $verticalAlign,
             ];
             return;
         }
@@ -1373,6 +1388,7 @@ final class InlineLayout
                 'kind' => LineBreakKind::Allowed,
                 'baselineShift' => $baselineShift,
                 'lineHeight' => $lineHeight,
+                'verticalAlign' => $this->resolveVerticalAlignKeyword($box),
                 'href' => $href,
                 'isBold' => $isBold,
                 'isItalic' => $isItalic,
@@ -1459,6 +1475,9 @@ final class InlineLayout
             // stamp it so `lineMetrics` can apply per-run half-leading
             // instead of the block's uniform value.
             $childLineHeight = $this->resolveLineHeight($box, $boxFontSize);
+            // vertical-align does NOT inherit: each inline box gets its own
+            // keyword (default `baseline`), applied to its direct content.
+            $childVAlign = $this->resolveVerticalAlignKeyword($box);
             $boxFont = $boxMatch['font'] ?? $shapingCtx->font;
             $fontSizeChanged = abs($boxFontSize - $shapingCtx->fontSizePt) > 0.001;
             $fontChanged = $boxFont !== $shapingCtx->font;
@@ -1475,6 +1494,7 @@ final class InlineLayout
                     $wordSpacing,
                     $baselineShift + $boxShift,
                     $childLineHeight,
+                    $childVAlign,
                     $childHref,
                     $childBold,
                     $childItalic,
@@ -1513,47 +1533,130 @@ final class InlineLayout
     }
 
     /**
-     * CSS2 §10.8 line-box sizing with half-leading. Each inline box (and the
-     * block's own strut) contributes a content box of `ascent + descent`
-     * grown by its leading `L = lineHeight − (ascent + descent)`, split half
-     * above the ascent and half below the descent. The line's baseline sits
-     * at the greatest half-leading-expanded ascent over all contributors; its
-     * height runs from there down past the greatest expanded descent.
+     * CSS2 §10.8 line-box sizing + `vertical-align` placement, in two passes.
      *
-     * The strut (the block container's own font metrics + line-height) always
-     * participates, so an empty line or a line of only-smaller text still
-     * reserves the block's line height. A fragment whose `lineHeight` is unset
-     * (the `-1.0` sentinel) falls back to no leading (`ascent + descent`), so
-     * synthetic fragments size to their glyph box; an explicit `line-height: 0`
-     * (a real `0.0`) is honoured as full negative leading.
+     * Each inline box (and the block's own strut) contributes a content box of
+     * `ascent + descent` grown by its half-leading `(lineHeight − ascent −
+     * descent) / 2`. A fragment's offset `o` from the line baseline (positive =
+     * lower) drives both its placement and its extent (`above = expandedAscent
+     * − o`, `below = expandedDescent + o`).
+     *
+     * Pass A — baseline (with composed `sub`/`super`/`<length>` already in
+     * `baselineShift`) plus the strut-relative keywords `text-top`
+     * (content-top → line text-top), `text-bottom` (content-bottom → line
+     * text-bottom) and `middle` (box centre → baseline − x-height/2). The line
+     * baseline sits at the greatest `above`; the height runs to the greatest
+     * `below`. The strut always participates, so an empty line or a line of
+     * only-smaller text still reserves the block's line height.
+     *
+     * Pass B — the line-box-relative keywords `top` (box top → line top, may
+     * grow the line downward) and `bottom` (box bottom → line bottom), placed
+     * against the Pass-A extent.
+     *
+     * Fragments whose computed offset differs from their stored `baselineShift`
+     * are reconstructed so the painter (which draws at `line.baseline +
+     * baselineShift`) places them correctly. A fragment whose `lineHeight` is
+     * the `-1.0` sentinel falls back to no leading; an explicit `0.0` is
+     * honoured as full negative leading.
      *
      * @param list<InlineFragment> $fragments
-     * @return array{float, float} [height, baseline]
+     * @return array{float, float, list<InlineFragment>} [height, baseline, fragments]
      */
-    private function lineMetrics(
+    private function finalizeLine(
         array $fragments,
         float $strutAscent,
         float $strutDescent,
         float $strutLineHeight,
+        float $strutXHeight,
     ): array {
         $strutLead = ($strutLineHeight - ($strutAscent + $strutDescent)) / 2.0;
         $above = $strutAscent + $strutLead;
         $below = $strutDescent + $strutLead;
-        foreach ($fragments as $f) {
-            $a = $this->fragmentAscent($f);
-            $d = $this->fragmentDescent($f);
-            $lh = $f->lineHeight >= 0.0 ? $f->lineHeight : ($a + $d);
-            $lead = ($lh - ($a + $d)) / 2.0;
-            $ea = $a + $lead;
-            $ed = $d + $lead;
-            if ($ea > $above) {
-                $above = $ea;
+        // Per-fragment offset below the line baseline; null defers a
+        // top/bottom fragment to pass B.
+        /** @var array<int, float|null> $offsets */
+        $offsets = [];
+        foreach ($fragments as $i => $f) {
+            [$a, $d, $ea, $ed] = $this->fragmentExtents($f);
+            if ($f->verticalAlign === 'top' || $f->verticalAlign === 'bottom') {
+                $offsets[$i] = null;
+                continue;
             }
-            if ($ed > $below) {
-                $below = $ed;
+            $o = match ($f->verticalAlign) {
+                'text-top' => $a - $strutAscent,
+                'text-bottom' => $strutDescent - $d,
+                'middle' => ($a - $d) / 2.0 - $strutXHeight / 2.0,
+                default => $f->baselineShift,
+            };
+            $offsets[$i] = $o;
+            $above = max($above, $ea - $o);
+            $below = max($below, $ed + $o);
+        }
+        $baseline = $above;
+        $height = $above + $below;
+        foreach ($fragments as $i => $f) {
+            if ($offsets[$i] !== null) {
+                continue;
+            }
+            [, , $ea, $ed] = $this->fragmentExtents($f);
+            if ($f->verticalAlign === 'top') {
+                // Box top pinned to the line top (y = 0); grow the line down.
+                $offsets[$i] = $ea - $baseline;
+                $height = max($height, $ea + $ed);
+            } else {
+                // Box bottom pinned to the line bottom.
+                $offsets[$i] = $height - $ed - $baseline;
             }
         }
-        return [$above + $below, $above];
+        $out = [];
+        foreach ($fragments as $i => $f) {
+            $o = $offsets[$i] ?? $f->baselineShift;
+            $out[] = abs($o - $f->baselineShift) < 0.0001
+                ? $f
+                : $this->withBaselineShift($f, $o);
+        }
+        return [$height, $baseline, $out];
+    }
+
+    /**
+     * A fragment's ascent, descent, and their half-leading-expanded forms:
+     * `[ascent, descent, expandedAscent, expandedDescent]`.
+     *
+     * @return array{float, float, float, float}
+     */
+    private function fragmentExtents(InlineFragment $f): array
+    {
+        $a = $this->fragmentAscent($f);
+        $d = $this->fragmentDescent($f);
+        $lh = $f->lineHeight >= 0.0 ? $f->lineHeight : ($a + $d);
+        $lead = ($lh - ($a + $d)) / 2.0;
+        return [$a, $d, $a + $lead, $d + $lead];
+    }
+
+    /**
+     * Clone a fragment with a new `baselineShift` (its offset below the line
+     * baseline). Used by {@see finalizeLine} to write back the resolved
+     * `vertical-align` offset while preserving every other field.
+     */
+    private function withBaselineShift(InlineFragment $f, float $shift): InlineFragment
+    {
+        return new InlineFragment(
+            $f->x,
+            $f->width,
+            $f->shapedRun,
+            $shift,
+            $f->href,
+            $f->isBold,
+            $f->isItalic,
+            $f->decorationLines,
+            $f->textColor,
+            $f->backgroundColor,
+            $f->linkTitle,
+            $f->decorationColor,
+            $f->isWhitespace,
+            $f->lineHeight,
+            $f->verticalAlign,
+        );
     }
 
     /**
@@ -1909,14 +2012,15 @@ final class InlineLayout
     }
 
     /**
-     * CSS Inline 3 §4.5 `vertical-align`: Phase-1 honours the `sub` and
-     * `super` keywords, lifting / lowering the fragment's baseline by a
-     * font-size-relative amount. Browser defaults: `super` ≈ +0.5em lift,
-     * `sub` ≈ +0.2em drop. Returns the offset in layout-Y space (negative
-     * lifts, positive drops). All other values (baseline / Length /
-     * Percentage / top / middle / bottom / text-top / text-bottom) fall
-     * through to 0 for now — full vertical-align lands with mixed-size
-     * inline runs.
+     * CSS Inline 3 §4.5 `vertical-align`: the `sub` and `super` keywords lift
+     * / lower the fragment's baseline by a font-size-relative amount and
+     * COMPOSE through nesting, so they're folded into the running
+     * `baselineShift` during the tree walk. Browser defaults: `super` ≈
+     * +0.5em lift, `sub` ≈ +0.2em drop. Returns the offset in layout-Y space
+     * (negative lifts, positive drops). The line-relative keywords (top /
+     * bottom / middle / text-top / text-bottom) do NOT compose and are
+     * resolved later against the line box in `finalizeLine`, so they return 0
+     * here — see {@see resolveVerticalAlignKeyword}.
      */
     private function resolveVerticalAlign(Box $box, float $fontSize): float
     {
@@ -1928,6 +2032,26 @@ final class InlineLayout
             'super' => -$fontSize * 0.5,
             'sub' => $fontSize * 0.2,
             default => 0.0,
+        };
+    }
+
+    /**
+     * The line-relative `vertical-align` keyword for a box — one of `top`,
+     * `bottom`, `middle`, `text-top`, `text-bottom` — or `baseline` for
+     * everything else (including `sub`/`super`/`<length>`, which compose via
+     * {@see resolveVerticalAlign} into `baselineShift`). These keywords are
+     * resolved against the line box / strut in `finalizeLine`.
+     */
+    private function resolveVerticalAlignKeyword(Box $box): string
+    {
+        $value = $box->style->get('vertical-align');
+        if (!($value instanceof \Phpdftk\Css\Value\Keyword)) {
+            return 'baseline';
+        }
+        $name = strtolower($value->name);
+        return match ($name) {
+            'top', 'bottom', 'middle', 'text-top', 'text-bottom' => $name,
+            default => 'baseline',
         };
     }
 
