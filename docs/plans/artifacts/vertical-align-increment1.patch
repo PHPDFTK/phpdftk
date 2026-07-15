@@ -1,0 +1,426 @@
+diff --git a/packages/css/src/Cascade/PropertyRegistry.php b/packages/css/src/Cascade/PropertyRegistry.php
+index 0a7155cb1..c9bfc516c 100644
+--- a/packages/css/src/Cascade/PropertyRegistry.php
++++ b/packages/css/src/Cascade/PropertyRegistry.php
+@@ -181,6 +181,11 @@ final class PropertyRegistry
+         $r->register($initial('writing-mode', new Keyword('horizontal-tb'), true));
+         $r->register($initial('text-orientation', new Keyword('mixed'), true));
+         $r->register($initial('vertical-align', new Keyword('baseline')));
++        // CSS Inline 3 §4.2 — `baseline-shift` longhand. Initial `0`,
++        // does not inherit. Accepts `<length-percentage>` (percentages
++        // relative to `line-height`) plus the `sub` / `super` keywords
++        // and the line-relative `top` / `center` / `bottom` keywords.
++        $r->register($initial('baseline-shift', $zero));
+         // CSS UI 4 — pointer, user-select, cursor are runtime-only on
+         // print but author CSS shouldn't be dropped at cascade time.
+         $r->register($initial('cursor', new Keyword('auto'), true));
+diff --git a/packages/html-to-pdf/src/Layout/FontResolver.php b/packages/html-to-pdf/src/Layout/FontResolver.php
+index a786fc715..86eb203bd 100644
+--- a/packages/html-to-pdf/src/Layout/FontResolver.php
++++ b/packages/html-to-pdf/src/Layout/FontResolver.php
+@@ -96,6 +96,28 @@ final readonly class FontResolver
+         return null;
+     }
+ 
++    /**
++     * Last-resort fallback: return *any* loaded face, preferring the
++     * multi-face `faceMap` then the single-face `fontMap`. Used by the
++     * inline layout when neither the cascaded `font-family` nor a
++     * configured `defaultFont` yields a face, but the document DID load
++     * at least one `@font-face` — so text can still be shaped (in a
++     * font, even if not the requested family) rather than dropped
++     * entirely. Returns null only when no font is available anywhere.
++     */
++    public function anyAvailableFont(): ?FontFaceData
++    {
++        foreach ($this->faceMap as $faces) {
++            if ($faces !== []) {
++                return $faces[0]->data;
++            }
++        }
++        foreach ($this->fontMap as $data) {
++            return $data;
++        }
++        return null;
++    }
++
+     /**
+      * CSS Fonts 4 §6 font-matching over the in-family face list. Picks
+      * first by style preference (an exact-style match always beats a
+diff --git a/packages/html-to-pdf/src/Layout/InlineFragment.php b/packages/html-to-pdf/src/Layout/InlineFragment.php
+index af6e13211..174dd9aa3 100644
+--- a/packages/html-to-pdf/src/Layout/InlineFragment.php
++++ b/packages/html-to-pdf/src/Layout/InlineFragment.php
+@@ -96,5 +96,23 @@ final readonly class InlineFragment
+          * skip the trailing-ws gap.
+          */
+         public bool $isWhitespace = false,
++        /**
++         * CSS Inline 3 §5 / CSS 2.1 §10.8 line-relative alignment keyword:
++         * `'baseline'` (default — positioned by the numeric `$baselineShift`
++         * from the baseline), or `'top'` / `'middle'` / `'bottom'`, which
++         * align the fragment's own box to the line box's over-edge / centre
++         * / under-edge. For the keyword cases the layout runs a post-pass
++         * (`applyLineBoxAlignment`) once the line height is known and
++         * rewrites `$baselineShift` accordingly, so the painter needs no
++         * change.
++         */
++        public string $verticalAlign = 'baseline',
++        /**
++         * The fragment's own line-relative box height (used value of
++         * `line-height` for a text run) — the extent aligned to the line
++         * box for the `top` / `middle` / `bottom` cases. Zero for baseline
++         * fragments (unused).
++         */
++        public float $emHeight = 0.0,
+     ) {}
+ }
+diff --git a/packages/html-to-pdf/src/Layout/InlineLayout.php b/packages/html-to-pdf/src/Layout/InlineLayout.php
+index 1a28cda3f..dc6386711 100644
+--- a/packages/html-to-pdf/src/Layout/InlineLayout.php
++++ b/packages/html-to-pdf/src/Layout/InlineLayout.php
+@@ -58,6 +58,17 @@ final class InlineLayout
+      */
+     private float $currentAvailableWidth = 0.0;
+ 
++    /**
++     * True for the current `layout()` pass when the IFC is being shaped
++     * against a last-resort `@font-face` fallback (no `defaultFont`, root
++     * family unresolved). While set, `walkInline` emits glyphs only for
++     * text runs whose own `font-family` resolves to a loaded face — runs
++     * in an unloaded family stay blank, preserving the pre-fallback
++     * behaviour for everything except the web-font content that motivated
++     * the fallback.
++     */
++    private bool $fallbackFontActive = false;
++
+     public function __construct(
+         private readonly Shaper $shaper = new Shaper(),
+         private readonly LineBreaker $lineBreaker = new LineBreaker(),
+@@ -85,17 +96,31 @@ final class InlineLayout
+         $parentMatch = $this->resolveBoxFont($parent, $context->defaultFont);
+         $font = $parentMatch['font'];
+         $fontSize = $this->dominantFontSize($parent, $context);
++        // When there is no configured `defaultFont` and the IFC root's own
++        // `font-family` doesn't resolve, the document may still have loaded
++        // an `@font-face` used only by DESCENDANT inline boxes (e.g.
++        // `<span style="font-family: Ahem">` inside a body with no font).
++        // Shape the root run in any loaded face so `walkInline` can proceed
++        // and re-resolve each descendant to its own family. `fallbackFontActive`
++        // then restricts glyph emission to runs whose family REALLY resolves
++        // — text in an unloaded family (e.g. generic `serif`) stays blank,
++        // exactly as it did when the whole IFC aborted. Without that guard,
++        // shaping unmatched text in an arbitrary fallback face regresses far
++        // more tests than the web-font runs it unblocks.
++        $this->fallbackFontActive = false;
++        if ($font === null) {
++            $font = $this->currentFontResolver?->anyAvailableFont();
++            $this->fallbackFontActive = $font !== null;
++        }
+         if ($font === null) {
+-            // No font means text shaping is impossible — but inline
+-            // replaced content (img, svg, math, inline-block divs)
+-            // doesn't need a font for layout. Fall back to a minimal
+-            // atomic-only pass that pulls width / height off the
++            // No font anywhere means text shaping is impossible — but
++            // inline replaced content (img, svg, math, inline-block
++            // divs) doesn't need a font for layout. Fall back to a
++            // minimal atomic-only pass that pulls width / height off the
+             // cascade so paintImage and the foreign-content painters
+             // (paintInlineSvg, paintInlineMath) see real geometry
+             // instead of the (0, 0, 0, 0) box the full early return
+-            // used to produce. Closes #39 for the atomic-content
+-            // case; text-bearing documents still need an explicit
+-            // default font.
++            // used to produce. Closes #39 for the atomic-content case.
+             return $this->layoutAtomicOnly($parent);
+         }
+         $shapingCtx = new ShapingContext($font, $fontSize, features: $this->resolveOpenTypeFeatures($parent));
+@@ -232,6 +257,8 @@ final class InlineLayout
+                 $token['linkTitle'] ?? null,
+                 $token['decorationColor'] ?? null,
+                 (bool) $token['isWhitespace'],
++                $token['verticalAlign'] ?? 'baseline',
++                (float) ($token['vAlignEmHeight'] ?? 0.0),
+             );
+             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
+             // Side-channel: AtomicInlineBox positions get committed back to
+@@ -342,6 +369,11 @@ final class InlineLayout
+         // text-align so the alignment math operates on the truncated rect.
+         $lines = $this->applyTextOverflow($lines, $availableWidth, $parent, $shapingCtx, $letterSpacing);
+ 
++        // CSS 2.1 §10.8 / CSS Inline 3 §5 — line-box-relative alignment
++        // (`vertical-align: top/bottom`, `baseline-shift: top/center/bottom`).
++        // Resolved here, once each line's height is known, by rewriting the
++        // keyword-aligned fragments' baseline shift.
++        $lines = $this->applyLineBoxAlignment($lines);
+         $lines = $this->applyTextAlign($lines, $availableWidth, $parent);
+         // CSS Writing Modes 4 §3 — for a vertical-mode block container
+         // hosting an inline formatting context, lines should sit at the
+@@ -361,6 +393,70 @@ final class InlineLayout
+         return [$lines, $y];
+     }
+ 
++    /**
++     * CSS 2.1 §10.8 / CSS Inline 3 §5 — resolve line-box-relative vertical
++     * alignment. A fragment tagged `top` / `middle` / `bottom` aligns its
++     * own box (of extent `emHeight`) to the line box's over-edge / centre /
++     * under-edge; every other fragment keeps its baseline shift. The painter
++     * places a fragment's box top at `line.y + baselineShift`, so:
++     *   - top    → box top at line top            → shift 0
++     *   - bottom → box bottom at line bottom       → shift = lineHeight − emHeight
++     *   - middle → box centre at line centre       → shift = (lineHeight − emHeight)/2
++     * Rewriting `baselineShift` keeps the painter untouched.
++     *
++     * @param list<LineBox> $lines
++     * @return list<LineBox>
++     */
++    private function applyLineBoxAlignment(array $lines): array
++    {
++        $out = [];
++        foreach ($lines as $line) {
++            $hasKeyword = false;
++            foreach ($line->fragments as $f) {
++                if ($f->verticalAlign !== 'baseline') {
++                    $hasKeyword = true;
++                    break;
++                }
++            }
++            if (!$hasKeyword) {
++                $out[] = $line;
++                continue;
++            }
++            $newFragments = [];
++            foreach ($line->fragments as $f) {
++                if ($f->verticalAlign === 'baseline') {
++                    $newFragments[] = $f;
++                    continue;
++                }
++                $shift = match ($f->verticalAlign) {
++                    'top' => 0.0,
++                    'bottom' => $line->height - $f->emHeight,
++                    'middle' => ($line->height - $f->emHeight) / 2.0,
++                    default => $f->baselineShift,
++                };
++                $newFragments[] = new InlineFragment(
++                    $f->x,
++                    $f->width,
++                    $f->shapedRun,
++                    $shift,
++                    $f->href,
++                    $f->isBold,
++                    $f->isItalic,
++                    $f->decorationLines,
++                    $f->textColor,
++                    $f->backgroundColor,
++                    $f->linkTitle,
++                    $f->decorationColor,
++                    $f->isWhitespace,
++                    $f->verticalAlign,
++                    $f->emHeight,
++                );
++            }
++            $out[] = new LineBox($line->y, $line->height, $newFragments);
++        }
++        return $out;
++    }
++
+     /**
+      * @param list<LineBox> $lines
+      * @return list<LineBox>
+@@ -1263,8 +1359,21 @@ final class InlineLayout
+         ?string $linkTitle,
+         ?\Phpdftk\Css\Value\Color $decorationColor,
+         bool $splitWsBoundaries = false,
++        string $verticalAlign = 'baseline',
++        float $vAlignEmHeight = 0.0,
+     ): void {
+         if ($box instanceof TextBox) {
++            // Under the last-resort `@font-face` fallback, only shape text
++            // whose own cascaded `font-family` resolves to a loaded face.
++            // Text in an unloaded family (generic `serif`, an unmatched web
++            // font, etc.) stays blank — the same output the IFC produced
++            // when it aborted to atomic-only, so no coincidental pass is
++            // disturbed.
++            if ($this->fallbackFontActive
++                && $this->resolveBoxFont($box, null)['font'] === null
++            ) {
++                return;
++            }
+             $text = $box->text;
+             if ($collapseInternal) {
+                 // CSS Text 3 §4.1.1: in `normal` / `nowrap`, runs of
+@@ -1298,6 +1407,8 @@ final class InlineLayout
+                 $token['backgroundColor'] = $backgroundColor;
+                 $token['linkTitle'] = $linkTitle;
+                 $token['decorationColor'] = $decorationColor;
++                $token['verticalAlign'] = $verticalAlign;
++                $token['vAlignEmHeight'] = $vAlignEmHeight;
+                 $tokens[] = $token;
+             }
+             return;
+@@ -1388,7 +1499,13 @@ final class InlineLayout
+                 ),
+                 'isWhitespace' => false,
+                 'kind' => LineBreakKind::Allowed,
+-                'baselineShift' => $baselineShift,
++                // An atomic (`<img>`, inline-block) carries the inherited
++                // shift plus its OWN `baseline-shift` / `vertical-align`
++                // (unlike text, whose box never sets these directly).
++                'baselineShift' => $baselineShift + $this->resolveBaselineShift(
++                    $box,
++                    $this->boxFontSize($box) ?? $shapingCtx->fontSizePt,
++                ),
+                 'href' => $href,
+                 'isBold' => $isBold,
+                 'isItalic' => $isItalic,
+@@ -1413,10 +1530,10 @@ final class InlineLayout
+             return;
+         }
+         if ($box instanceof InlineBox) {
+-            // CSS Inline 3 §4.5 `vertical-align: sub` / `super` shifts the
++            // CSS Inline 3 `vertical-align` / `baseline-shift` shift the
+             // child fragments' baselines. Composes with any outer shift so
+             // nested `<sup><sub>x</sub></sup>` still has a sensible effect.
+-            $boxShift = $this->resolveVerticalAlign($box, $shapingCtx->fontSizePt);
++            $boxShift = $this->resolveBaselineShift($box, $shapingCtx->fontSizePt);
+             // HTML 4 / 5 `<a href="...">` — descendants inherit the href so
+             // the painter can emit a `/Link` annotation per fragment. The
+             // companion `<a title="...">` lands on the annotation's
+@@ -1475,6 +1592,19 @@ final class InlineLayout
+             if ($fontSizeChanged || $fontChanged) {
+                 $childCtx = new ShapingContext($boxFont, $boxFontSize);
+             }
++            // CSS 2.1 §10.8 line-relative alignment (`top` / `middle` /
++            // `bottom`). When this inline box requests one, its whole
++            // subtree aligns as a unit to the line box, using this box's
++            // own line-height as the aligned extent. Otherwise inherit the
++            // ancestor's alignment (default `baseline`, positioned by the
++            // numeric baseline-shift above).
++            $childVAlign = $verticalAlign;
++            $childEmHeight = $vAlignEmHeight;
++            $vaKeyword = $this->resolveVerticalAlignKeyword($box);
++            if ($vaKeyword !== null) {
++                $childVAlign = $vaKeyword;
++                $childEmHeight = $this->resolveLineHeight($box, $boxFontSize);
++            }
+             foreach ($box->children as $c) {
+                 $this->walkInline(
+                     $c,
+@@ -1493,6 +1623,8 @@ final class InlineLayout
+                     $childTitle,
+                     $childDecoColor,
+                     $splitWsBoundaries,
++                    $childVAlign,
++                    $childEmHeight,
+                 );
+             }
+         }
+@@ -1886,26 +2018,90 @@ final class InlineLayout
+     }
+ 
+     /**
+-     * CSS Inline 3 §4.5 `vertical-align`: Phase-1 honours the `sub` and
+-     * `super` keywords, lifting / lowering the fragment's baseline by a
+-     * font-size-relative amount. Browser defaults: `super` ≈ +0.5em lift,
+-     * `sub` ≈ +0.2em drop. Returns the offset in layout-Y space (negative
+-     * lifts, positive drops). All other values (baseline / Length /
+-     * Percentage / top / middle / bottom / text-top / text-bottom) fall
+-     * through to 0 for now — full vertical-align lands with mixed-size
+-     * inline runs.
++     * Resolve a box's total baseline shift (in layout-Y space; negative
++     * lifts, positive drops) from two CSS Inline 3 longhands:
++     *
++     *  - `vertical-align` §4.5 — the `sub` / `super` keywords lift /
++     *    lower the fragment's baseline by a font-size-relative amount
++     *    (browser defaults: `super` ≈ +0.5em lift, `sub` ≈ +0.2em drop).
++     *    baseline / top / middle / bottom / text-top / text-bottom fall
++     *    through to 0 for now — full vertical-align lands with mixed-size
++     *    inline runs.
++     *  - `baseline-shift` §4.2 — a positive `<length-percentage>` raises
++     *    the box; percentages are relative to the box's own `line-height`.
++     *    `sub` / `super` behave as for vertical-align. The line-relative
++     *    `top` / `center` / `bottom` keywords need line-box extent
++     *    resolution (the same mixed-size machinery) and stay at 0.
++     *
++     * The two longhands compose additively so `vertical-align: super` on
++     * an ancestor still nests with a descendant's explicit `baseline-shift`.
+      */
+-    private function resolveVerticalAlign(Box $box, float $fontSize): float
++    private function resolveBaselineShift(Box $box, float $fontSize): float
+     {
+-        $value = $box->style->get('vertical-align');
+-        if (!($value instanceof \Phpdftk\Css\Value\Keyword)) {
+-            return 0.0;
++        $shift = 0.0;
++
++        $va = $box->style->get('vertical-align');
++        if ($va instanceof \Phpdftk\Css\Value\Keyword) {
++            $shift += match (strtolower($va->name)) {
++                'super' => -$fontSize * 0.5,
++                'sub' => $fontSize * 0.2,
++                default => 0.0,
++            };
+         }
+-        return match (strtolower($value->name)) {
+-            'super' => -$fontSize * 0.5,
+-            'sub' => $fontSize * 0.2,
+-            default => 0.0,
+-        };
++
++        $bs = $box->style->get('baseline-shift');
++        if ($bs instanceof \Phpdftk\Css\Value\Keyword) {
++            $shift += match (strtolower($bs->name)) {
++                'super' => -$fontSize * 0.5,
++                'sub' => $fontSize * 0.2,
++                default => 0.0,
++            };
++        } elseif ($bs instanceof Length) {
++            // Lengths arrive pre-resolved to px by the cascade (em is
++            // resolved against the box's own font-size). Positive raises.
++            $shift += -$bs->value;
++        } elseif ($bs instanceof \Phpdftk\Css\Value\Percentage) {
++            // §4.2 — percentages resolve against the used `line-height`.
++            $lineHeight = $this->resolveLineHeight($box, $fontSize);
++            $shift += -($bs->value / 100.0) * $lineHeight;
++        }
++
++        return $shift;
++    }
++
++    /**
++     * CSS 2.1 §10.8 / CSS Inline 3 §5 — the line-relative alignment
++     * keyword requested by `vertical-align` or the `baseline-shift`
++     * longhand: `'top'` / `'middle'` / `'bottom'`, or null for the
++     * baseline family (baseline / sub / super / length / percentage,
++     * which the numeric `resolveBaselineShift` already handles).
++     * `baseline-shift`'s `center` maps onto vertical-align's `middle`.
++     */
++    private function resolveVerticalAlignKeyword(Box $box): ?string
++    {
++        // `vertical-align: top | bottom` are line-box-relative (§10.8).
++        // `middle` is NOT — it's baseline + x-height/2, a numeric shift —
++        // so it is deliberately excluded here (handled elsewhere / later).
++        $va = $box->style->get('vertical-align');
++        if ($va instanceof \Phpdftk\Css\Value\Keyword) {
++            $name = strtolower($va->name);
++            if ($name === 'top' || $name === 'bottom') {
++                return $name;
++            }
++        }
++        // `baseline-shift: top | center | bottom` (CSS Inline 3 §4.2) ARE
++        // line-box-relative; `center` aligns the box centre to the line
++        // centre (distinct from vertical-align's `middle`).
++        $bs = $box->style->get('baseline-shift');
++        if ($bs instanceof \Phpdftk\Css\Value\Keyword) {
++            return match (strtolower($bs->name)) {
++                'top' => 'top',
++                'bottom' => 'bottom',
++                'center' => 'middle',
++                default => null,
++            };
++        }
++        return null;
+     }
+ 
+     /**
