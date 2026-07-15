@@ -200,7 +200,7 @@ final class InlineLayout
                         : end($currentFragments)->x + end($currentFragments)->width;
                 }
                 $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-                $lines[] = new LineBox($y, $effective, $currentFragments);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -321,7 +321,7 @@ final class InlineLayout
             $atLineStart = false;
             if ($isMandatory) {
                 $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-                $lines[] = new LineBox($y, $effective, $currentFragments);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -333,7 +333,7 @@ final class InlineLayout
         }
         if ($currentFragments !== []) {
             $effective = $this->lineHeightFor($currentFragments, $lineHeight, $lineHeightMultiplier);
-            $lines[] = new LineBox($y, $effective, $currentFragments);
+            $lines[] = new LineBox($y, $effective, $currentFragments, $this->lineBaseline($currentFragments));
             $y += $effective;
         }
 
@@ -415,7 +415,7 @@ final class InlineLayout
                         $f->decorationColor,
                         $f->isWhitespace,
                     ),
-                ]);
+                ], $line->baseline);
                 $cumBlock += $line->height;
                 continue;
             }
@@ -426,6 +426,7 @@ final class InlineLayout
                     0.0,
                     $line->height,
                     $shift > 0.0 ? $this->shiftFragments($line->fragments, $shift) : $line->fragments,
+                    $line->baseline,
                 );
             } else {
                 $out[] = $line;
@@ -731,7 +732,7 @@ final class InlineLayout
                 $tail = $last->x + $last->width;
                 $fragments[] = new InlineFragment($tail, $ellipsisWidth, $ellipsis);
             }
-            $out[] = new LineBox($line->y, $line->height, $fragments);
+            $out[] = new LineBox($line->y, $line->height, $fragments, $line->baseline);
         }
         return $out;
     }
@@ -866,7 +867,7 @@ final class InlineLayout
                 'justify' => $this->justifyFragments($line->fragments, $slack),
                 default => $line->fragments,
             };
-            $out[] = new LineBox($line->y, $line->height, $newFragments);
+            $out[] = new LineBox($line->y, $line->height, $newFragments, $line->baseline);
         }
         return $out;
     }
@@ -1531,6 +1532,42 @@ final class InlineLayout
             }
         }
         return max($parentLineHeight, $maxFontSize * $multiplier);
+    }
+
+    /**
+     * The distance from a line box's top edge down to its single shared
+     * baseline (CSS2 §10.8). Every baseline-aligned fragment on the line
+     * places its own alphabetic baseline here, so mixed-size runs line up
+     * instead of each sitting at its own ascent. Absent half-leading (added
+     * in a later stage), the baseline sits at the maximum ascent over the
+     * line's fragments; for a single-size line that equals the sole
+     * fragment's ascent, so this is a no-op for the common case and only
+     * repositions the smaller runs on a mixed-size line.
+     *
+     * @param list<InlineFragment> $fragments
+     */
+    private function lineBaseline(array $fragments): float
+    {
+        $baseline = 0.0;
+        foreach ($fragments as $f) {
+            $a = $this->fragmentAscent($f);
+            if ($a > $baseline) {
+                $baseline = $a;
+            }
+        }
+        return $baseline;
+    }
+
+    /**
+     * The alphabetic ascent of a fragment's shaping font in layout units:
+     * `(font.ascent / unitsPerEm) × fontSizePt`. Mirrors the painter's own
+     * ascent computation so the layout baseline and the painted baseline
+     * agree.
+     */
+    private function fragmentAscent(InlineFragment $f): float
+    {
+        $font = $f->shapedRun->font;
+        return ($font->ascent / max(1, $font->unitsPerEm)) * $f->shapedRun->fontSizePt;
     }
 
     /**

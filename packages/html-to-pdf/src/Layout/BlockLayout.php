@@ -284,6 +284,7 @@ final class BlockLayout
                     $line->y - $halfLeading,
                     $line->height,
                     $line->fragments,
+                    $line->baseline,
                 );
             }
             $host->lineBoxes = $shifted;

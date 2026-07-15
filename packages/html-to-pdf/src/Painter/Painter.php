@@ -2893,7 +2893,11 @@ final class Painter
             $explicitUnderlineOffset = $this->resolveUnderlineOffset($box, $fontSize);
             $x = $box->geometry->x + $fragment->x;
             $width = $fragment->width;
-            $baselineY = $box->geometry->y + $line->y + $ascent;
+            // Anchor decorations to the fragment's painted baseline: the
+            // line's shared baseline plus the fragment's own vertical-align
+            // shift (matching paintFragment). The underline/overline offsets
+            // below stay relative to the fragment's own ascent.
+            $baselineY = $box->geometry->y + $line->y + $line->baseline + $fragment->baselineShift;
             $style = $this->textDecorationStyle($box);
             // Per CSS Text Decoration 4 §3, the decoration colour follows
             // the *originating* element's `text-decoration-color` (when
@@ -3119,10 +3123,13 @@ final class Painter
         $font = $shapedRun->font;
         $ascent = ($font->ascent / max(1, $font->unitsPerEm)) * $shapedRun->fontSizePt;
         $x = $box->geometry->x + $fragment->x + $offsetX;
-        // CSS Inline 3 §4.5 vertical-align — `baselineShift` is negative
-        // for `super`, positive for `sub`. Add it in layout-Y space, then
-        // flip to PDF-Y.
-        $baselineY = $box->geometry->y + $line->y + $ascent + $offsetY + $fragment->baselineShift;
+        // CSS2 §10.8 — every baseline-aligned fragment on the line shares the
+        // line's single baseline (`line.baseline`, distance from line top),
+        // so mixed-size runs line up instead of each sitting at its own
+        // ascent. `baselineShift` layers `vertical-align: sub`/`super` (and,
+        // later, the keyword offsets) on top; negative raises, positive
+        // lowers. Add in layout-Y space, then flip to PDF-Y.
+        $baselineY = $box->geometry->y + $line->y + $line->baseline + $offsetY + $fragment->baselineShift;
         $pdfY = $this->pageHeight - $baselineY;
 
         // Pick the RegisteredFont matching this fragment's shaped font.
