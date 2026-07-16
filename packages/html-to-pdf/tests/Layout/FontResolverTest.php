@@ -183,4 +183,72 @@ final class FontResolverTest extends TestCase
         self::assertNotNull($match);
         self::assertSame(125.0, $match->face->stretch);
     }
+
+    /**
+     * CSS Fonts 4 §6.5 directional tie-break. A request exactly between
+     * two faces must not resolve by raw distance (a tie) — the spec
+     * resolves it directionally. Verified against WPT `font-stretch-12`
+     * (semi-condensed → the narrower condensed face, not normal).
+     */
+    private function stretchResolver(): FontResolver
+    {
+        $fontPath = __DIR__ . '/../../../../tests/fixtures/fonts/NotoSans-Regular.otf';
+        if (!is_file($fontPath)) {
+            self::markTestSkipped('Latin fixture font missing');
+        }
+        $data = (new OpenTypeParser($fontPath))->parse();
+        return new FontResolver(
+            fontMap: [],
+            defaultFont: null,
+            faceMap: [
+                'flex' => [
+                    new FontFace($data, 400, 'normal', 75.0),   // condensed
+                    new FontFace($data, 400, 'normal', 100.0),  // normal
+                    new FontFace($data, 400, 'normal', 125.0),  // expanded
+                ],
+            ],
+        );
+    }
+
+    public function testEquidistantStretchBelowNormalPicksNarrowerFace(): void
+    {
+        // semi-condensed (87.5%) is 12.5% from both condensed (75%) and
+        // normal (100%). Request ≤ 100% ⇒ prefer the narrower face.
+        $match = $this->stretchResolver()->resolveMatch(new Keyword('flex'), 400, 'normal', stretch: 87.5);
+        self::assertNotNull($match);
+        self::assertSame(75.0, $match->face->stretch);
+    }
+
+    public function testEquidistantStretchAboveNormalPicksWiderFace(): void
+    {
+        // semi-expanded (112.5%) is 12.5% from both normal (100%) and
+        // expanded (125%). Request > 100% ⇒ prefer the wider face.
+        $match = $this->stretchResolver()->resolveMatch(new Keyword('flex'), 400, 'normal', stretch: 112.5);
+        self::assertNotNull($match);
+        self::assertSame(125.0, $match->face->stretch);
+    }
+
+    public function testNarrowRequestWithNoNarrowerFaceFallsUp(): void
+    {
+        // ultra-condensed (50%) with no face at/below ⇒ smallest above.
+        $match = $this->stretchResolver()->resolveMatch(new Keyword('flex'), 400, 'normal', stretch: 50.0);
+        self::assertNotNull($match);
+        self::assertSame(75.0, $match->face->stretch);
+    }
+
+    public function testWideRequestWithNoWiderFaceFallsDown(): void
+    {
+        // ultra-expanded (200%) with no face at/above ⇒ largest below.
+        $match = $this->stretchResolver()->resolveMatch(new Keyword('flex'), 400, 'normal', stretch: 200.0);
+        self::assertNotNull($match);
+        self::assertSame(125.0, $match->face->stretch);
+    }
+
+    public function testExactStretchMatchWinsOverDirectionalPreference(): void
+    {
+        // An exact face is never overridden by the directional rule.
+        $match = $this->stretchResolver()->resolveMatch(new Keyword('flex'), 400, 'normal', stretch: 100.0);
+        self::assertNotNull($match);
+        self::assertSame(100.0, $match->face->stretch);
+    }
 }

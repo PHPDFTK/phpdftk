@@ -135,10 +135,17 @@ final readonly class FontResolver
     }
 
     /**
-     * CSS Fonts 4 §6.5 — pick the face(s) whose stretch is closest to
-     * the requested value. Ties (multiple faces equidistant) keep
-     * everything; the style/weight matching cascade narrows from
-     * there. Empty input returns empty.
+     * CSS Fonts 4 §6.5 — pick the face(s) at the winning stretch value.
+     * Distance alone is ambiguous when two faces straddle the request
+     * equidistantly (e.g. `semi-condensed` 87.5% is exactly 12.5% from
+     * both `condensed` 75% and `normal` 100%). The spec resolves the tie
+     * *directionally*: if the requested stretch is ≤ normal (100%), faces
+     * at or below the request are preferred (checked descending — i.e.
+     * the largest stretch ≤ target), falling back to the smallest stretch
+     * above; if the request is > 100%, faces at or above are preferred
+     * (smallest stretch ≥ target), falling back to the largest below.
+     * All faces sharing the winning stretch are returned so the
+     * style/weight cascade can narrow further. Empty input returns empty.
      *
      * @param list<FontFace> $faces
      * @return list<FontFace>
@@ -148,16 +155,41 @@ final readonly class FontResolver
         if ($faces === []) {
             return [];
         }
-        $best = INF;
-        foreach ($faces as $f) {
-            $d = abs($f->stretch - $target);
-            if ($d < $best) {
-                $best = $d;
+        $winning = null;
+        if ($target <= 100.0) {
+            // Preferred side: largest stretch ≤ target (descending scan).
+            foreach ($faces as $f) {
+                if ($f->stretch <= $target && ($winning === null || $f->stretch > $winning)) {
+                    $winning = $f->stretch;
+                }
+            }
+            if ($winning === null) {
+                // Fallback: smallest stretch above target.
+                foreach ($faces as $f) {
+                    if ($winning === null || $f->stretch < $winning) {
+                        $winning = $f->stretch;
+                    }
+                }
+            }
+        } else {
+            // Preferred side: smallest stretch ≥ target (ascending scan).
+            foreach ($faces as $f) {
+                if ($f->stretch >= $target && ($winning === null || $f->stretch < $winning)) {
+                    $winning = $f->stretch;
+                }
+            }
+            if ($winning === null) {
+                // Fallback: largest stretch below target.
+                foreach ($faces as $f) {
+                    if ($winning === null || $f->stretch > $winning) {
+                        $winning = $f->stretch;
+                    }
+                }
             }
         }
         return array_values(array_filter(
             $faces,
-            static fn(FontFace $f): bool => abs($f->stretch - $target) === $best,
+            static fn(FontFace $f): bool => $f->stretch === $winning,
         ));
     }
 

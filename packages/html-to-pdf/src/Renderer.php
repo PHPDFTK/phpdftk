@@ -110,9 +110,16 @@ final class Renderer
         // FontResolver gets built. Authored `@font-face` wins over any
         // entry in `RendererOptions::fontMap` that shares its family.
         $fontMap = $this->options->fontMap;
+        $faceMap = $this->options->faceMap;
         $faceWarnings = [];
-        foreach ($this->loadFontFaces($sheets, $faceWarnings) as $name => $data) {
-            $fontMap[strtolower($name)] = $data;
+        foreach ($this->loadFontFaces($sheets, $faceWarnings) as $name => $face) {
+            $key = strtolower($name);
+            // Authored faces feed the multi-face resolver (§6 matching)
+            // AND the single-face fontMap fallback. The fontMap slot is
+            // last-wins (legacy behaviour); the faceMap accumulates every
+            // face so weight/style/stretch selection can discriminate.
+            $fontMap[$key] = $face->data;
+            $faceMap[$key][] = $face;
         }
         $warnings = array_merge($warnings, $faceWarnings);
         // CSS Paged Media 3 §6.1: `@page { size: ... }` overrides the
@@ -158,7 +165,7 @@ final class Renderer
         $fontResolver = new \Phpdftk\HtmlToPdf\Layout\FontResolver(
             $fontMap,
             $this->options->defaultFont,
-            $this->options->faceMap,
+            $faceMap,
         );
         // Plumb the default font's x-height and `0` glyph-width into
         // the LengthContext so `ex` / `ch` resolve against real font
@@ -330,8 +337,12 @@ final class Renderer
             }
             // Register every weight/style face the resolver might pick.
             // Same key as defaultFont/fontMap so the painter looks up the
-            // right RegisteredFont by postScriptName.
-            foreach ($this->options->faceMap as $faces) {
+            // right RegisteredFont by postScriptName. Uses the merged
+            // faceMap (options + authored `@font-face`) so a face the
+            // resolver selects from a multi-face family is actually
+            // embedded — otherwise its glyph IDs reference an unregistered
+            // font and the run paints blank.
+            foreach ($faceMap as $faces) {
                 foreach ($faces as $face) {
                     if (isset($registeredMap[$face->data->postScriptName])) {
                         continue;
@@ -1389,9 +1400,13 @@ final class Renderer
      * `format(...)` hint is accepted but never trusted — magic-number
      * detection on the decoded bytes is the actual gate.
      *
+     * Each yielded value is a {@see \Phpdftk\HtmlToPdf\Layout\FontFace}
+     * carrying the parsed `font-weight` / `font-style` / `font-stretch`
+     * descriptors so multi-face families match per CSS Fonts 4 §6.
+     *
      * @param list<Stylesheet> $sheets
      * @param list<Warning> $warnings
-     * @return iterable<string, \Phpdftk\FontParser\FontFaceData>
+     * @return iterable<string, \Phpdftk\HtmlToPdf\Layout\FontFace>
      */
     private function loadFontFaces(array $sheets, array &$warnings): iterable
     {
@@ -1409,6 +1424,15 @@ final class Renderer
                 $family = null;
                 /** @var list<\Phpdftk\Css\Value\Value> $srcCandidates */
                 $srcCandidates = [];
+                // CSS Fonts 4 §3 face descriptors. Captured so multi-face
+                // families (same family-name, different weight/style/
+                // stretch) build a proper faceMap the resolver can match
+                // over per §6 — without these, all faces collapse onto one
+                // fontMap slot (last-wins) and `font-stretch` / bold-vs-
+                // regular selection silently picks the wrong file.
+                $faceWeight = 400;
+                $faceStyle = 'normal';
+                $faceStretch = 100.0;
                 foreach ($rule->block->contents as $item) {
                     if (!$item instanceof \Phpdftk\Css\Sheet\Declaration) {
                         continue;
@@ -1417,6 +1441,12 @@ final class Renderer
                         $family = $this->fontFamilyName($item->value);
                     } elseif ($item->property === 'src') {
                         $srcCandidates = $this->splitSrcList($item->value);
+                    } elseif ($item->property === 'font-weight') {
+                        $faceWeight = $this->fontFaceWeight($item->value);
+                    } elseif ($item->property === 'font-style') {
+                        $faceStyle = $this->fontFaceStyle($item->value);
+                    } elseif ($item->property === 'font-stretch') {
+                        $faceStretch = $this->fontFaceStretch($item->value);
                     }
                 }
                 if ($family === null || $family === '' || $srcCandidates === []) {
@@ -1478,9 +1508,79 @@ final class Renderer
                     );
                     continue;
                 }
-                yield $family => $data;
+                yield $family => new \Phpdftk\HtmlToPdf\Layout\FontFace(
+                    $data,
+                    $faceWeight,
+                    $faceStyle,
+                    $faceStretch,
+                );
             }
         }
+    }
+
+    /**
+     * Parse a `@font-face` `font-weight` descriptor to the CSS 1–1000
+     * numeric axis (CSS Fonts 4 §3.2). A two-value range keeps the lower
+     * bound — the resolver matches against a single representative weight.
+     * Unrecognised input defaults to 400 (normal).
+     */
+    private function fontFaceWeight(\Phpdftk\Css\Value\Value $value): int
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
+            return match (strtolower($value->name)) {
+                'bold' => 700,
+                default => 400,
+            };
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Integer
+            || $value instanceof \Phpdftk\Css\Value\Number
+        ) {
+            return max(1, min(1000, (int) $value->value));
+        }
+        return 400;
+    }
+
+    /**
+     * Parse a `@font-face` `font-style` descriptor to the
+     * `normal|italic|oblique` set (CSS Fonts 4 §3.3). Unrecognised input
+     * defaults to `normal`.
+     */
+    private function fontFaceStyle(\Phpdftk\Css\Value\Value $value): string
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
+            $lc = strtolower($value->name);
+            if (in_array($lc, ['italic', 'oblique'], true)) {
+                return $lc;
+            }
+        }
+        return 'normal';
+    }
+
+    /**
+     * Parse a `@font-face` `font-stretch` descriptor to a percentage on
+     * the CSS Fonts 4 §3.4 [50, 200] axis. Accepts the named keywords and
+     * bare percentages; a two-value range keeps the lower bound. Values
+     * outside the axis are clamped; unrecognised input defaults to 100.
+     */
+    private function fontFaceStretch(\Phpdftk\Css\Value\Value $value): float
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
+            return match (strtolower($value->name)) {
+                'ultra-condensed' => 50.0,
+                'extra-condensed' => 62.5,
+                'condensed' => 75.0,
+                'semi-condensed' => 87.5,
+                'semi-expanded' => 112.5,
+                'expanded' => 125.0,
+                'extra-expanded' => 150.0,
+                'ultra-expanded' => 200.0,
+                default => 100.0,
+            };
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Percentage) {
+            return max(50.0, min(200.0, (float) $value->value));
+        }
+        return 100.0;
     }
 
     /**

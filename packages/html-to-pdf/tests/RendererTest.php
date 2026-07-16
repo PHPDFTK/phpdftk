@@ -1214,6 +1214,49 @@ final class RendererTest extends TestCase
         self::assertGreaterThanOrEqual(2, $subtypeFontCount, 'both fonts registered');
     }
 
+    public function testMultiFaceFontFaceFamilyRegistersEveryStretchFace(): void
+    {
+        // Two `@font-face` rules share one family name but declare
+        // different `font-stretch` descriptors backed by different font
+        // files. Before descriptor parsing, both faces collapsed onto one
+        // fontMap slot (last-wins) and only ONE font registered — the
+        // stretch the author selected could reference an unregistered
+        // font and paint blank. Both faces must now register so §6.5
+        // stretch matching has a real font to shape against.
+        $latinPath = __DIR__ . '/../../../tests/fixtures/fonts/NotoSans-Regular.otf';
+        $mongolPath = __DIR__ . '/../../../tests/fixtures/fonts/NotoSansMongolian-Regular.otf';
+        if (!is_file($latinPath) || !is_file($mongolPath)) {
+            self::markTestSkipped('Font fixtures missing');
+        }
+        $latinB64 = base64_encode((string) file_get_contents($latinPath));
+        $mongolB64 = base64_encode((string) file_get_contents($mongolPath));
+        $latin = (new OpenTypeParser($latinPath))->parse();
+        $renderer = new Renderer((new RendererOptions())->withDefaultFont($latin));
+        // Condensed face declared FIRST (so it is NOT the last-wins
+        // fontMap entry); the body requests semi-condensed, which §6.5
+        // resolves to the narrower condensed face.
+        $css = '@font-face { font-family: "Multi"; font-stretch: condensed; '
+            . 'src: url(data:font/otf;base64,' . $latinB64 . '); }'
+            . '@font-face { font-family: "Multi"; font-stretch: normal; '
+            . 'src: url(data:font/otf;base64,' . $mongolB64 . '); }';
+        $writer = new PdfWriter(compressStreams: false);
+        $warnings = $renderer->renderInto(
+            $writer,
+            '<html><head><style>' . $css . '</style></head><body>'
+            . '<p style="font-family: Multi; font-stretch: semi-condensed">hi</p>'
+            . '</body></html>',
+        );
+        self::assertSame([], $warnings, 'both @font-face faces load clean');
+        $bytes = $writer->toBytes();
+        // Both faces (condensed Latin + normal Mongolian) register as
+        // composite Type-0 fonts — not just the last-declared one.
+        self::assertGreaterThanOrEqual(
+            2,
+            substr_count($bytes, '/Subtype /Type0'),
+            'every stretch face in the family is registered',
+        );
+    }
+
     public function testFontFaceWoffSourceDecompressesAndRegisters(): void
     {
         // Wrap a real OTF as WOFF and reference it via a `data:font/woff`
