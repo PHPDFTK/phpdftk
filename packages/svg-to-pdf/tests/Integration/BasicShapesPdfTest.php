@@ -68,4 +68,37 @@ final class BasicShapesPdfTest extends TestCase
         $bytes = $writer->toBytes();
         self::assertStringStartsWith('%PDF-', $bytes);
     }
+
+    public function testPatternFillProducesValidPdf(): void
+    {
+        // SVG 2 §13.3 — a shape filled from a `<pattern>` (the
+        // css-transforms/matrix svg-matrix-* case). Exercises the
+        // clip-and-tile path end-to-end into a real PDF.
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612.0, 792.0);
+        $stream = $writer->addContentStream($page);
+
+        $svg = (new SvgParser())->parse(<<<'SVG'
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+              <defs>
+                <pattern id="checks" patternUnits="userSpaceOnUse"
+                         x="0" y="0" width="200" height="100">
+                  <rect x="0" y="0" width="100" height="50" fill="green"/>
+                  <rect x="100" y="0" width="100" height="50" fill="fuchsia"/>
+                  <rect x="0" y="50" width="100" height="50" fill="yellow"/>
+                  <rect x="100" y="50" width="100" height="50" fill="blue"/>
+                </pattern>
+              </defs>
+              <rect width="200" height="100" fill="url(#checks)"
+                    transform="matrix(0.5 0 0 1 0 0)"/>
+            </svg>
+            SVG);
+
+        (new Translator())->paint($svg, $stream);
+
+        $bytes = $writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/Type /Page', $bytes);
+    }
 }

@@ -35,6 +35,7 @@ use Phpdftk\Svg\Symbol;
 use Phpdftk\Svg\Use_;
 use Phpdftk\SvgToPdf\Geometry\BoundingBox;
 use Phpdftk\Svg\Path;
+use Phpdftk\Svg\Pattern;
 use Phpdftk\Svg\Path\ArcTo;
 use Phpdftk\Svg\Path\ClosePath;
 use Phpdftk\Svg\Path\CurveTo;
@@ -2101,6 +2102,16 @@ final class Translator
         $fill = $element->fill();
         $stroke = $element->stroke();
 
+        // SVG 2 §13.3 — when `fill` resolves to a `<pattern>`, the pattern
+        // tile paints clipped to the shape (replacing the flat-colour
+        // fill). Handle it before the plain paint path: the current path
+        // just built by the caller is consumed as the clip region.
+        $pattern = $this->resolveFillPattern($fill);
+        if ($pattern !== null) {
+            $this->paintPatternFill($pattern, $element, $stream, $stroke);
+            return;
+        }
+
         $hasFill = $this->applyFillPaint($fill, $element, $stream);
         $hasStroke = $this->applyStrokePaint($stroke, $element, $stream);
 
@@ -2121,6 +2132,142 @@ final class Translator
         // Path constructed but nothing wants to paint it — discard so
         // we don't bake a leftover current-path into the graphics state.
         $stream->endPath();
+    }
+
+    /** Upper bound on tile repetitions, guarding against pathological patterns. */
+    private const int MAX_PATTERN_TILES = 4096;
+
+    /**
+     * Resolve a `fill` paint to the `<pattern>` it references, or null
+     * when it isn't a `url(#id)` pointing at a pattern (gradients and
+     * flat colours take the ordinary paint path).
+     */
+    private function resolveFillPattern(?Paint $paint): ?Pattern
+    {
+        if (!$paint instanceof Url || $this->document === null) {
+            return null;
+        }
+        $target = $this->document->findById($paint->id);
+        return $target instanceof Pattern ? $target : null;
+    }
+
+    /**
+     * SVG 2 §13.3 — paint `$pattern` into `$element`'s fill region.
+     *
+     * The caller has just constructed the shape's path on the stream; we
+     * turn it into a clip (`W n`) and replicate the pattern tile across
+     * the shape's bounding box inside that clip. Because this runs inside
+     * the element's own `q cm … Q` transform wrap (see paintElement), the
+     * tiles inherit the element's user-space transform automatically —
+     * which is why we tile as ordinary geometry rather than emitting a
+     * PDF tiling pattern (whose `/Matrix` is anchored to the page's
+     * default coordinate system and ignores the fill-time CTM).
+     *
+     * A stroke, if present, re-emits the path after the fill (the clip
+     * consumed the original current path).
+     */
+    private function paintPatternFill(
+        Pattern $pattern,
+        Element $element,
+        ContentStream $stream,
+        ?Paint $stroke,
+    ): void {
+        $bbox = BoundingBox::compute($element);
+        $tile = $bbox !== null ? $this->resolvePatternTile($pattern, $bbox) : null;
+        $hasContent = $pattern->children !== [];
+        if ($bbox === null || $tile === null || !$hasContent) {
+            // Nothing paintable — drop the current path (avoid a stray
+            // fill) but still honour a stroke channel if the shape has one.
+            $stream->endPath();
+            $this->strokeAfterPattern($element, $stream, $stroke);
+            return;
+        }
+
+        $stream->saveGraphicsState();
+        $stream->clip()->endPath(); // W n — shape path becomes the clip
+        $this->emitPatternTiles($pattern, $tile, $bbox, $stream);
+        $stream->restoreGraphicsState();
+
+        $this->strokeAfterPattern($element, $stream, $stroke);
+    }
+
+    /**
+     * Resolve the pattern's tile rectangle in the referencing element's
+     * user space. `patternUnits="objectBoundingBox"` (the default) reads
+     * x/y/width/height as fractions of the element bbox; `userSpaceOnUse`
+     * reads them as plain user units.
+     *
+     * @param array{minX: float, minY: float, width: float, height: float} $bbox
+     * @return array{x: float, y: float, w: float, h: float}|null
+     */
+    private function resolvePatternTile(Pattern $pattern, array $bbox): ?array
+    {
+        if ($pattern->patternUnits() === 'objectBoundingBox') {
+            $x = $bbox['minX'] + $pattern->x() * $bbox['width'];
+            $y = $bbox['minY'] + $pattern->y() * $bbox['height'];
+            $w = $pattern->width() * $bbox['width'];
+            $h = $pattern->height() * $bbox['height'];
+        } else {
+            $x = $pattern->x();
+            $y = $pattern->y();
+            $w = $pattern->width();
+            $h = $pattern->height();
+        }
+        return $w > 0.0 && $h > 0.0 ? ['x' => $x, 'y' => $y, 'w' => $w, 'h' => $h] : null;
+    }
+
+    /**
+     * Replicate the pattern tile across the shape's bounding box. Each
+     * cell is translated onto the tile grid, clipped to the tile rect so
+     * content can't bleed into neighbours (SVG 2 §13.3), and its children
+     * painted. The base cell (i=j=0) paints children at their authored
+     * coordinates; further cells translate by whole tile steps.
+     *
+     * @param array{x: float, y: float, w: float, h: float} $tile
+     * @param array{minX: float, minY: float, width: float, height: float} $bbox
+     */
+    private function emitPatternTiles(
+        Pattern $pattern,
+        array $tile,
+        array $bbox,
+        ContentStream $stream,
+    ): void {
+        $pw = $tile['w'];
+        $ph = $tile['h'];
+        $i0 = (int) floor(($bbox['minX'] - $tile['x']) / $pw);
+        $i1 = (int) ceil(($bbox['minX'] + $bbox['width'] - $tile['x']) / $pw);
+        $j0 = (int) floor(($bbox['minY'] - $tile['y']) / $ph);
+        $j1 = (int) ceil(($bbox['minY'] + $bbox['height'] - $tile['y']) / $ph);
+        if (($i1 - $i0) * ($j1 - $j0) > self::MAX_PATTERN_TILES) {
+            return;
+        }
+        for ($j = $j0; $j < $j1; $j++) {
+            for ($i = $i0; $i < $i1; $i++) {
+                $stream->saveGraphicsState();
+                $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $i * $pw, $j * $ph);
+                $stream->rectangle($tile['x'], $tile['y'], $pw, $ph);
+                $stream->clip()->endPath();
+                $this->paintChildren($pattern, $stream);
+                $stream->restoreGraphicsState();
+            }
+        }
+    }
+
+    /**
+     * Stroke the shape after a pattern fill. The pattern path was
+     * consumed by the clip, so re-emit it and stroke when the element
+     * carries a real stroke paint.
+     */
+    private function strokeAfterPattern(Element $element, ContentStream $stream, ?Paint $stroke): void
+    {
+        if ($stroke === null || $stroke instanceof None_) {
+            return;
+        }
+        if (!$this->applyStrokePaint($stroke, $element, $stream)) {
+            return;
+        }
+        $this->emitElementPath($element, $stream);
+        $stream->stroke();
     }
 
     /**
