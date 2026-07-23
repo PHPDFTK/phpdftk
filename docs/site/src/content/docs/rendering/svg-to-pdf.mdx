@@ -45,6 +45,8 @@ file_put_contents('out.pdf', $writer->toBytes());
 
 **Gradients** — `<linearGradient>` and `<radialGradient>` with N-stop colour distributions mapped to PDF Type-3 stitching functions. `gradientUnits` (`objectBoundingBox` / `userSpaceOnUse`), `gradientTransform`, `spreadMethod` (`pad` / `reflect` / `repeat`). Cycle-safe `xlink:href` / `href` chaining — gradient inheritance through arbitrary chains without stack overflow.
 
+**Patterns** — `fill="url(#id)"` referencing a `<pattern>` (SVG 2 §13.3). The tile is clipped to the shape and its children replicated across the shape's bounding box, painted inside the element's own transform wrap so the pattern follows the element's CTM (`patternUnits` `objectBoundingBox` / `userSpaceOnUse` supported). Pattern `viewBox` / `patternTransform` are not yet applied.
+
 **Composition** — `<g>` with `transform` (matrix, translate, scale, rotate, skewX, skewY, with arbitrary composition), `<defs>` + `<symbol>` + `<use>` template expansion with intra-document `href` resolution (cycle detection prevents pathological documents from looping), `<clipPath>` (including transformed clip paths), `<mask>` (soft-mask via PDF ExtGState SMask), `<image>` (raster sub-images via PNG / JPEG decoder).
 
 **Text** — `<text>` and `<tspan>` with SVG 2 §11.6 positioning lists (`x`, `y`, `dx`, `dy`, `rotate` per-glyph). `text-anchor` (`start` / `middle` / `end`). `font-family`, `font-size`, `font-weight`, `font-style`, `font-stretch`. CSS Text Decoration 4 §6 `text-shadow` with multi-layer back-to-front emission. `fill: none; stroke: ...` outline text.
@@ -65,6 +67,7 @@ file_put_contents('out.pdf', $writer->toBytes());
 | Text positioning (SVG 2 §11.6 lists) | ✓ | ✗ | ✗ |
 | `text-shadow` on `<text>` | ✓ Multi-layer | ✗ | ✗ |
 | Cycle-safe gradient href chains | ✓ | ✗ | ✗ |
+| `<pattern>` fill (tiled, CTM-following) | ✓ | ~ | ~ |
 | Standalone (no PDF-engine coupling) | ✓ | ✗ | ✗ |
 
 ## Status
@@ -78,5 +81,6 @@ Hand-authored conformance fixtures live at `packages/svg-to-pdf/tests/Conformanc
 - **Filter effects (`<filter>`).** Parsed but defer to no-op at paint time. Lit up by Phase 4C raster compositor.
 - **`<foreignObject>` HTML content.** Parsed as opaque foreign content; rendering deferred to the html-to-pdf recursion that's still being wired.
 - **`text-shadow` blur radius.** Parsed but not rasterised (same posture as html-to-pdf's `text-shadow` — both defer blur to Phase 4C). Sharp-offset shadows render correctly.
+- **Pattern `viewBox` / `patternTransform`.** `<pattern>` fill tiles its children in the referencing element's user space; a pattern-local `viewBox` scale or `patternTransform` is not yet applied (the `svg-matrix-058..069` fixtures need it).
 
 Roadmap: [`docs/plans/html-and-svg.md`](https://github.com/phpdftk/phpdftk/blob/main/docs/plans/html-and-svg.md).
