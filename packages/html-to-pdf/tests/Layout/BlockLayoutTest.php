@@ -8976,4 +8976,62 @@ final class BlockLayoutTest extends TestCase
         // 140. Collapse 10 reclaimed → rightEdge - 130.
         self::assertEqualsWithDelta($rightEdge - 130.0, $c->children[1]->geometry->x, 0.001);
     }
+
+    public function testMaxHeightTransfersThroughAspectRatioToCapWidth(): void
+    {
+        // CSS Sizing 4 §5.1 — `max-height:100px; aspect-ratio:1/1;
+        // width:max-content` with a 200px child: the max-content width
+        // (200) is capped by the transferred max-width (max-height 100 ×
+        // ratio 1 = 100). block-aspect-ratio-021.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #t { aspect-ratio: 1/1; max-height: 100px; width: max-content; }
+             #c { width: 200px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(100.0, $t->geometry->width, 0.5);
+        self::assertEqualsWithDelta(100.0, $t->geometry->height, 0.5);
+    }
+
+    public function testMinHeightTransfersThroughAspectRatioToFloorWidth(): void
+    {
+        // A definite min-height floors the transferred inline size:
+        // `min-height:150px; aspect-ratio:1/1; width:min-content` with a
+        // 50px child → width floored to 150 (min-content 50 → 150).
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #t { aspect-ratio: 1/1; min-height: 150px; width: min-content; }
+             #c { width: 50px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(150.0, $t->geometry->width, 0.5);
+    }
+
+    public function testTransferredMinIsClampedByExplicitMaxWidth(): void
+    {
+        // §5.1 — the transferred minimum is itself clamped by max-width,
+        // so a min-height that transfers to 200 does not push the used
+        // width past an explicit `max-width:100px`. block-aspect-ratio-022.
+        // (Uses `width:max-content` so the harness sizes the box from its
+        // 300px child before the clamps apply.)
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #t { aspect-ratio: 1/1; width: max-content; min-height: 200px; max-width: 100px; }
+             #c { width: 300px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        // Without the max-width clamp on the transferred minimum, the
+        // width would be pushed to 200 (min-height × ratio); with it, the
+        // explicit max-width of 100 wins.
+        self::assertEqualsWithDelta(100.0, $t->geometry->width, 0.5);
+    }
 }

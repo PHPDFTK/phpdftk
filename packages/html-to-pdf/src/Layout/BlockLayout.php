@@ -775,6 +775,7 @@ final class BlockLayout
                 - $geo->paddingLeft - $geo->paddingRight,
         );
         $clampMm = null;
+        $resolvedMaxWidth = null;
         $maxWidthValue = $style->get('max-width');
         if (!($maxWidthValue instanceof Keyword && strtolower($maxWidthValue->name) === 'none')) {
             $maxKeyword = $this->sizingKeywordName($maxWidthValue);
@@ -809,6 +810,7 @@ final class BlockLayout
             // Spec: `max-width: 0` (or `max-width: 0%`) is a real
             // constraint — clamp the content-box width to zero.
             // Only `none` removes the upper bound.
+            $resolvedMaxWidth = $maxWidth;
             if ($contentWidth > $maxWidth) {
                 $contentWidth = $maxWidth;
                 // Width fell out of `auto` territory — treat it like an
@@ -853,6 +855,48 @@ final class BlockLayout
         if ($minWidth > 0.0 && $contentWidth < $minWidth) {
             $contentWidth = $minWidth;
             $widthAuto = false;
+        }
+        // CSS Sizing 4 §5.1 — transferred size suggestion. When the inline
+        // size is auto/intrinsic and the box derives its block size from
+        // its aspect-ratio (i.e. `height` is auto), a definite max/min
+        // block-size transfers through the ratio to bound the inline size.
+        // e.g. `max-height:100px; aspect-ratio:1/1; width:max-content` caps
+        // the used width at 100 even when the content would be wider. An
+        // explicit `width` length/percentage already fixes the inline size,
+        // so the ratio only flows the other way (→ height) — skip it there.
+        // The transferred MIN is applied after MAX so an explicit min-height
+        // floor still wins over a smaller max-content, per §5.1.
+        if (!($widthValue instanceof Length)
+            && !($widthValue instanceof Percentage)
+            && $this->isHeightAutoLike($style->get('height'))
+        ) {
+            $transferRatio = $this->resolveAspectRatio($style);
+            if ($transferRatio !== null && $transferRatio > 0.0) {
+                $vInset = $borderBox
+                    ? $geo->borderTop + $geo->borderBottom + $geo->paddingTop + $geo->paddingBottom
+                    : 0.0;
+                $maxHV = $style->get('max-height');
+                if (!($maxHV instanceof Keyword && strtolower($maxHV->name) === 'none')) {
+                    $tMax = $this->transferredInlineSize($maxHV, $transferRatio, $context, $vInset);
+                    if ($tMax !== null && $contentWidth > $tMax) {
+                        $contentWidth = $tMax;
+                        $widthAuto = false;
+                    }
+                }
+                $tMin = $this->transferredInlineSize($style->get('min-height'), $transferRatio, $context, $vInset);
+                if ($tMin !== null) {
+                    // §5.1 — the transferred minimum is itself clamped by the
+                    // specified max-width, so it can't push the used width
+                    // past an explicit `max-width` (block-aspect-ratio-022).
+                    if ($resolvedMaxWidth !== null) {
+                        $tMin = min($tMin, $resolvedMaxWidth);
+                    }
+                    if ($contentWidth < $tMin) {
+                        $contentWidth = $tMin;
+                        $widthAuto = false;
+                    }
+                }
+            }
         }
         $geo->width = $contentWidth;
 
@@ -5751,6 +5795,34 @@ final class BlockLayout
      * Cross-axis percentage values resolve against the appropriate CB
      * (row direction → height CB; column direction → width CB).
      */
+    /**
+     * CSS Sizing 4 §5.1 — the inline-size a definite block-size constraint
+     * (`min-height` / `max-height`) transfers through the aspect ratio.
+     * Returns the content-box inline bound (`content-height × ratio`), or
+     * null when the constraint isn't a definite length / (definite-CB)
+     * percentage. `$verticalInset` folds off border+padding under
+     * `box-sizing: border-box` so the height compares content-box.
+     */
+    private function transferredInlineSize(
+        ?\Phpdftk\Css\Value\Value $blockConstraint,
+        float $ratio,
+        LayoutContext $context,
+        float $verticalInset,
+    ): ?float {
+        if ($blockConstraint instanceof Length) {
+            $height = $this->resolveLength($blockConstraint, 0.0);
+        } elseif ($blockConstraint instanceof Percentage) {
+            if (!$context->containingBlockHeightDefinite || $context->containingBlockHeight <= 0.0) {
+                return null;
+            }
+            $height = $context->containingBlockHeight * ($blockConstraint->value / 100.0);
+        } else {
+            return null; // auto / none / intrinsic keyword — not a definite transfer
+        }
+        $contentHeight = max(0.0, $height - $verticalInset);
+        return \Phpdftk\Css\Cascade\LengthResolver::clampPx($contentHeight * $ratio);
+    }
+
     private function aspectRatioTransfer(
         CascadedValues $style,
         bool $isColumn,
