@@ -55,6 +55,18 @@ final class BlockLayout
     private ?int $currentTableColumns = null;
 
     /**
+     * Active table's horizontal / vertical `border-spacing` in px
+     * (CSS 2.1 §17.6.1). Zero under `border-collapse: collapse`. The
+     * horizontal value shifts each cell's inline start and shrinks the
+     * column-width budget; the vertical value is read by
+     * {@see stackChildrenList} to gap adjacent table rows. Set in the
+     * TableBox branch of {@see layoutBox} and restored in its `finally`.
+     */
+    private float $currentBorderSpacingH = 0.0;
+
+    private float $currentBorderSpacingV = 0.0;
+
+    /**
      * Per-column explicit widths declared via `<col>` / `<colgroup>`
      * `width` attributes (HTML 5 §4.9.4). Each entry is the explicit
      * pixel width for that column, or null when no `<col>` declared
@@ -345,6 +357,14 @@ final class BlockLayout
             $prevGrid = $this->currentTableCellGrid;
             $prevRowHeights = $this->currentTableRowHeights;
             $prevCellRefs = $this->resolvedCellReferences;
+            $prevSpacingH = $this->currentBorderSpacingH;
+            $prevSpacingV = $this->currentBorderSpacingV;
+            // CSS 2.1 §17.6.1 — separated-borders `border-spacing`. Gated
+            // to the separated model; the horizontal value is consumed by
+            // the column-width / cell-offset pass below, the vertical by
+            // the row stacker.
+            [$this->currentBorderSpacingH, $this->currentBorderSpacingV]
+                = $this->tableBorderSpacing($box);
             $this->currentTableCellGrid = $this->precomputeTableCellGrid($box);
             $this->currentTableRowHeights = [];
             $this->currentAutoWidthsResolved = false;
@@ -391,6 +411,8 @@ final class BlockLayout
                 $this->currentTableCellGrid = $prevGrid;
                 $this->currentTableRowHeights = $prevRowHeights;
                 $this->resolvedCellReferences = $prevCellRefs;
+                $this->currentBorderSpacingH = $prevSpacingH;
+                $this->currentBorderSpacingV = $prevSpacingV;
             }
         }
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableRowBox) {
@@ -463,6 +485,13 @@ final class BlockLayout
         $colspans = array_map(fn($c) => $this->cellColspan($c), $cells);
         $totalColumns = $this->currentTableColumns ?? max(1, array_sum($colspans));
         $totalColumns = max(1, $totalColumns);
+        // CSS 2.1 §17.6.1 — under the separated-borders model, a
+        // horizontal `border-spacing` reserves a gap before, between,
+        // and after the columns: N columns leave (N+1) gaps that the
+        // real column widths must not consume. Distribute over the
+        // budget net of those gaps.
+        $hSpacing = $this->currentBorderSpacingH;
+        $columnBudget = max(0.0, $geo->width - ($totalColumns + 1) * $hSpacing);
         // CSS Tables 3 §10.4 auto-width pass: lazily fill in any
         // column widths that weren't set by `<col width>` based on
         // the measured max-content of cells in each column. Cached
@@ -472,7 +501,7 @@ final class BlockLayout
         if (!$this->currentAutoWidthsResolved) {
             $this->resolveAutoColumnContentWidths(
                 $totalColumns,
-                $geo->width,
+                $columnBudget,
                 $context,
             );
             $this->currentAutoWidthsResolved = true;
@@ -483,14 +512,16 @@ final class BlockLayout
         // evenly across the auto-width columns.
         $columnWidths = $this->resolveColumnWidthGrid(
             $totalColumns,
-            $geo->width,
+            $columnBudget,
             $this->currentColumnWidths,
         );
         // Precomputed running prefix-sum so each cell's X = left edge +
-        // sum of widths of preceding columns.
-        $colOffsets = [0.0];
+        // sum of widths of preceding columns, plus one horizontal
+        // border-spacing gap for every column boundary already crossed
+        // (including the leading gap before column 0).
+        $colOffsets = [$hSpacing];
         foreach ($columnWidths as $w) {
-            $colOffsets[] = $colOffsets[count($colOffsets) - 1] + $w;
+            $colOffsets[] = $colOffsets[count($colOffsets) - 1] + $w + $hSpacing;
         }
         $maxHeight = 0.0;
         $rowIndex = $this->resolveRowIndex($row);
@@ -501,8 +532,15 @@ final class BlockLayout
             $cellCursorFallback = max($cellCursorFallback, $col + $span);
             $cellX = $geo->x + ($colOffsets[$col] ?? 0.0);
             $cellWidth = 0.0;
+            $spanned = 0;
             for ($k = 0; $k < $span && $col + $k < $totalColumns; $k++) {
                 $cellWidth += $columnWidths[$col + $k];
+                $spanned++;
+            }
+            // A cell spanning multiple columns also swallows the
+            // border-spacing gaps between the columns it covers.
+            if ($spanned > 1) {
+                $cellWidth += ($spanned - 1) * $hSpacing;
             }
             $cellCtx = $context
                 ->withContainingBlock($cellWidth, $context->containingBlockHeight)
@@ -6586,8 +6624,28 @@ final class BlockLayout
         // (CSS 2.1 §10.6.4 — an inline-level abspos box's static position
         // is the line it would sit on, not the bottom of the block).
         $prevInFlowChild = null;
+        // CSS 2.1 §17.6.1 — vertical `border-spacing` gaps adjacent table
+        // rows (and the table border above the first / below the last
+        // row). Tracked so the trailing gap is only added when this
+        // context actually stacked rows.
+        $rowSpacingV = $this->currentBorderSpacingV;
+        $stackedTableRow = false;
         foreach ($children as $child) {
             $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
+            // CSS 2.1 §17.5.1 — `visibility: collapse` on a table row
+            // removes it (and its border-spacing gaps) from the table
+            // box entirely; rows below shift up to fill the space. The
+            // row is zero-sized and never painted (the painter's
+            // `isVisibilityHidden` also skips it defensively).
+            if ($child instanceof \Phpdftk\HtmlToPdf\Box\TableRowBox
+                && $this->isTableRowCollapsed($child)
+            ) {
+                $child->geometry->x = $originX;
+                $child->geometry->y = $cursorY;
+                $child->geometry->width = 0.0;
+                $child->geometry->height = 0.0;
+                continue;
+            }
             // CSS 2.1 §9.6 — `position: absolute` (and `fixed`, which
             // behaves identically in a print context with no scrolling)
             // removes the box from normal flow. Lay it out at the
@@ -6703,6 +6761,16 @@ final class BlockLayout
                     $total += $delta;
                 }
             }
+            // Open a vertical border-spacing gap ahead of each table
+            // row: the first row's gap separates it from the table's
+            // top border, subsequent rows' gaps separate adjacent rows.
+            if ($rowSpacingV > 0.0
+                && $child instanceof \Phpdftk\HtmlToPdf\Box\TableRowBox
+            ) {
+                $cursorY += $rowSpacingV;
+                $total += $rowSpacingV;
+                $stackedTableRow = true;
+            }
             $childOuterHeight = $this->layoutBox($child, $childContext->withOrigin($originX, $cursorY));
             if ($hasPrev) {
                 // CSS 2.1 §8.3.1: adjacent sibling margins collapse to
@@ -6753,6 +6821,11 @@ final class BlockLayout
             $prevBottomMargin = $child->geometry->marginBottom;
             $hasPrev = true;
             $prevInFlowChild = $child;
+        }
+        // Close the trailing vertical border-spacing gap below the last
+        // table row (separating it from the table's bottom border).
+        if ($stackedTableRow && $rowSpacingV > 0.0) {
+            $total += $rowSpacingV;
         }
         return $total;
     }
@@ -7895,6 +7968,15 @@ final class BlockLayout
                 $max += $colMax[$c];
             }
         }
+        // CSS 2.1 §17.6.1 — the separated-borders horizontal spacing
+        // reserves (N+1) gaps that are part of the table box's intrinsic
+        // inline size, so a shrink-to-fit table widens to include them.
+        $hSpacing = $this->tableBorderSpacing($table)[0];
+        if ($hSpacing > 0.0) {
+            $gaps = ($totalColumns + 1) * $hSpacing;
+            $min += $gaps;
+            $max += $gaps;
+        }
         // CSS 2.1 §17.5.2 / Sizing — the table box's OWN min-width floors
         // its used width, so an auto table with only empty cells shrink-
         // wraps to its min-width instead of filling the container. (Table
@@ -8371,6 +8453,53 @@ final class BlockLayout
         $v = $table->style->get('border-collapse');
         return $v instanceof \Phpdftk\Css\Value\Keyword
             && strtolower($v->name) === 'collapse';
+    }
+
+    /**
+     * CSS 2.1 §17.6.1 — the table's horizontal / vertical
+     * `border-spacing` in px. The property accepts one length (both
+     * axes) or two (horizontal then vertical); a bare `0` parses to an
+     * Integer (see the bare-zero gotcha) so it is treated as zero.
+     * Spacing has no effect under `border-collapse: collapse`, so this
+     * returns `[0, 0]` there.
+     *
+     * @return array{0: float, 1: float}
+     */
+    private function tableBorderSpacing(\Phpdftk\HtmlToPdf\Box\TableBox $table): array
+    {
+        if ($this->isBorderCollapse($table)) {
+            return [0.0, 0.0];
+        }
+        $v = $table->style->get('border-spacing');
+        if ($v instanceof \Phpdftk\Css\Value\ValueList) {
+            $items = $v->values;
+            $h = isset($items[0]) ? $this->borderSpacingLengthPx($items[0]) : 0.0;
+            $vv = isset($items[1]) ? $this->borderSpacingLengthPx($items[1]) : $h;
+            return [$h, $vv];
+        }
+        $one = $this->borderSpacingLengthPx($v);
+        return [$one, $one];
+    }
+
+    private function borderSpacingLengthPx(mixed $value): float
+    {
+        if ($value instanceof Length) {
+            return max(0.0, $value->value);
+        }
+        return 0.0;
+    }
+
+    /**
+     * CSS 2.1 §17.5.1 — a table row (or row group) with
+     * `visibility: collapse` is removed from the table's layout. Only
+     * the `collapse` keyword collapses the track; `hidden` keeps the
+     * space (handled by the painter's visibility check, not here).
+     */
+    private function isTableRowCollapsed(Box $row): bool
+    {
+        $value = $row->style->get('visibility');
+        return $value instanceof Keyword
+            && strtolower($value->name) === 'collapse';
     }
 
     /**

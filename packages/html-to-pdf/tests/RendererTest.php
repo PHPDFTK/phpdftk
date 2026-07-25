@@ -105,6 +105,26 @@ final class RendererTest extends TestCase
         self::assertStringNotContainsString("\nS\n", $bytes, 'no stroke for column-rule: none');
     }
 
+    public function testBorderSpacingTableProducesValidPdf(): void
+    {
+        // A separated-borders table with border-spacing and a
+        // visibility: collapse row renders to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body><table>'
+            . '<tr class="hide"><td></td><td></td></tr>'
+            . '<tr><td></td><td></td></tr>'
+            . '</table></body></html>',
+            'table { border-spacing: 8px 12px; background: yellow; }
+             td { width: 40px; height: 20px; border: 2px solid blue;
+                  background: pink; }
+             .hide { visibility: collapse; }',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testRenderEmitsNoWarningsForCleanInput(): void
     {
         $result = (new Renderer())->render(

@@ -111,6 +111,112 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
     }
 
+    public function testBorderSpacingOffsetsCellsAndShrinksColumns(): void
+    {
+        // CSS 2.1 §17.6.1 — with border-spacing 20px and a 200px table,
+        // the two columns share 200 − 3×20 = 140px (70px each); the first
+        // cell starts one spacing in, the second after col0 + one spacing.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r">'
+            . '<div class="c" id="c0"></div><div class="c" id="c1"></div>'
+            . '</div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; width: 200px; border-spacing: 20px; }
+             #r { display: table-row; }
+             .c { display: table-cell; height: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $c0 = $this->findById($box, 'c0');
+        $c1 = $this->findById($box, 'c1');
+        self::assertNotNull($t);
+        self::assertNotNull($c0);
+        self::assertNotNull($c1);
+        self::assertEqualsWithDelta(70.0, $c0->geometry->width, 1.0);
+        self::assertEqualsWithDelta($t->geometry->x + 20.0, $c0->geometry->x, 1.0);
+        self::assertEqualsWithDelta($t->geometry->x + 110.0, $c1->geometry->x, 1.0);
+    }
+
+    public function testVerticalBorderSpacingGapsRows(): void
+    {
+        // Vertical border-spacing separates the table top from the first
+        // row and each row from the next.
+        $box = $this->buildTree(
+            '<html><body><div id="t">'
+            . '<div class="r" id="r0"><div class="c"></div></div>'
+            . '<div class="r" id="r1"><div class="c"></div></div>'
+            . '</div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; border-spacing: 0 25px; }
+             .r { display: table-row; }
+             .c { display: table-cell; height: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $r0 = $this->findById($box, 'r0');
+        $r1 = $this->findById($box, 'r1');
+        self::assertNotNull($t);
+        self::assertNotNull($r0);
+        self::assertNotNull($r1);
+        // First row sits one vertical spacing below the table content top.
+        self::assertEqualsWithDelta($t->geometry->y + 25.0, $r0->geometry->y, 1.0);
+        // Second row is one spacing below the first row's bottom.
+        self::assertEqualsWithDelta(
+            $r0->geometry->y + $r0->geometry->height + 25.0,
+            $r1->geometry->y,
+            1.0,
+        );
+    }
+
+    public function testBorderCollapseIgnoresBorderSpacing(): void
+    {
+        // Under border-collapse: collapse the spacing has no effect —
+        // the first cell starts flush at the table's content origin.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r">'
+            . '<div id="cell"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; width: 200px; border-collapse: collapse;
+                  border-spacing: 40px; }
+             #r { display: table-row; }
+             #cell { display: table-cell; height: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($t);
+        self::assertNotNull($cell);
+        self::assertEqualsWithDelta($t->geometry->x, $cell->geometry->x, 1.0);
+    }
+
+    public function testVisibilityCollapseRemovesTableRow(): void
+    {
+        // CSS 2.1 §17.5.1 — a `visibility: collapse` row is removed from
+        // layout, so the following row moves up into its place (here to the
+        // table's content top, no leading spacing declared).
+        $box = $this->buildTree(
+            '<html><body><div id="t">'
+            . '<div class="r" id="r0"><div class="c"></div></div>'
+            . '<div class="r" id="r1"><div class="c"></div></div>'
+            . '</div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             .r { display: table-row; }
+             #r0 { visibility: collapse; }
+             .c { display: table-cell; height: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        $r0 = $this->findById($box, 'r0');
+        $r1 = $this->findById($box, 'r1');
+        self::assertNotNull($t);
+        self::assertNotNull($r0);
+        self::assertNotNull($r1);
+        self::assertEqualsWithDelta(0.0, $r0->geometry->height, 0.5);
+        // The visible row occupies the table's content top, not row0's slot.
+        self::assertEqualsWithDelta($t->geometry->y, $r1->geometry->y, 1.0);
+    }
+
     public function testTableColumnGroupWidthShrinkWrapsAutoTable(): void
     {
         // A `display: table-column-group` (on a div, not `<colgroup>`) with
