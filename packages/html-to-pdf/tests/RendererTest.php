@@ -105,6 +105,24 @@ final class RendererTest extends TestCase
         self::assertStringNotContainsString("\nS\n", $bytes, 'no stroke for column-rule: none');
     }
 
+    public function testFilledDefiniteHeightContainerProducesValidPdf(): void
+    {
+        // Block-level content filling a nested definite-height container
+        // must not trigger phantom pagination. Renders to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body><div class="box">'
+            . '<div class="cell"></div><div class="cell"></div>'
+            . '</div></body></html>',
+            '.box { height: 192px; width: 192px; border: 3px solid black; }
+             .cell { display: block; height: 96px; width: 96px;
+                     background: blue; break-inside: avoid; }',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testBorderSpacingTableProducesValidPdf(): void
     {
         // A separated-borders table with border-spacing and a

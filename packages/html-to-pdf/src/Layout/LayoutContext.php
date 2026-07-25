@@ -77,6 +77,16 @@ final readonly class LayoutContext
          * root (initial value = `horizontal-tb`, the default basis).
          */
         public ?WritingMode $parentWritingMode = null,
+        /**
+         * The actual page (fragmentainer) content height for pagination,
+         * set once at the root and threaded UNCHANGED through descendants.
+         * Distinct from `containingBlockHeight`, which a nested definite-
+         * height block overwrites with its own height — using that for the
+         * page-break-straddle check made unbreakable replaced children
+         * inside a fill-the-container block spuriously shift as if the
+         * container were a page. `0.0` disables pagination.
+         */
+        public float $pageHeight = 0.0,
     ) {}
 
     public function withOrigin(float $x, float $y): self
@@ -93,6 +103,7 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -110,6 +121,7 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -126,6 +138,7 @@ final readonly class LayoutContext
             $this->floatContext,
             $this->positionedAncestor,
             $definite,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -143,6 +156,7 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -160,6 +174,7 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -177,6 +192,7 @@ final readonly class LayoutContext
             $pa,
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
         );
     }
 
@@ -194,6 +210,7 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $this->containingBlockHeightDefinite,
             $wm,
+            pageHeight: $this->pageHeight,
         );
     }
 }

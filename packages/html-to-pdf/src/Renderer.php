@@ -195,6 +195,10 @@ final class Renderer
             lengthContext: $lengthContext,
             defaultFont: $this->options->defaultFont,
             fontResolver: $fontResolver,
+            // Real page height for pagination — kept distinct from the
+            // containing-block height so nested definite-height blocks
+            // don't masquerade as fragmentainers (see LayoutContext).
+            pageHeight: $pageHeight,
         );
         // CSS Writing Modes 4 §3.1 — when the root element's
         // `writing-mode` / `direction` are at the initial value but

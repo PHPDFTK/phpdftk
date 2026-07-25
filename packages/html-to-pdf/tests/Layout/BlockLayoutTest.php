@@ -40,6 +40,10 @@ final class BlockLayoutTest extends TestCase
             originX: 0.0,
             originY: 0.0,
             lengthContext: new LengthContext(),
+            // Page height for pagination — matches the real renderer,
+            // where the root context carries the page height distinct
+            // from a nested block's containing-block height.
+            pageHeight: 800.0,
         );
     }
 
@@ -109,6 +113,31 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($t);
         self::assertNotNull($cell);
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
+    }
+
+    public function testDefiniteHeightContainerIsNotAFragmentainer(): void
+    {
+        // A nested definite-height block is not a page: an unbreakable
+        // child that would straddle the container's own height must NOT
+        // shift down as if the container height were a page boundary
+        // (regression — pagination is measured against the real page
+        // height, not the containing block).
+        $box = $this->buildTree(
+            '<html><body><div id="c">'
+            . '<div class="k" id="a"></div><div class="k" id="b"></div>'
+            . '</div></body></html>',
+            'html, body { display: block; }
+             #c { display: block; height: 120px; }
+             .k { display: block; height: 100px; break-inside: avoid; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $a = $this->findById($box, 'a');
+        $b = $this->findById($box, 'b');
+        self::assertNotNull($a);
+        self::assertNotNull($b);
+        // Second child stacks flush below the first (y = 100), not shoved
+        // to the container's 120px "page" boundary.
+        self::assertEqualsWithDelta($a->geometry->y + 100.0, $b->geometry->y, 0.5);
     }
 
     public function testBorderSpacingOffsetsCellsAndShrinksColumns(): void

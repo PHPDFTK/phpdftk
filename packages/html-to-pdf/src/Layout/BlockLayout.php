@@ -6617,7 +6617,14 @@ final class BlockLayout
         $cursorY = $originY;
         $prevBottomMargin = 0.0;
         $hasPrev = false;
-        $pageHeight = $childContext->containingBlockHeight;
+        // Pagination is measured against the real page height, NOT the
+        // containing block — a nested definite-height block overwrites
+        // `containingBlockHeight` with its own height, which used to make
+        // unbreakable replaced children inside a fill-the-container block
+        // straddle a phantom "page" boundary and shift down (CSS
+        // Fragmentation 3 — fragmentainers are pages here, not arbitrary
+        // definite-height boxes). `0.0` disables pagination for this stack.
+        $pageHeight = $childContext->pageHeight;
         $total = 0.0;
         // Track the last in-flow child so an out-of-flow box can recover
         // its inline static position from the preceding inline content
