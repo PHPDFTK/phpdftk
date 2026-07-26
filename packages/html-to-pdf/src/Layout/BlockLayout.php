@@ -5070,6 +5070,10 @@ final class BlockLayout
         return true;
     }
 
+    /**
+     * @param  list<float> $tracks
+     * @return list<float>
+     */
     private function gridTrackOffsets(array $tracks, float $gap): array
     {
         $offsets = [0.0];
