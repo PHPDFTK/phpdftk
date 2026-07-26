@@ -55,6 +55,57 @@ class PdfDocTest extends TestCase
         $this->assertQpdfValidBytes($pdf);
     }
 
+    public function testCreateTransparencyGroupEmitsGroupForm(): void
+    {
+        // ISO 32000-2 §11.6.5 — a transparency-group Form XObject carries
+        // `/Group << /S /Transparency /CS /DeviceRGB /I true >>` so it can
+        // serve as a soft mask's `/G`.
+        $doc = new PdfDoc();
+        $doc->addPage();
+        $group = $doc->createTransparencyGroup(
+            new Rectangle(0.0, 0.0, 100.0, 100.0),
+            static function ($cs): void {
+                $cs->setFillColorRGB(1.0, 1.0, 1.0);
+                $cs->rectangle(0.0, 0.0, 100.0, 100.0);
+                $cs->fill();
+            },
+        );
+        self::assertGreaterThan(0, $group->objectNumber);
+        $pdf = $doc->writer()->generate();
+        self::assertStringStartsWith('%PDF-', $pdf);
+        self::assertStringContainsString('/Group', $pdf);
+        self::assertStringContainsString('/S /Transparency', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
+    public function testEnsureSoftMaskStateRegistersSMaskExtGState(): void
+    {
+        // ISO 32000-2 §11.6.5.2 — a soft-mask ExtGState references a
+        // transparency group via `/SMask << /S /Luminosity /G ref >>`.
+        // The helper is idempotent (same key reused).
+        $doc = new PdfDoc();
+        $page = $doc->addPage();
+        $group = $doc->createTransparencyGroup(
+            new Rectangle(0.0, 0.0, 100.0, 100.0),
+            static function ($cs): void {
+                $cs->setFillColorRGB(1.0, 1.0, 1.0);
+                $cs->rectangle(0.0, 0.0, 100.0, 100.0);
+                $cs->fill();
+            },
+        );
+        $name = $page->ensureSoftMaskState($group, 'Luminosity');
+        self::assertSame($name, $page->ensureSoftMaskState($group, 'Luminosity'));
+
+        self::assertStringStartsWith('GS_smask_', $name);
+        $pdf = $doc->writer()->generate();
+        self::assertStringStartsWith('%PDF-', $pdf);
+        self::assertStringContainsString('/SMask', $pdf);
+        self::assertStringContainsString('/S /Luminosity', $pdf);
+        // The ExtGState is registered in the page's resource dict.
+        self::assertStringContainsString('/' . $name . ' ', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
     public function testSetInfoAttachesInfoDictionary(): void
     {
         $doc = new PdfDoc(compressStreams: false);

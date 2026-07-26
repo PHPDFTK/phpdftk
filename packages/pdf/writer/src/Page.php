@@ -924,6 +924,34 @@ final class Page
         return $key;
     }
 
+    /**
+     * Lazily build (or reuse) an ExtGState that installs a soft mask
+     * (ISO 32000-2 §11.6.5.2) whose `/G` is the given transparency-group
+     * Form XObject (see {@see PdfDoc::createTransparencyGroup()}), and
+     * return its resource name. `$subtype` is `Luminosity` (mask value =
+     * the group's luminance on a black backdrop) or `Alpha`. Emit
+     * `/<name> gs` before painting the masked content, inside `q`/`Q`.
+     * Public so the html-to-pdf painter can grab the name and emit `gs`.
+     */
+    public function ensureSoftMaskState(
+        \Phpdftk\Pdf\Core\Graphics\XObject\FormXObject $group,
+        string $subtype = 'Luminosity',
+    ): string {
+        $key = sprintf('GS_smask_%d_%s', $group->objectNumber, strtolower($subtype));
+        if ($this->corePage->resources !== null && isset($this->corePage->resources->extGState[$key])) {
+            return $key;
+        }
+        $softMask = new \Phpdftk\Pdf\Core\Graphics\SoftMask(
+            $subtype,
+            new \Phpdftk\Pdf\Core\PdfReference($group->objectNumber),
+        );
+        $extGState = new \Phpdftk\Pdf\Core\Graphics\ExtGState();
+        $extGState->sMask = $softMask;
+        $ref = $this->writer->register($extGState);
+        $this->corePage->resources?->addExtGState($key, $ref);
+        return $key;
+    }
+
     // -----------------------------------------------------------------------
     // Page geometry (rotation + box rectangles)
     // -----------------------------------------------------------------------

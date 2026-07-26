@@ -775,6 +775,41 @@ class PdfDoc
         return $template;
     }
 
+    /**
+     * Create a registered transparency-group Form XObject — a
+     * {@see createTemplate()} whose content is drawn inside an isolated
+     * `/Group << /S /Transparency /CS /DeviceRGB /I true >>` so it can
+     * serve as the `/G` of an ExtGState soft mask (ISO 32000-2 §11.6.5).
+     * The group carries its OWN {@see Resources} so a caller can register
+     * shading patterns / images used only by the mask content on it.
+     *
+     * @param \Closure(ContentStream, Resources): void $draw receives the
+     *   group's content stream and its resource dict.
+     */
+    public function createTransparencyGroup(Rectangle $bbox, \Closure $draw): FormXObject
+    {
+        [$llx, $lly, $urx, $ury] = $bbox->toArray();
+        $bboxArr = new PdfArray([
+            new PdfNumber($llx),
+            new PdfNumber($lly),
+            new PdfNumber($urx),
+            new PdfNumber($ury),
+        ]);
+
+        $resources = new Resources();
+        $cs = new ContentStream();
+        $draw($cs, $resources);
+
+        $group = new FormXObject($bboxArr, implode("\n", $cs->getOperators()));
+        $group->resources = $resources;
+        $groupAttrs = new \Phpdftk\Pdf\Core\Document\GroupAttributes('Transparency');
+        $groupAttrs->cs = new \Phpdftk\Pdf\Core\PdfName('DeviceRGB');
+        $groupAttrs->i = new \Phpdftk\Pdf\Core\PdfBoolean(true);
+        $group->group = $groupAttrs;
+        $this->writer->register($group);
+        return $group;
+    }
+
     // -----------------------------------------------------------------------
     // Actions
     // -----------------------------------------------------------------------
