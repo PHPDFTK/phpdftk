@@ -105,6 +105,23 @@ final class RendererTest extends TestCase
         self::assertStringNotContainsString("\nS\n", $bytes, 'no stroke for column-rule: none');
     }
 
+    public function testPercentHeightInAutoAncestorProducesValidPdf(): void
+    {
+        // A `display: table; height: 100%` inside an auto body sizes to
+        // content (not the viewport); render the chain to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="display:table;height:100%;width:100px;background:red">'
+            . '<div style="height:50%;background:green">'
+            . '<div style="height:100px"></div></div></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testBorderedTableCellsProduceValidPdf(): void
     {
         // Bordered cells stretched to a common row height must not overflow

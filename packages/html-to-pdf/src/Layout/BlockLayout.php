@@ -1039,6 +1039,26 @@ final class BlockLayout
             : (($isHtmlOrBody || $isAnonymousWrapper)
                 ? $context->containingBlockHeightDefinite
                 : false);
+        // In-flow `height: %` definiteness (CSS 2.1 §10.5) does NOT get the
+        // html/body viewport special-case: an auto-height `<html>` /
+        // `<body>` is indefinite for an in-flow child's percentage height,
+        // so the child sizes to content rather than filling the viewport.
+        // A definite Length height makes children definite; a percentage
+        // height is definite only when THIS box's own height resolved
+        // against a definite CB (otherwise it computed to auto / content,
+        // so its children are indefinite too — the chain a `display: table;
+        // height: 100%` inside an auto body must break). Anonymous wrappers
+        // (no box of their own) pass the parent's value through.
+        if ($heightExplicit) {
+            $childInFlowHeightDefinite =
+                ($heightValueForChildCtx instanceof Percentage)
+                    ? $context->inFlowHeightDefinite
+                    : true;
+        } else {
+            $childInFlowHeightDefinite = $isAnonymousWrapper
+                ? $context->inFlowHeightDefinite
+                : false;
+        }
         $childLengthCtx = $this->lengthContextFor($style, $context->lengthContext);
         $childLengthCtx = $this->applyContainerContext(
             $style,
@@ -1048,6 +1068,7 @@ final class BlockLayout
         );
         $childContext = $context
             ->withContainingBlockHeightDefinite($childCbHeight, $childCbHeightDefinite)
+            ->withInFlowHeightDefinite($childInFlowHeightDefinite)
             ->withContainingBlock($geo->width, $childCbHeight)
             ->withOrigin($geo->x, $geo->y)
             ->withLengthContext($childLengthCtx)
@@ -1287,8 +1308,16 @@ final class BlockLayout
             // `height: 100%` div inside an auto-height parent would
             // claim the full viewport height, painting over siblings.
             $cbHeightForResolve = $context->containingBlockHeight;
+            // An out-of-flow box resolves `height: %` against its
+            // containing block (the ICB is definite for `<html>`/`<body>`
+            // children), so it keeps the abspos-oriented flag; an in-flow
+            // box uses the in-flow flag, which treats an auto-height
+            // html/body ancestor as indefinite.
+            $heightPctDefinite = $this->isOutOfFlow($box)
+                ? $context->containingBlockHeightDefinite
+                : $context->inFlowHeightDefinite;
             if ($heightValue instanceof Percentage
-                && !$context->containingBlockHeightDefinite
+                && !$heightPctDefinite
             ) {
                 $geo->height = $childTotal;
             } else {
@@ -2719,8 +2748,22 @@ final class BlockLayout
         // heights on items resolve against the flex container (not
         // the outer CB).
         $itemCbHeight = $declaredHeight ?? $cbHeight;
+        // A flex item's `height: %` resolves against the flex container's
+        // height only when the container has a definite height (CSS
+        // Flexbox 1 §9.8). Mirror layoutBlock's in-flow definiteness rule:
+        // a definite Length is definite; a percentage container height is
+        // definite only if ITS containing block was; auto is indefinite.
+        $flexHeightValue = $style->get('height');
+        $flexHeightExplicit = $this->heightAppliesToDisplay($style)
+            && !$this->isHeightAutoLike($flexHeightValue);
+        $itemInFlowHeightDefinite = $flexHeightExplicit
+            ? (($flexHeightValue instanceof Percentage)
+                ? $context->inFlowHeightDefinite
+                : true)
+            : false;
         $itemCtx = $context
             ->withContainingBlock($geo->width, $itemCbHeight)
+            ->withInFlowHeightDefinite($itemInFlowHeightDefinite)
             ->withOrigin($geo->x, $geo->y)
             ->withLengthContext($this->lengthContextFor($style, $context->lengthContext));
         $itemMains = [];

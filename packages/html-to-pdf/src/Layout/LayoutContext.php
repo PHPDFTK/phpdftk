@@ -87,6 +87,18 @@ final readonly class LayoutContext
          * container were a page. `0.0` disables pagination.
          */
         public float $pageHeight = 0.0,
+        /**
+         * Whether the containing block has a definite height for the
+         * purpose of resolving an IN-FLOW `height: %` (CSS 2.1 §10.5).
+         * Unlike `containingBlockHeightDefinite` — which the HTML render
+         * rules keep "definite = viewport" through `<html>` / `<body>` so
+         * abspos offsets on their children resolve against the ICB — an
+         * auto-height `<html>` / `<body>` is INDEFINITE for an in-flow
+         * child's percentage height (the child sizes to content, it does
+         * not fill the viewport). Kept separate so the abspos path is
+         * unaffected. Defaults definite at the root (the ICB is definite).
+         */
+        public bool $inFlowHeightDefinite = true,
     ) {}
 
     public function withOrigin(float $x, float $y): self
@@ -104,6 +116,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 
@@ -122,6 +135,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 
@@ -139,6 +153,26 @@ final readonly class LayoutContext
             $this->positionedAncestor,
             $definite,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
+        );
+    }
+
+    public function withInFlowHeightDefinite(bool $definite): self
+    {
+        return new self(
+            $this->containingBlockWidth,
+            $this->containingBlockHeight,
+            $this->originX,
+            $this->originY,
+            $this->lengthContext,
+            $this->defaultFont,
+            $this->fontResolver,
+            $this->floatContext,
+            $this->positionedAncestor,
+            $this->containingBlockHeightDefinite,
+            $this->parentWritingMode,
+            pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $definite,
         );
     }
 
@@ -157,6 +191,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 
@@ -175,6 +210,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 
@@ -193,6 +229,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $this->parentWritingMode,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 
@@ -211,6 +248,7 @@ final readonly class LayoutContext
             $this->containingBlockHeightDefinite,
             $wm,
             pageHeight: $this->pageHeight,
+            inFlowHeightDefinite: $this->inFlowHeightDefinite,
         );
     }
 }

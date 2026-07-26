@@ -115,6 +115,28 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
     }
 
+    public function testInFlowPercentHeightIndefiniteThroughAutoAncestors(): void
+    {
+        // CSS 2.1 §10.5 — an in-flow `height: %` against an auto-height
+        // containing block is indefinite and sizes to content. The auto
+        // `<html>` / `<body>` chain does NOT make it definite (that
+        // viewport special-case is for abspos only), so the 50% div sizes
+        // to its 80px child, not to half the viewport.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="c">'
+            . '<div id="k"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: block; }
+             #c { display: block; height: 50%; }
+             #k { display: block; height: 80px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        // Content-derived (80), NOT 50% of the 800px default CB (=400).
+        self::assertEqualsWithDelta(80.0, $c->geometry->height, 1.0);
+    }
+
     public function testStretchedBorderedCellFillsRowWithoutOverflow(): void
     {
         // A short bordered cell stretched to the row height must fill the
