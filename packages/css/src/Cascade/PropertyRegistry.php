@@ -902,6 +902,12 @@ final class PropertyRegistry
         $r->register($initial('column-rule-width', new Length(3.0, LengthUnit::Px))); // medium
         $r->register($initial('column-rule-style', new Keyword('none')));
         $r->register($initial('column-rule-color', new Keyword('currentcolor')));
+        // CSS Gaps 1 — gap decorations extend `column-rule-*` to grid /
+        // flex gaps and add the `row-rule-*` longhands (rules drawn in
+        // row gaps). Initial values mirror `column-rule-*`.
+        $r->register($initial('row-rule-width', new Length(3.0, LengthUnit::Px))); // medium
+        $r->register($initial('row-rule-style', new Keyword('none')));
+        $r->register($initial('row-rule-color', new Keyword('currentcolor')));
         $r->register($initial('column-fill', new Keyword('balance')));
         $r->register($initial('column-span', new Keyword('none')));
 

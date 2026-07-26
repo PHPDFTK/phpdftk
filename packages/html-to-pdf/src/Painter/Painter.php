@@ -946,6 +946,7 @@ final class Painter
             }
             $this->paintOutline($box, $stream);
             $this->paintColumnRules($box, $stream);
+            $this->paintGridGapRules($box, $stream);
             $this->paintImage($box, $stream, $parent);
             $this->paintListMarker($box, $stream);
             $this->paintLineBoxes($box, $stream);
@@ -6699,6 +6700,125 @@ final class Painter
             $stream->stroke();
         }
         $stream->restoreGraphicsState();
+    }
+
+    /**
+     * CSS Gaps 1 — paint `column-rule` (vertical) and `row-rule`
+     * (horizontal) decorations in the gaps of a grid container. Each
+     * rule is centred in its gap and spans the full track area on the
+     * cross axis. Reuses the multicol rule-stroking convention (solid /
+     * dashed / dotted; other styles approximate to solid).
+     */
+    private function paintGridGapRules(Box $box, ContentStream $stream): void
+    {
+        if (!$box instanceof \Phpdftk\HtmlToPdf\Box\GridBox) {
+            return;
+        }
+        if ($box->columnGapCenters === [] && $box->rowGapCenters === []) {
+            return;
+        }
+        $stream->saveGraphicsState();
+        // CSS Gaps 1 + CSS Overflow 3 — a scroll container (`overflow`
+        // other than `visible`) clips its gap decorations to the padding
+        // box, so an overflowing grid's rules don't extend past the
+        // visible edge (WPT grid-gap-decorations 035-037 clip a 320px
+        // track area to a 130px box). `overflow: visible` intentionally
+        // lets rule ink spill past the container (029/090/091), so only
+        // clip when overflow is not visible.
+        if ($this->shouldOverflowClip($box)) {
+            $g = $box->geometry;
+            $padLeft = $g->x - $g->paddingLeft;
+            $padTop = $g->y - $g->paddingTop;
+            $padWidth = $g->paddingLeft + $g->width + $g->paddingRight;
+            $padHeight = $g->paddingTop + $g->height + $g->paddingBottom;
+            $stream->rectangle($padLeft, $this->pageHeight - $padTop - $padHeight, $padWidth, $padHeight);
+            $stream->clip();
+            $stream->endPath();
+        }
+        // Column rules: vertical lines, spanning the grid's row-track area.
+        if ($box->columnGapCenters !== [] && $box->gridContentBottom > $box->gridContentTop) {
+            $pdfTop = $this->pageHeight - $box->gridContentTop;
+            $pdfBottom = $this->pageHeight - $box->gridContentBottom;
+            foreach ($box->columnGapCenters as $cx) {
+                $this->strokeGapRule($box, $stream, 'column-rule', $cx, $pdfBottom, $cx, $pdfTop);
+            }
+        }
+        // Row rules: horizontal lines, spanning the grid's column-track area.
+        if ($box->rowGapCenters !== [] && $box->gridContentRight > $box->gridContentLeft) {
+            foreach ($box->rowGapCenters as $cy) {
+                $pdfY = $this->pageHeight - $cy;
+                $this->strokeGapRule(
+                    $box,
+                    $stream,
+                    'row-rule',
+                    $box->gridContentLeft,
+                    $pdfY,
+                    $box->gridContentRight,
+                    $pdfY,
+                );
+            }
+        }
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Stroke a single gap-decoration rule between two PDF-space points,
+     * reading `<prefix>-width` / `-style` / `-color` off the box. No-op
+     * when the rule is invisible (zero width, `none` / `hidden` style, or
+     * a fully transparent colour).
+     */
+    private function strokeGapRule(
+        Box $box,
+        ContentStream $stream,
+        string $prefix,
+        float $x1,
+        float $y1,
+        float $x2,
+        float $y2,
+    ): void {
+        $styleV = $box->style->get("$prefix-style");
+        $styleName = $styleV instanceof Keyword ? strtolower($styleV->name) : 'none';
+        if ($styleName === 'none' || $styleName === 'hidden') {
+            return;
+        }
+        $widthV = $box->style->get("$prefix-width");
+        $width = $widthV instanceof \Phpdftk\Css\Value\Length ? $widthV->value : 0.0;
+        if ($width <= 0.0) {
+            return;
+        }
+        $color = $this->ruleColor($box, "$prefix-color");
+        if ($color->a <= 0.0) {
+            return;
+        }
+        $stream->saveGraphicsState();
+        $stream->setStrokeColorRGB($color->r, $color->g, $color->b);
+        $stream->setLineWidth($width);
+        if ($styleName === 'dashed') {
+            $stream->setDashPattern([$width * 3, $width * 2], 0);
+        } elseif ($styleName === 'dotted') {
+            $stream->setDashPattern([$width, $width * 1.5], 0);
+        }
+        $stream->moveTo($x1, $y1);
+        $stream->lineTo($x2, $y2);
+        $stream->stroke();
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Resolve a gap-rule colour property, mapping `currentcolor` to the
+     * box's `color`. Mirrors {@see borderColor()}.
+     */
+    private function ruleColor(Box $box, string $prop): Color
+    {
+        $color = $box->style->get($prop);
+        if ($color instanceof Color) {
+            return $color;
+        }
+        $current = $box->style->get('color');
+        if ($current instanceof Color) {
+            return $current;
+        }
+        return new Color(0, 0, 0, 1);
     }
 
     private function borderIsVisible(Box $box, string $side): bool

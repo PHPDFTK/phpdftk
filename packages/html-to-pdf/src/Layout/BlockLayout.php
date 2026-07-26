@@ -3577,6 +3577,37 @@ final class BlockLayout
         // height) per cell range.
         $colOffsets = $this->gridTrackOffsets($columnTracks, $columnGap);
         $rowOffsets = $this->gridTrackOffsets($rowTracks, $rowGap);
+
+        // CSS Gaps 1 — record the gap centre-lines and grid track-area
+        // bounds so the painter can draw `column-rule` / `row-rule`
+        // decorations in the gaps. The gap between track i and i+1 is
+        // centred at `offset[i] + trackSize[i] + gap/2`; the track area
+        // spans from the first offset to the last (total extent).
+        //
+        // Only the simple, physically-full-span case is drawn. Gap
+        // decorations that need segmentation (items spanning a gap →
+        // `*-rule-break`), logical-axis mapping (non-horizontal-tb
+        // writing modes), per-gap multi-value rule lists, subgrid, or
+        // fragmentation are skipped (leaving no rules) rather than drawn
+        // wrong — a partial implementation of those regresses more than
+        // it fixes. See CSS Gaps 1 §2–§4.
+        if ($this->gridGapRulesAreSimple($box, $placements)) {
+            $colCount = count($columnTracks);
+            $rowCount = count($rowTracks);
+            $box->columnGapCenters = [];
+            for ($i = 0; $i < $colCount - 1; $i++) {
+                $box->columnGapCenters[] = $geo->x + $colOffsets[$i] + $columnTracks[$i] + $columnGap / 2.0;
+            }
+            $box->rowGapCenters = [];
+            for ($i = 0; $i < $rowCount - 1; $i++) {
+                $box->rowGapCenters[] = $geo->y + $rowOffsets[$i] + $rowTracks[$i] + $rowGap / 2.0;
+            }
+            $box->gridContentLeft = $geo->x + $colOffsets[0];
+            $box->gridContentRight = $geo->x + $colOffsets[$colCount];
+            $box->gridContentTop = $geo->y + $rowOffsets[0];
+            $box->gridContentBottom = $geo->y + $rowOffsets[$rowCount];
+        }
+
         foreach ($placements as $p) {
             // Skip items that didn't successfully place.
             if ($p['row'] < 0 || $p['col'] < 0) {
@@ -4995,6 +5026,50 @@ final class BlockLayout
      * @param list<float> $tracks
      * @return list<float>
      */
+    /**
+     * CSS Gaps 1 — true when a grid's gap decorations can be drawn as
+     * simple full-span physical lines (no segmentation / logical-axis /
+     * per-gap-list handling). Guards out the cases a naive painter would
+     * get wrong: non-`horizontal-tb` writing modes, `subgrid`, items
+     * spanning a gap (need `*-rule-break` segmentation), and multi-value
+     * rule lists. Those keep no rules rather than wrong rules.
+     *
+     * @param list<array{box: Box, row: int, rowSpan: int, col: int, colSpan: int, autoRow: bool, autoCol: bool}> $placements
+     */
+    private function gridGapRulesAreSimple(\Phpdftk\HtmlToPdf\Box\GridBox $box, array $placements): bool
+    {
+        if (WritingMode::fromStyle($box->style)->isVertical()) {
+            return false;
+        }
+        foreach (['grid-template-columns', 'grid-template-rows'] as $prop) {
+            $v = $box->style->get($prop);
+            if ($v instanceof Keyword && strtolower($v->name) === 'subgrid') {
+                return false;
+            }
+            if ($v instanceof \Phpdftk\Css\Value\ValueList) {
+                foreach ($v->values as $part) {
+                    if ($part instanceof Keyword && strtolower($part->name) === 'subgrid') {
+                        return false;
+                    }
+                }
+            }
+        }
+        foreach ($placements as $p) {
+            if ($p['colSpan'] > 1 || $p['rowSpan'] > 1) {
+                return false;
+            }
+        }
+        foreach ([
+            'column-rule-color', 'column-rule-style', 'column-rule-width',
+            'row-rule-color', 'row-rule-style', 'row-rule-width',
+        ] as $prop) {
+            if ($box->style->get($prop) instanceof \Phpdftk\Css\Value\ValueList) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private function gridTrackOffsets(array $tracks, float $gap): array
     {
         $offsets = [0.0];

@@ -3184,6 +3184,69 @@ final class PainterTest extends TestCase
         self::assertEqualsWithDelta(400.0, $tile['h'], 0.001, 'auto height = positioning area height');
     }
 
+    public function testGridGapRulesPaintStrokes(): void
+    {
+        // CSS Gaps 1 — a grid with `column-rule` / `row-rule` and gaps
+        // paints rule lines (stroke `S`) centred in each gap.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="g">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .g { display: grid; grid-template-columns: 40px 40px;
+                  grid-template-rows: 40px 40px; column-gap: 10px; row-gap: 10px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue;
+                  row-rule-style: solid; row-rule-width: 4px; row-rule-color: green; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('S', $opcodes, 'gap rules stroke lines');
+        self::assertContains('RG', $opcodes, 'gap rules set a stroke colour');
+    }
+
+    public function testGridGapRulesSkippedForVerticalWritingMode(): void
+    {
+        // CSS Gaps 1 — gap decorations are writing-mode dependent (the
+        // logical column/row axes swap physically). The naive painter
+        // only handles `horizontal-tb`, so a vertical grid skips rules
+        // (no stroke) rather than drawing them on the wrong axis.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="g">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .g { display: grid; writing-mode: vertical-rl;
+                  grid-template-columns: 40px 40px; grid-template-rows: 40px 40px;
+                  column-gap: 10px; row-gap: 10px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('S', $opcodes, 'vertical writing-mode → gap rules skipped');
+    }
+
     public function testSingleStopGradientPaintsSolidFill(): void
     {
         // CSS Images 3 §3.5.1 — a gradient with a single color stop renders

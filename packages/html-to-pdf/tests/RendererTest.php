@@ -27,6 +27,23 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testGridGapDecorationsProduceValidPdf(): void
+    {
+        // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint
+        // to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="display:grid;grid-template-columns:50px 50px;grid-template-rows:50px 50px;'
+            . 'gap:10px;column-rule:5px solid blue;row-rule:5px solid green">'
+            . '<div></div><div></div><div></div><div></div></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testClipPathWithReferenceBoxProducesValidPdf(): void
     {
         // CSS Masking 1 §6 — `clip-path: <basic-shape> <geometry-box>`
