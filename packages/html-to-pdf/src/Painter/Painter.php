@@ -884,6 +884,16 @@ final class Painter
         if ($this->boxEntirelyOffPage($box)) {
             return;
         }
+        // CSS Masking 1 §4.1 — a `mask-image` layer that cannot be
+        // resolved to a mask image is empty (transparent black), which
+        // masks the element AND its subtree fully out. We don't render
+        // `url()` mask sources, so a single `url(...)` mask layer means
+        // "definitively failed" → paint nothing. A gradient / `none` /
+        // multi-layer value is left alone (rendered unmasked for now)
+        // to avoid hiding content that merely uses an unsupported mask.
+        if ($this->maskHidesElement($box)) {
+            return;
+        }
         $opacityGsName = $this->resolveOpacityGsName($box);
         if ($opacityGsName !== null) {
             $stream->saveGraphicsState();
@@ -1807,6 +1817,19 @@ final class Painter
      * children loop). Supports inset / circle / ellipse / polygon; the
      * `<geometry-box>` form and `url()` references are not handled.
      */
+    /**
+     * CSS Masking 1 §4 — true when the box's `mask-image` is a single
+     * `url(...)` layer we cannot resolve to a mask image. Such a failed
+     * layer is transparent black, so it masks the element (and subtree)
+     * fully out. Restricted to a lone `Url` value: gradients (which we
+     * render unmasked for now) and multi-layer / keyword values are left
+     * alone so a merely-unsupported mask never hides content.
+     */
+    private function maskHidesElement(Box $box): bool
+    {
+        return $box->style->get('mask-image') instanceof \Phpdftk\Css\Value\Url;
+    }
+
     private function applyClipPath(Box $box, ContentStream $stream): bool
     {
         $shape = $box->style->get('clip-path');

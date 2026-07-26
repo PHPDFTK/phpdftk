@@ -3184,6 +3184,34 @@ final class PainterTest extends TestCase
         self::assertEqualsWithDelta(400.0, $tile['h'], 0.001, 'auto height = positioning area height');
     }
 
+    public function testUnresolvableUrlMaskHidesElement(): void
+    {
+        // CSS Masking 1 §4 — a `mask-image: url(...)` we cannot resolve is
+        // an empty (transparent-black) mask that masks the element out, so
+        // it paints nothing. A gradient mask is left alone (still painted).
+        $hiddenSheet = 'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background: green;
+                   mask-image: url(non-existent.png); }';
+        $shownSheet = 'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background: green;
+                   mask-image: linear-gradient(black, white); }';
+        $counts = [];
+        foreach (['url' => $hiddenSheet, 'gradient' => $shownSheet] as $key => $css) {
+            $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+            $sheet = $this->css->parseStylesheet($css, Origin::UserAgent);
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+            $writer = new PdfWriter();
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            (new Painter(792.0))->paint($root, $stream);
+            $counts[$key] = count($stream->getOperators());
+        }
+        self::assertSame(0, $counts['url'], 'unresolvable url() mask → nothing painted');
+        self::assertGreaterThan(0, $counts['gradient'], 'gradient mask → element still painted');
+    }
+
     public function testGridGapRulesPaintStrokes(): void
     {
         // CSS Gaps 1 — a grid with `column-rule` / `row-rule` and gaps
