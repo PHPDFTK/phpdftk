@@ -92,6 +92,42 @@ final class PainterTest extends TestCase
         }
     }
 
+    public function testClipPathWithGeometryBoxEmitsClip(): void
+    {
+        // CSS Masking 1 §6 — `clip-path: <basic-shape> <geometry-box>`
+        // parses as a ValueList [shape, keyword]. Regression: applyClipPath's
+        // `instanceof <Shape>` checks ran against the raw ValueList, so the
+        // clip was silently dropped and the box rendered unclipped. The
+        // reference box must be unwrapped and the shape still clip (`W`).
+        foreach ([
+            'polygon(0% 0%, 100% 0%, 100px 100%, 0 100px) padding-box',
+            'circle(40px) content-box',
+            'inset(10px) margin-box',
+            'border-box',
+        ] as $clip) {
+            $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+            $sheet = $this->css->parseStylesheet(
+                'html, body, div { display: block; }
+                 div { background-color: green; width: 100px; height: 100px;
+                       padding: 5px; border: 3px solid black; margin: 4px;
+                       clip-path: ' . $clip . '; }',
+                Origin::UserAgent,
+            );
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+            $writer = new PdfWriter();
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            $painter = new Painter(792.0);
+            $painter->paint($root, $stream);
+
+            $opcodes = $this->operatorTokens($stream->getOperators());
+            self::assertContains('W', $opcodes, "`$clip` emits a clip (W) operator");
+        }
+    }
+
     public function testNoOperatorsWhenNoBackgroundOrBorder(): void
     {
         $doc = $this->html->parseDocument('<html><body><div></div></body></html>');

@@ -1809,15 +1809,51 @@ final class Painter
     private function applyClipPath(Box $box, ContentStream $stream): bool
     {
         $shape = $box->style->get('clip-path');
+        // CSS Masking 1 §6 — `clip-path: <basic-shape> || <geometry-box>`.
+        // When a reference box is present the value parses as a ValueList
+        // of [shape, geometry-box keyword] (in either order); unwrap it so
+        // the `instanceof` shape dispatch below still fires, and resolve
+        // the shape against the named box instead of the default border box.
+        $geometryBoxes = [
+            'content-box', 'padding-box', 'border-box', 'margin-box',
+            'fill-box', 'stroke-box', 'view-box',
+        ];
+        $refBox = 'border-box';
+        $bareBox = false;
+        if ($shape instanceof \Phpdftk\Css\Value\ValueList) {
+            $extractedShape = null;
+            foreach ($shape->values as $part) {
+                if ($part instanceof \Phpdftk\Css\Value\BasicShape) {
+                    $extractedShape = $part;
+                } elseif ($part instanceof \Phpdftk\Css\Value\Keyword) {
+                    $refBox = strtolower($part->name);
+                }
+            }
+            $shape = $extractedShape;
+            // A bare `<geometry-box>` with no shape clips to that box's edge.
+            $bareBox = $extractedShape === null;
+        } elseif ($shape instanceof \Phpdftk\Css\Value\Keyword
+            && in_array(strtolower($shape->name), $geometryBoxes, true)
+        ) {
+            // `clip-path: <geometry-box>` with no shape — clip to that box.
+            $refBox = strtolower($shape->name);
+            $bareBox = true;
+        }
         $g = $box->geometry;
-        $bx = $g->x - $g->paddingLeft - $g->borderLeft;
-        $by = $g->y - $g->paddingTop - $g->borderTop;
-        $bw = $g->borderLeft + $g->paddingLeft + $g->width + $g->paddingRight + $g->borderRight;
-        $bh = $g->borderTop + $g->paddingTop + $g->height + $g->paddingBottom + $g->borderBottom;
+        [$bx, $by, $bw, $bh] = $this->clipReferenceBox($g, $refBox);
         if ($bw <= 0.0 || $bh <= 0.0) {
             return false;
         }
         $ph = $this->pageHeight;
+        if ($bareBox) {
+            // CSS Masking 1 §6 — `clip-path: <geometry-box>` clips to that
+            // box's edge with no shape.
+            $stream->saveGraphicsState();
+            $stream->rectangle($bx, $ph - $by - $bh, $bw, $bh);
+            $stream->clip();
+            $stream->endPath();
+            return true;
+        }
         if ($shape instanceof \Phpdftk\Css\Value\InsetShape) {
             $ins = $shape->insets;
             // 1–4 values: top, right, bottom, left (CSS shorthand expansion).
@@ -1911,6 +1947,50 @@ final class Painter
             return true;
         }
         return false;
+    }
+
+    /**
+     * CSS Masking 1 §6 / CSS Box 3 — resolve a `<geometry-box>` keyword to
+     * the box rectangle `[left, top, width, height]` (top-left origin, y
+     * down, CSS px) a clip shape is measured against. `$g->x` / `$g->y` are
+     * the CONTENT box origin; padding / border / margin extend outward.
+     * The SVG-only boxes map to their closest CSS box for HTML elements
+     * (fill-box → content, stroke-box / view-box → border), per the spec's
+     * fallback for elements without an SVG geometry.
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    private function clipReferenceBox(\Phpdftk\HtmlToPdf\Layout\BoxGeometry $g, string $box): array
+    {
+        return match ($box) {
+            'content-box', 'fill-box' => [
+                $g->x,
+                $g->y,
+                $g->width,
+                $g->height,
+            ],
+            'padding-box' => [
+                $g->x - $g->paddingLeft,
+                $g->y - $g->paddingTop,
+                $g->paddingLeft + $g->width + $g->paddingRight,
+                $g->paddingTop + $g->height + $g->paddingBottom,
+            ],
+            'margin-box' => [
+                $g->x - $g->paddingLeft - $g->borderLeft - $g->marginLeft,
+                $g->y - $g->paddingTop - $g->borderTop - $g->marginTop,
+                $g->marginLeft + $g->borderLeft + $g->paddingLeft + $g->width
+                    + $g->paddingRight + $g->borderRight + $g->marginRight,
+                $g->marginTop + $g->borderTop + $g->paddingTop + $g->height
+                    + $g->paddingBottom + $g->borderBottom + $g->marginBottom,
+            ],
+            // border-box (the clip-path default), stroke-box, view-box.
+            default => [
+                $g->x - $g->paddingLeft - $g->borderLeft,
+                $g->y - $g->paddingTop - $g->borderTop,
+                $g->borderLeft + $g->paddingLeft + $g->width + $g->paddingRight + $g->borderRight,
+                $g->borderTop + $g->paddingTop + $g->height + $g->paddingBottom + $g->borderBottom,
+            ],
+        };
     }
 
     /**

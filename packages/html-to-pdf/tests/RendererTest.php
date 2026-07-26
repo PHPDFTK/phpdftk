@@ -27,6 +27,22 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testClipPathWithReferenceBoxProducesValidPdf(): void
+    {
+        // CSS Masking 1 §6 — `clip-path: <basic-shape> <geometry-box>`
+        // (reference box) renders through the clip pipeline to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;padding:10px;border:5px solid black;'
+            . 'background:green;clip-path:polygon(0 0,100% 0,100% 100%) content-box"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testLongParagraphDoesNotStraddlePageBoundary(): void
     {
         // End-to-end fragmentation smoke: a paragraph long enough to
