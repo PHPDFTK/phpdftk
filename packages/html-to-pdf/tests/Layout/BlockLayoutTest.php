@@ -137,6 +137,24 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(80.0, $c->geometry->height, 1.0);
     }
 
+    public function testFloatShrinkWrapsReplacedRatioIntrinsicWidth(): void
+    {
+        // A float shrink-wraps to its content's max-content width. A
+        // replaced child with a definite height and intrinsic ratio (2:1
+        // here) contributes height × ratio to that measurement, so the
+        // float is 100px wide (50 × 2), not collapsed to 0.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="f">'
+            . '<canvas width="2" height="1" style="height: 50px"></canvas>'
+            . '</div></body></html>',
+            '#f { float: left; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(100.0, $f->geometry->width, 2.0);
+    }
+
     public function testInlineReplacedDerivesWidthFromDefiniteHeightAndRatio(): void
     {
         // CSS 2.1 §10.3.2 — an inline replaced element (here a canvas with

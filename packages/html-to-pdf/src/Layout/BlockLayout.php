@@ -4199,6 +4199,17 @@ final class BlockLayout
             return ['min' => $mm['min'], 'max' => $mm['max']];
         }
         if ($box instanceof AtomicInlineBox || $box instanceof InlineBox) {
+            // CSS 2.1 §10.3.2 — a replaced atomic box with an intrinsic
+            // ratio and a definite height contributes height × ratio as
+            // its (min = max) content width. Without this a ratio'd
+            // <canvas>/<img> sized only by its height reports 0 and
+            // collapses its column (percent-height-replaced-in-percent-cell).
+            if ($box instanceof AtomicInlineBox) {
+                $ratioWidth = $this->atomicReplacedRatioWidth($box, $context);
+                if ($ratioWidth !== null) {
+                    return ['min' => $ratioWidth, 'max' => $ratioWidth];
+                }
+            }
             return $this->aggregateChildrenMinMax($box, $context, inline: true);
         }
         // Block / anonymous-block / table cell. When the children are
@@ -6003,6 +6014,35 @@ final class BlockLayout
      *    {@see ratioComponent} unwraps.
      * Returns null on bare `auto` / unknown / zero denominator.
      */
+    /**
+     * CSS 2.1 §10.3.2 — the content-box width a replaced atomic box
+     * contributes to intrinsic sizing when it has an intrinsic ratio and
+     * a definite height (an explicit length, or a percentage against a
+     * definite containing-block height). Returns null when there is no
+     * ratio or no resolvable definite height.
+     */
+    private function atomicReplacedRatioWidth(Box $box, LayoutContext $context): ?float
+    {
+        $ratio = $this->resolveAspectRatio($box->style);
+        if ($ratio === null || $ratio <= 0.0) {
+            return null;
+        }
+        $h = $box->style->get('height');
+        $height = match (true) {
+            $h instanceof Length => $h->value,
+            $h instanceof \Phpdftk\Css\Value\Integer => (float) $h->value,
+            $h instanceof Percentage
+                && $context->inFlowHeightDefinite
+                && $context->containingBlockHeight > 0.0
+                => $context->containingBlockHeight * ($h->value / 100.0),
+            default => null,
+        };
+        if ($height === null || $height <= 0.0) {
+            return null;
+        }
+        return $height * $ratio;
+    }
+
     private function resolveAspectRatio(CascadedValues $style): ?float
     {
         $value = $style->get('aspect-ratio');
@@ -7919,7 +7959,23 @@ final class BlockLayout
      */
     private function cellColumnContribution(\Phpdftk\HtmlToPdf\Box\TableCellBox $cell, LayoutContext $context): array
     {
-        $mm = $this->measureMinMaxContent($cell, $context);
+        // A cell with a definite height establishes a definite containing
+        // block for a replaced child's percentage height, so a ratio'd
+        // <canvas>/<img> sized by that height contributes its derived
+        // width to the column (percent-height-replaced-in-percent-cell).
+        $measureCtx = $context;
+        $cellHeightValue = $cell->style->get('height');
+        $cellHeightPx = match (true) {
+            $cellHeightValue instanceof Length => $cellHeightValue->value,
+            $cellHeightValue instanceof \Phpdftk\Css\Value\Integer => (float) $cellHeightValue->value,
+            default => null,
+        };
+        if ($cellHeightPx !== null && $cellHeightPx > 0.0) {
+            $measureCtx = $context
+                ->withContainingBlockHeightDefinite($cellHeightPx, true)
+                ->withInFlowHeightDefinite(true);
+        }
+        $mm = $this->measureMinMaxContent($cell, $measureCtx);
         // Horizontal padding+border of the cell itself. Percentage
         // padding has no resolved basis during intrinsic measurement —
         // resolve against 0 (→0), matching the px-padding common case.
