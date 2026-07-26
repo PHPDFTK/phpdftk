@@ -2190,7 +2190,10 @@ final class ValueParser
     {
         $tokens = self::trimWhitespace($tokens);
         $groups = self::splitTopLevel($tokens, CommaToken::class);
-        if (count($groups) < 2) {
+        // CSS Images 3 §3.5.1 — the `<color-stop-list>` allows a single
+        // colour stop (`linear-gradient(green)`), which renders as a solid
+        // fill of that colour. Only a truly empty argument list is invalid.
+        if ($groups === []) {
             return null;
         }
         // First group may be:
@@ -2246,7 +2249,9 @@ final class ValueParser
                 $stops[] = $stop;
             }
         }
-        if (count($stops) < 2) {
+        // A single stop is valid (solid fill); zero stops (e.g. a bare
+        // `linear-gradient(to right)`) is not.
+        if ($stops === []) {
             return null;
         }
         return new LinearGradient(
@@ -2434,7 +2439,9 @@ final class ValueParser
     {
         $tokens = self::trimWhitespace($tokens);
         $groups = self::splitTopLevel($tokens, CommaToken::class);
-        if (count($groups) < 2) {
+        // CSS Images 3 §3.5.1 — a single colour stop is valid and renders
+        // as a solid fill.
+        if ($groups === []) {
             return null;
         }
         // First group MAY be shape/size [at position] [in <space>];
@@ -2478,7 +2485,7 @@ final class ValueParser
                 $stops[] = $stop;
             }
         }
-        if (count($stops) < 2) {
+        if ($stops === []) {
             return null;
         }
         return new RadialGradient(

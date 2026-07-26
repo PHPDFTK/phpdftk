@@ -303,6 +303,30 @@ final class AdvancedValueParserTest extends TestCase
         self::assertCount(2, $v->stops);
     }
 
+    public function testLinearGradientSingleStopIsValid(): void
+    {
+        // CSS Images 3 §3.5.1 — the color-stop-list allows a single stop;
+        // `linear-gradient(green)` is a valid gradient (a solid green fill),
+        // not a generic function. Regression: the parser required ≥2 stops
+        // and dropped it to a CssFunction, so it never painted.
+        $v = $this->parser->parseFromString('linear-gradient(green)');
+        self::assertInstanceOf(LinearGradient::class, $v);
+        self::assertCount(1, $v->stops);
+    }
+
+    public function testRadialGradientSingleStopIsValid(): void
+    {
+        $v = $this->parser->parseFromString('radial-gradient(green)');
+        self::assertInstanceOf(RadialGradient::class, $v);
+        self::assertCount(1, $v->stops);
+    }
+
+    public function testGradientWithNoStopsIsRejected(): void
+    {
+        // A direction/shape header with no color stops is not a gradient.
+        self::assertNotInstanceOf(LinearGradient::class, $this->parser->parseFromString('linear-gradient(to right)'));
+    }
+
     public function testLinearGradientWithAngle(): void
     {
         $v = $this->parser->parseFromString('linear-gradient(45deg, red, blue)');

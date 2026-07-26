@@ -3729,7 +3729,16 @@ final class Painter
         float $width,
         float $height,
     ): void {
-        if ($this->writer === null || $gradient->stops === []) {
+        if ($gradient->stops === []) {
+            return;
+        }
+        // CSS Images 3 §3.5.1 — single-stop gradient is a solid fill
+        // (no PDF writer needed, so runs before the shading writer guard).
+        if (count($gradient->stops) === 1) {
+            $this->fillGradientSolidStop($gradient->stops[0], $stream, $x, $top, $width, $height);
+            return;
+        }
+        if ($this->writer === null) {
             return;
         }
         $pdfY = $this->pageHeight - $top - $height;
@@ -3783,6 +3792,30 @@ final class Painter
         // covers it).
         $extent = max($rx, $ry);
         $stream->rectangle(-$extent, -$extent, 2 * $extent, 2 * $extent);
+        $stream->fill();
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * CSS Images 3 §3.5.1 — paint a single-colour-stop gradient as a
+     * solid rectangle fill of that stop's colour. `$top` / `$height` are
+     * CSS coordinates (y down); flip to PDF space for the rectangle.
+     */
+    private function fillGradientSolidStop(
+        \Phpdftk\Css\Value\GradientStop $stop,
+        ContentStream $stream,
+        float $x,
+        float $top,
+        float $width,
+        float $height,
+    ): void {
+        if ($width <= 0.0 || $height <= 0.0) {
+            return;
+        }
+        $color = $stop->color;
+        $stream->saveGraphicsState();
+        $stream->setFillColorRGB($color->r, $color->g, $color->b);
+        $stream->rectangle($x, $this->pageHeight - $top - $height, $width, $height);
         $stream->fill();
         $stream->restoreGraphicsState();
     }
@@ -4055,7 +4088,7 @@ final class Painter
         float $tileHeight,
         ?array $clipRect = null,
     ): void {
-        if ($this->writer === null || $gradient->stops === []) {
+        if ($gradient->stops === []) {
             return;
         }
         if ($tileWidth <= 0.0 || $tileHeight <= 0.0) {
@@ -4063,6 +4096,26 @@ final class Painter
         }
         [$clipX, $clipTop, $clipWidth, $clipHeight] = $clipRect
             ?? [$tileX, $tileTop, $tileWidth, $tileHeight];
+        // CSS Images 3 §3.5.1 — a gradient with a single colour-stop
+        // renders as a solid fill of that colour. PDF's ShadingType-2/3
+        // stitching function needs ≥2 stops, so short-circuit to a plain
+        // rectangle fill (the shading path would otherwise throw and paint
+        // nothing, exposing the element's fallback background). This needs
+        // no PDF writer, so it runs before the shading-only writer guard.
+        if (count($gradient->stops) === 1) {
+            $this->fillGradientSolidStop(
+                $gradient->stops[0],
+                $stream,
+                $clipX,
+                $clipTop,
+                $clipWidth,
+                $clipHeight,
+            );
+            return;
+        }
+        if ($this->writer === null) {
+            return;
+        }
         $tilePdfY = $this->pageHeight - $tileTop - $tileHeight;
         $clipPdfY = $this->pageHeight - $clipTop - $clipHeight;
         // CSS angle convention: 0deg points up, increases clockwise. The

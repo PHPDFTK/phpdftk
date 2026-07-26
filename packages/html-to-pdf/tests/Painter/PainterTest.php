@@ -3184,6 +3184,32 @@ final class PainterTest extends TestCase
         self::assertEqualsWithDelta(400.0, $tile['h'], 0.001, 'auto height = positioning area height');
     }
 
+    public function testSingleStopGradientPaintsSolidFill(): void
+    {
+        // CSS Images 3 §3.5.1 — a gradient with a single color stop renders
+        // as a solid fill of that color. `linear-gradient(green)` must emit a
+        // green rectangle fill (`rg` + `re` + `f`), not fall through unpainted.
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background-image: linear-gradient(green); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        $painter = new Painter(792.0);
+        $painter->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('rg', $opcodes, 'single-stop gradient sets an RGB fill colour');
+        self::assertContains('f', $opcodes, 'single-stop gradient fills a rectangle');
+    }
+
     public function testCurrentColorResolvesToBoxColorOnBackground(): void
     {
         // CSS Color 4 §3.6 — `currentcolor` on `background-color`
