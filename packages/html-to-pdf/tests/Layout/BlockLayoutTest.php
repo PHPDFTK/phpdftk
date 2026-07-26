@@ -137,6 +137,44 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(80.0, $c->geometry->height, 1.0);
     }
 
+    public function testInlineReplacedDerivesWidthFromDefiniteHeightAndRatio(): void
+    {
+        // CSS 2.1 §10.3.2 — an inline replaced element (here a canvas with
+        // intrinsic ratio 2:1 from its width/height attrs) with a definite
+        // percentage height and auto width derives its width from
+        // height × ratio. 50% of the 100px CB = 50 tall → 100 wide.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="cb">'
+            . '<canvas id="c" width="2" height="1" style="height: 50%"></canvas>'
+            . '</div></body></html>',
+            '#cb { height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        self::assertEqualsWithDelta(50.0, $c->geometry->height, 1.0);
+        self::assertEqualsWithDelta(100.0, $c->geometry->width, 1.0);
+    }
+
+    public function testInlineReplacedMaxHeightClampPreservesRatio(): void
+    {
+        // CSS 2.1 §10.4 — a percentage max-height on a replaced element
+        // caps the height and, via the intrinsic ratio (1:1 here), the
+        // width follows. Canvas 200×200, max-height 50% of a 200px CB =
+        // 100 → clamped to a 100×100 square.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="cb">'
+            . '<canvas id="c" width="200" height="200" style="max-height: 50%"></canvas>'
+            . '</div></body></html>',
+            '#cb { height: 200px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        self::assertEqualsWithDelta(100.0, $c->geometry->height, 1.0);
+        self::assertEqualsWithDelta(100.0, $c->geometry->width, 1.0);
+    }
+
     public function testStretchedBorderedCellFillsRowWithoutOverflow(): void
     {
         // A short bordered cell stretched to the row height must fill the

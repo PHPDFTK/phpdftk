@@ -105,6 +105,21 @@ final class RendererTest extends TestCase
         self::assertStringNotContainsString("\nS\n", $bytes, 'no stroke for column-rule: none');
     }
 
+    public function testReplacedCanvasIntrinsicSizingProducesValidPdf(): void
+    {
+        // A canvas whose width/height attrs give it an intrinsic ratio,
+        // sized on one axis by CSS, derives the other axis from the ratio.
+        $result = (new Renderer())->render(
+            '<html><body><div style="height:100px">'
+            . '<canvas width="1" height="1" style="height:100%;background:green"></canvas>'
+            . '</div></body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testPercentHeightInAutoAncestorProducesValidPdf(): void
     {
         // A `display: table; height: 100%` inside an auto body sizes to

@@ -58,6 +58,17 @@ final class InlineLayout
      */
     private float $currentAvailableWidth = 0.0;
 
+    /**
+     * The containing block's content height and whether it is definite,
+     * threaded from the block layout so an atomic replaced element can
+     * resolve a percentage `height` / `max-height` / `min-height` and,
+     * via its intrinsic ratio, derive an auto inline size (CSS 2.1
+     * §10.3.2). `0` / `false` when the CB height is indefinite.
+     */
+    private float $currentCbHeight = 0.0;
+
+    private bool $currentCbHeightDefinite = false;
+
     public function __construct(
         private readonly Shaper $shaper = new Shaper(),
         private readonly LineBreaker $lineBreaker = new LineBreaker(),
@@ -75,6 +86,8 @@ final class InlineLayout
     {
         $this->currentFontResolver = $context->fontResolver;
         $this->currentAvailableWidth = $availableWidth;
+        $this->currentCbHeight = $context->containingBlockHeight;
+        $this->currentCbHeightDefinite = $context->inFlowHeightDefinite;
         if ($availableWidth <= 0.0) {
             return [[], 0.0];
         }
@@ -487,35 +500,11 @@ final class InlineLayout
             if (!($child instanceof AtomicInlineBox)) {
                 continue;
             }
-            $widthValue = $child->style->get('width');
-            // A percentage width (e.g. `<img width="100%">`) resolves
-            // against the inline-formatting-context's available width —
-            // the same basis the shaped path uses. Without this a
-            // percentage-sized replaced element collapses to 0 in the
-            // no-font fallback and paints nothing.
-            $width = match (true) {
-                $widthValue instanceof Length && $widthValue->value > 0.0
-                    => $widthValue->value,
-                $widthValue instanceof \Phpdftk\Css\Value\Percentage && $widthValue->value > 0.0
-                    => $this->currentAvailableWidth * ($widthValue->value / 100.0),
-                default => 0.0,
-            };
-            if ($width <= 0.0) {
-                // Atomic-content painters have their own intrinsic-
-                // size fallbacks (svg attrs / viewBox; math defaults).
-                // Don't second-guess them here — leave geometry at 0
-                // so the painter's fallback chain still runs.
-                continue;
-            }
-            // Border + padding insets. This fallback historically ignored
-            // borders entirely, so an inline-block sized partly by its
-            // border/padding (e.g. the CSS2 `border-{top,bottom}-width`
-            // tests, or a square with a uniform border) collapsed to its
-            // content box and painted no border. Fold both axes' insets
-            // into the box: grow the height/advance by the inset and offset
-            // the content box so the border box's top-left edge stays at
-            // the box origin. Both axes are handled symmetrically so a
-            // uniformly-bordered inline-block keeps a centred content box.
+            // Border + padding insets, resolved BEFORE the inline size so a
+            // definite height can derive an auto width via the intrinsic
+            // ratio (CSS 2.1 §10.3.2). Folding both axes' insets in keeps a
+            // uniformly-bordered inline-block's border box intact (the CSS2
+            // border-width tests).
             $padTop = self::atomicLength($child->style->get('padding-top'));
             $padBottom = self::atomicLength($child->style->get('padding-bottom'));
             $padLeft = self::atomicLength($child->style->get('padding-left'));
@@ -527,42 +516,67 @@ final class InlineLayout
             $verticalInset = $padTop + $padBottom + $borderTop + $borderBottom;
             $horizontalInset = $padLeft + $padRight + $borderLeft + $borderRight;
             // CSS 2.2 §10.8 — an inline-block's margins take part in layout:
-            // horizontal margins add to the inline advance it occupies, and
-            // its margin box (with vertical margins) is what contributes to
-            // line height. This no-font fallback previously dropped them, so
-            // adjacent inline-blocks touched instead of showing their gaps.
+            // horizontal margins add to its inline advance, its margin box
+            // contributes to line height.
             $marginTop = self::atomicLength($child->style->get('margin-top'));
             $marginBottom = self::atomicLength($child->style->get('margin-bottom'));
             $marginLeft = self::atomicLength($child->style->get('margin-left'));
             $marginRight = self::atomicLength($child->style->get('margin-right'));
-            // CSS Sizing 3 §6.2 — under `box-sizing: border-box` the
-            // declared width/height already includes the inset, so the
-            // content box shrinks; otherwise the inset grows the outer box.
+            // CSS Sizing 3 §6.2 — with `box-sizing: border-box` the declared
+            // width/height already includes the inset.
             $borderBox = self::atomicIsBorderBoxSizing($child->style);
-            $contentWidth = $borderBox ? max(0.0, $width - $horizontalInset) : $width;
-            $outerWidth = $contentWidth + $horizontalInset;
+            // Resolve a definite CONTENT height first: an explicit length /
+            // `0`, or a percentage against a definite containing-block
+            // height. A definite height lets an auto inline size come from
+            // the intrinsic ratio below.
             $heightValue = $child->style->get('height');
-            // A unitless `0` cascades as Integer, not Length, but is still
-            // an explicit length (the only valid unitless one).
             $declaredHeight = match (true) {
                 $heightValue instanceof Length => $heightValue->value,
                 $heightValue instanceof \Phpdftk\Css\Value\Integer => (float) $heightValue->value,
+                $heightValue instanceof \Phpdftk\Css\Value\Percentage
+                    && $this->currentCbHeightDefinite && $this->currentCbHeight > 0.0
+                    => $this->currentCbHeight * ($heightValue->value / 100.0),
                 default => null,
             };
+            $definiteContentHeight = null;
             if ($declaredHeight !== null) {
-                // Explicit height (including `0`) is authoritative.
                 $declaredHeight = max(0.0, $declaredHeight);
-                $contentHeight = $borderBox
+                $definiteContentHeight = $borderBox
                     ? max(0.0, $declaredHeight - $verticalInset)
                     : $declaredHeight;
-            } else {
-                // Auto height with no measurable content (no shaping font):
-                // square the OUTER box to its width — the historical
-                // contract the shaped path also follows — but never below
-                // the inset, since a border box can't be shorter than its
-                // own border + padding (the CSS2 border-width tests).
-                $contentHeight = max(0.0, max($outerWidth, $verticalInset) - $verticalInset);
             }
+            // Inline (content-box) width: an explicit length, a percentage
+            // against the IFC available width (the basis the shaped path
+            // uses), else — when auto with a definite height and intrinsic
+            // ratio — height × ratio (§10.3.2 replaced sizing).
+            $ratio = self::atomicAspectRatio($child->style);
+            $widthValue = $child->style->get('width');
+            $width = match (true) {
+                $widthValue instanceof Length && $widthValue->value > 0.0
+                    => $widthValue->value,
+                $widthValue instanceof \Phpdftk\Css\Value\Percentage && $widthValue->value > 0.0
+                    => $this->currentAvailableWidth * ($widthValue->value / 100.0),
+                default => 0.0,
+            };
+            $contentWidth = $borderBox ? max(0.0, $width - $horizontalInset) : $width;
+            if ($width <= 0.0
+                && $definiteContentHeight !== null && $definiteContentHeight > 0.0
+                && $ratio !== null && $ratio > 0.0
+            ) {
+                $contentWidth = $definiteContentHeight * $ratio;
+            }
+            if ($contentWidth <= 0.0) {
+                // Atomic-content painters have their own intrinsic-size
+                // fallbacks (svg attrs / viewBox; math defaults). Leave
+                // geometry at 0 so the painter's fallback chain still runs.
+                continue;
+            }
+            $outerWidth = $contentWidth + $horizontalInset;
+            // Content height: the definite value resolved above, else square
+            // the outer box to its width (the historical no-font contract
+            // the shaped path also follows), floored at the inset.
+            $contentHeight = $definiteContentHeight
+                ?? max(0.0, max($outerWidth, $verticalInset) - $verticalInset);
             // CSS Sizing 3 §5.2 — replaced min/max-width / -height clamps
             // (incl. min/max-content transferred through the intrinsic
             // ratio). Without this `max-width: min-content` on a sized
@@ -2521,8 +2535,16 @@ final class InlineLayout
         if ($v instanceof Length) {
             return \Phpdftk\Css\Cascade\LengthResolver::clampPx($v->value);
         }
-        if ($v instanceof \Phpdftk\Css\Value\Percentage && $isWidth) {
-            return $this->currentAvailableWidth * ($v->value / 100.0);
+        if ($v instanceof \Phpdftk\Css\Value\Percentage) {
+            if ($isWidth) {
+                return $this->currentAvailableWidth * ($v->value / 100.0);
+            }
+            // A percentage block-axis min/max resolves only against a
+            // definite containing-block height (CSS 2.1 §10.5).
+            if ($this->currentCbHeightDefinite && $this->currentCbHeight > 0.0) {
+                return $this->currentCbHeight * ($v->value / 100.0);
+            }
+            return null;
         }
         return null;
     }
@@ -2544,21 +2566,37 @@ final class InlineLayout
         $ratio = self::atomicAspectRatio($style);
         $origWidth = $width;
         $origHeight = $height;
+        $hasRatio = $ratio !== null && $ratio > 0.0;
         $maxW = $this->resolveAtomicMinMax($style, 'max-width', $origHeight, $ratio, true);
         if ($maxW !== null && $width > $maxW) {
             $width = $maxW;
+            // CSS 2.1 §10.4 — clamping one axis of a replaced element with
+            // an intrinsic ratio transfers to the other axis to preserve
+            // the ratio.
+            if ($hasRatio) {
+                $height = $width / $ratio;
+            }
         }
         $minW = $this->resolveAtomicMinMax($style, 'min-width', $origHeight, $ratio, true);
         if ($minW !== null && $width < $minW) {
             $width = $minW;
+            if ($hasRatio) {
+                $height = $width / $ratio;
+            }
         }
         $maxH = $this->resolveAtomicMinMax($style, 'max-height', $origWidth, $ratio, false);
         if ($maxH !== null && $height > $maxH) {
             $height = $maxH;
+            if ($hasRatio) {
+                $width = $height * $ratio;
+            }
         }
         $minH = $this->resolveAtomicMinMax($style, 'min-height', $origWidth, $ratio, false);
         if ($minH !== null && $height < $minH) {
             $height = $minH;
+            if ($hasRatio) {
+                $width = $height * $ratio;
+            }
         }
         return [$width, $height];
     }

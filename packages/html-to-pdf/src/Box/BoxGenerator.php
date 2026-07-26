@@ -1995,10 +1995,24 @@ final class BoxGenerator
             && $canvasH !== null && $canvasH > 0.0
             && !$this->hasSizeContainment($values)
         ) {
-            foreach (['width' => $canvasW, 'height' => $canvasH] as $attr => $val) {
-                if (!$values->has($attr) || $this->isAutoLength($values->get($attr))) {
-                    $values->set($attr, new \Phpdftk\Css\Value\Length($val, \Phpdftk\Css\Value\LengthUnit::Px));
-                }
+            // HTML 5 §4.12.5 — the width/height content attributes are the
+            // canvas's INTRINSIC (bitmap) size, not presentational CSS
+            // width/height. So they become the used size only when BOTH
+            // axes are `auto`; if the author fixed one axis, the other is
+            // derived from the intrinsic ratio (CSS 2.1 §10.3.2 replaced
+            // sizing), so it must stay `auto`. The ratio is always exposed
+            // via `aspect-ratio` for that derivation. (Setting the unfixed
+            // axis to the raw attribute pixel value would suppress the
+            // ratio and stretch the canvas — e.g. `<canvas width=1
+            // height=1 style="height: 100px">` must be a 100×100 square,
+            // not 1×100.)
+            $widthAuto = !$values->has('width')
+                || $this->isAutoLength($values->get('width'));
+            $heightAuto = !$values->has('height')
+                || $this->isAutoLength($values->get('height'));
+            if ($widthAuto && $heightAuto) {
+                $values->set('width', new \Phpdftk\Css\Value\Length($canvasW, \Phpdftk\Css\Value\LengthUnit::Px));
+                $values->set('height', new \Phpdftk\Css\Value\Length($canvasH, \Phpdftk\Css\Value\LengthUnit::Px));
             }
             if (!$values->has('aspect-ratio')) {
                 $values->set(
