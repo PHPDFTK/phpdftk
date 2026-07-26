@@ -568,8 +568,18 @@ final class BlockLayout
         // down by half / all of the slack so the content sits centred /
         // at the bottom of the row.
         foreach ($cells as $cell) {
-            $contentHeight = $cell->geometry->height;
-            $slack = $maxHeight - $contentHeight;
+            $cellGeo = $cell->geometry;
+            // `$maxHeight` is the tallest cell's OUTER (border-box) height,
+            // i.e. the row height. A cell's border box must fill the row,
+            // so its CONTENT stretches to the row height minus the cell's
+            // own border + padding — setting content = $maxHeight directly
+            // would add the cell's border/padding a second time and make
+            // the cell overflow the row by that amount.
+            $cellVertical = $cellGeo->borderTop + $cellGeo->borderBottom
+                + $cellGeo->paddingTop + $cellGeo->paddingBottom;
+            $targetContent = max(0.0, $maxHeight - $cellVertical);
+            $contentHeight = $cellGeo->height;
+            $slack = $targetContent - $contentHeight;
             if ($slack > 0.0) {
                 $valign = $cell->style->get('vertical-align');
                 $shift = 0.0;
@@ -585,7 +595,7 @@ final class BlockLayout
                         $this->shiftSubtree($child, $shift);
                     }
                 }
-                $cell->geometry->height = $maxHeight;
+                $cellGeo->height = $targetContent;
             }
         }
         return $maxHeight;

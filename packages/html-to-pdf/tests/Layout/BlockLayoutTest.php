@@ -115,6 +115,30 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
     }
 
+    public function testStretchedBorderedCellFillsRowWithoutOverflow(): void
+    {
+        // A short bordered cell stretched to the row height must fill the
+        // row exactly (border box = row height), not overflow by its own
+        // border: its CONTENT stretches to rowHeight - border - padding.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="r">'
+            . '<div id="tall"></div><div id="short"></div>'
+            . '</div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #r { display: table-row; }
+             #tall  { display: table-cell; height: 60px; }
+             #short { display: table-cell; height: 20px; border: 10px solid black; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $short = $this->findById($box, 'short');
+        self::assertNotNull($short);
+        // Row height = 60 (the tall cell). The short cell's border box must
+        // equal 60: content 40 + border 20. Content must NOT be set to 60.
+        self::assertEqualsWithDelta(40.0, $short->geometry->height, 1.0);
+        self::assertEqualsWithDelta(60.0, $short->geometry->outerHeight(), 1.0);
+    }
+
     public function testDefiniteHeightContainerIsNotAFragmentainer(): void
     {
         // A nested definite-height block is not a page: an unbreakable

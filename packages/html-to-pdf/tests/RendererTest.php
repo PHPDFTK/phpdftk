@@ -105,6 +105,23 @@ final class RendererTest extends TestCase
         self::assertStringNotContainsString("\nS\n", $bytes, 'no stroke for column-rule: none');
     }
 
+    public function testBorderedTableCellsProduceValidPdf(): void
+    {
+        // Bordered cells stretched to a common row height must not overflow
+        // their row; render a mixed-height bordered table to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body><table><tr>'
+            . '<td class="a">x</td><td class="b">y</td>'
+            . '</tr></table></body></html>',
+            'td { border: 8px solid navy; padding: 4px; }
+             .a { height: 60px; } .b { height: 20px; background: pink; }',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testFilledDefiniteHeightContainerProducesValidPdf(): void
     {
         // Block-level content filling a nested definite-height container
