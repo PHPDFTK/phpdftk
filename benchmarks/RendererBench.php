@@ -412,6 +412,21 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchConicGradients(): void
+    {
+        // `conic-gradient()` compiles to a function-based ShadingType-1
+        // whose FunctionType-4 PostScript body grows with the stop count
+        // (one ifelse segment per stop). 30 boxes × a 4-stop conic
+        // exercises the PostScript codegen + shading-pattern emission.
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background-image: '
+                . 'conic-gradient(from 45deg, red 0 25%, green 25% 50%, '
+                . 'blue 50% 75%, black 75% 100%);"></div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchTranslucentGradients(): void
     {
         // Translucent-stop gradients add a per-box Luminosity soft mask:

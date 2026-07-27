@@ -355,6 +355,9 @@ final class Painter
         if ($hasRadial) {
             $this->paintRadialGradient($bgImage, $stream, 0.0, 0.0, $this->pageWidth, $this->pageHeight);
         }
+        if ($bgImage instanceof \Phpdftk\Css\Value\ConicGradient) {
+            $this->paintConicGradient($bgImage, $stream, 0.0, 0.0, $this->pageWidth, $this->pageHeight);
+        }
     }
 
     /**
@@ -389,7 +392,8 @@ final class Painter
         }
         return $bgImage instanceof \Phpdftk\Css\Value\Url
             || $bgImage instanceof \Phpdftk\Css\Value\LinearGradient
-            || $bgImage instanceof \Phpdftk\Css\Value\RadialGradient;
+            || $bgImage instanceof \Phpdftk\Css\Value\RadialGradient
+            || $bgImage instanceof \Phpdftk\Css\Value\ConicGradient;
     }
 
     /**
@@ -3727,6 +3731,8 @@ final class Painter
                     }
                 } elseif ($layer instanceof \Phpdftk\Css\Value\RadialGradient) {
                     $this->paintRadialGradient($layer, $stream, $x, $top, $width, $height);
+                } elseif ($layer instanceof \Phpdftk\Css\Value\ConicGradient) {
+                    $this->paintConicGradient($layer, $stream, $x, $top, $width, $height);
                 } elseif (($imgArg = $this->imageFunctionColorArg($layer)) !== null) {
                     $imgColor = $this->resolveColorWithCurrentColor($imgArg, $box);
                     if ($imgColor instanceof Color) {
@@ -3747,7 +3753,7 @@ final class Painter
      * is expanded. `none` keywords and other unsupported entries
      * are skipped.
      *
-     * @return list<\Phpdftk\Css\Value\Url|\Phpdftk\Css\Value\LinearGradient|\Phpdftk\Css\Value\RadialGradient|\Phpdftk\Css\Value\CssFunction>
+     * @return list<\Phpdftk\Css\Value\Url|\Phpdftk\Css\Value\LinearGradient|\Phpdftk\Css\Value\RadialGradient|\Phpdftk\Css\Value\ConicGradient|\Phpdftk\Css\Value\CssFunction>
      */
     private function extractBackgroundLayers(mixed $value): array
     {
@@ -3759,6 +3765,7 @@ final class Painter
                 if ($v instanceof \Phpdftk\Css\Value\Url
                     || $v instanceof \Phpdftk\Css\Value\LinearGradient
                     || $v instanceof \Phpdftk\Css\Value\RadialGradient
+                    || $v instanceof \Phpdftk\Css\Value\ConicGradient
                     || ($v instanceof \Phpdftk\Css\Value\CssFunction
                         && $this->imageFunctionColorArg($v) !== null)
                 ) {
@@ -3770,6 +3777,7 @@ final class Painter
         if ($value instanceof \Phpdftk\Css\Value\Url
             || $value instanceof \Phpdftk\Css\Value\LinearGradient
             || $value instanceof \Phpdftk\Css\Value\RadialGradient
+            || $value instanceof \Phpdftk\Css\Value\ConicGradient
             || ($value instanceof \Phpdftk\Css\Value\CssFunction
                 && $this->imageFunctionColorArg($value) !== null)
         ) {
@@ -3882,6 +3890,69 @@ final class Painter
      * unit circle becomes an ellipse — the gradient still expands
      * outward proportionally.
      */
+    /**
+     * CSS Images 4 §3.5 — paint a `conic-gradient()` over the box rect.
+     * PDF has no angular shading, so this routes through a function-based
+     * ShadingType-1 whose PostScript calculator maps each point to its
+     * sweep angle and interpolates the stops
+     * ({@see \Phpdftk\Pdf\Writer\PdfDoc::addConicShadingStops()}).
+     */
+    private function paintConicGradient(
+        \Phpdftk\Css\Value\ConicGradient $gradient,
+        ContentStream $stream,
+        float $x,
+        float $top,
+        float $width,
+        float $height,
+    ): void {
+        if ($gradient->stops === []) {
+            return;
+        }
+        if (count($gradient->stops) === 1) {
+            $this->fillGradientSolidStop($gradient->stops[0], $stream, $x, $top, $width, $height);
+            return;
+        }
+        if ($this->writer === null || $this->page === null) {
+            return;
+        }
+        if ($width <= 0.0 || $height <= 0.0) {
+            return;
+        }
+        $pdfY = $this->pageHeight - $top - $height;
+        // Centre: `at <position>` fractions (default 50% 50%). centerY is
+        // measured from the CSS top, so flip into the PDF y-up box.
+        $cx = $x + ($gradient->centerX ?? 0.5) * $width;
+        $cy = $pdfY + ($height - ($gradient->centerY ?? 0.5) * $height);
+        // Conic stop positions are angular percentages of the full sweep,
+        // so they resolve to [0,1] offsets directly (length line = 1).
+        $stopList = $this->resolveGradientStops($gradient->stops, 1.0);
+        if (count($stopList) < 2) {
+            return;
+        }
+        try {
+            $doc = \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer);
+            $pattern = $doc->addConicShadingStops(
+                new \Phpdftk\Geometry\Point($cx, $cy),
+                $gradient->fromAngleDeg,
+                $stopList,
+                [$x, $x + $width, $pdfY, $pdfY + $height],
+                $gradient->repeating,
+            );
+        } catch (\Throwable) {
+            return;
+        }
+        $patternName = $this->page->useGradient($pattern);
+        $stream->saveGraphicsState();
+        $stream->rectangle($x, $pdfY, $width, $height);
+        $stream->clip();
+        $stream->endPath();
+        $stream->setFillColorSpace('Pattern');
+        $stream->setFillColor($patternName);
+        $stream->rectangle($x, $pdfY, $width, $height);
+        $stream->fill();
+        $stream->restoreGraphicsState();
+    }
+
     private function paintRadialGradient(
         \Phpdftk\Css\Value\RadialGradient $gradient,
         ContentStream $stream,

@@ -3416,6 +3416,36 @@ final class PainterTest extends TestCase
         self::assertNotContains('gs', $opcodes, 'opaque gradient installs no soft mask');
     }
 
+    public function testConicGradientPaintsFunctionBasedShading(): void
+    {
+        // CSS Images 4 §3.5 — `conic-gradient()` paints via a
+        // function-based ShadingType-1 pattern (a PostScript calculator
+        // maps each point to its sweep angle). The painter fills the box
+        // with the pattern (`/Pattern cs` + pattern `scn`).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: conic-gradient(red 0 25%, green 25% 50%,
+                     blue 50% 75%, black 75% 100%); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('scn', $opcodes, 'conic gradient fills with a shading pattern');
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/ShadingType 1', $bytes);
+        self::assertStringContainsString('/FunctionType 4', $bytes);
+    }
+
     public function testCurrentColorResolvesToBoxColorOnBackground(): void
     {
         // CSS Color 4 §3.6 — `currentcolor` on `background-color`

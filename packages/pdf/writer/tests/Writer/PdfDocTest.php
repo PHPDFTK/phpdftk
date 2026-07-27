@@ -173,6 +173,56 @@ class PdfDocTest extends TestCase
         $this->assertQpdfValidBytes($pdf);
     }
 
+    public function testAddConicShadingStopsEmitsFunctionBasedShading(): void
+    {
+        // CSS `conic-gradient()` has no native PDF shading, so it routes
+        // through a function-based ShadingType-1 driven by a PostScript
+        // calculator (FunctionType 4) computing the sweep angle.
+        $doc = new PdfDoc(compressStreams: false);
+        $doc->addPage();
+        $pattern = $doc->addConicShadingStops(
+            new \Phpdftk\Geometry\Point(100.0, 100.0),
+            0.0,
+            [
+                ['offset' => 0.0, 'rgb' => [1.0, 0.0, 0.0]],
+                ['offset' => 0.25, 'rgb' => [1.0, 0.0, 0.0]],
+                ['offset' => 0.25, 'rgb' => [0.0, 1.0, 0.0]],
+                ['offset' => 1.0, 'rgb' => [0.0, 1.0, 0.0]],
+            ],
+            [0.0, 200.0, 0.0, 200.0],
+        );
+        self::assertGreaterThan(0, $pattern->objectNumber);
+        $pdf = $doc->writer()->generate();
+        self::assertStringStartsWith('%PDF-', $pdf);
+        self::assertStringContainsString('/ShadingType 1', $pdf);
+        self::assertStringContainsString('/FunctionType 4', $pdf);
+        self::assertStringContainsString('atan', $pdf, 'sweep angle computed in PostScript');
+        self::assertStringContainsString('/PatternType 2', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
+    public function testAddConicShadingStopsRepeatingWrapsTheSweep(): void
+    {
+        // A repeating conic wraps `t` into one cycle (the last offset) in
+        // the PostScript body — `floor` marks the wrap operation.
+        $doc = new PdfDoc(compressStreams: false);
+        $doc->addPage();
+        $doc->addConicShadingStops(
+            new \Phpdftk\Geometry\Point(50.0, 50.0),
+            90.0,
+            [
+                ['offset' => 0.0, 'rgb' => [0.0, 0.0, 0.0]],
+                ['offset' => 0.5, 'rgb' => [1.0, 1.0, 1.0]],
+            ],
+            [0.0, 100.0, 0.0, 100.0],
+            repeating: true,
+        );
+        $pdf = $doc->writer()->generate();
+        self::assertStringContainsString('/ShadingType 1', $pdf);
+        self::assertStringContainsString('floor', $pdf, 'repeating sweep wraps via floor');
+        $this->assertQpdfValidBytes($pdf);
+    }
+
     public function testAddLinearAlphaShadingRejectsSingleStop(): void
     {
         $doc = new PdfDoc();

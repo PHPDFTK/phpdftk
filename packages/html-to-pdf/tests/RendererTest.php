@@ -63,6 +63,26 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testConicGradientProducesFunctionShadedPdf(): void
+    {
+        // CSS Images 4 §3.5 — `conic-gradient()` renders through the full
+        // pipeline to a real PDF backed by a function-based ShadingType-1
+        // (PostScript sweep-angle calculator).
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;'
+            . 'background-image:conic-gradient(from 90deg,red 0 25%,green 25% 50%,'
+            . 'blue 50% 75%,black 75% 100%)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 1', $bytes);
+        self::assertStringContainsString('/FunctionType 4', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint

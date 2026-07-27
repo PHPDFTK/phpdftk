@@ -50,7 +50,9 @@ use Phpdftk\Pdf\Core\FileSpec\FileSpec;
 use Phpdftk\Pdf\Core\Graphics\ColorSpace\Separation;
 use Phpdftk\Pdf\Core\Graphics\Function\FunctionType2;
 use Phpdftk\Pdf\Core\Graphics\Function\FunctionType3;
+use Phpdftk\Pdf\Core\Graphics\Function\FunctionType4;
 use Phpdftk\Pdf\Core\Graphics\Pattern\ShadingPattern;
+use Phpdftk\Pdf\Core\Graphics\Shading\ShadingType1;
 use Phpdftk\Pdf\Core\Graphics\Shading\ShadingType2;
 use Phpdftk\Pdf\Core\Graphics\Shading\ShadingType3;
 use Phpdftk\Pdf\Core\Annotation\WidgetAnnotation;
@@ -556,6 +558,147 @@ class PdfDoc
         $pattern = new ShadingPattern(new PdfReference($shading->objectNumber));
         $this->writer->register($pattern);
         return $pattern;
+    }
+
+    /**
+     * Register a CSS `conic-gradient()` as a function-based shading
+     * (ShadingType 1, ISO 32000-2 §8.7.4.5.2) driven by a PostScript
+     * calculator function (FunctionType 4) that maps each point (x, y)
+     * to its sweep angle around `$center` and interpolates the stop list.
+     *
+     * PDF has no native angular shading, so the calculator computes the
+     * CSS angle `atan2(x - cx, y - cy)` (0° at 12 o'clock, increasing
+     * clockwise in the PDF y-up space), subtracts the `from` angle, wraps
+     * to [0, 1), then walks the stop segments. Coordinates are absolute
+     * page-space (the `$domain` rect), with an identity pattern matrix —
+     * mirroring the linear path so pattern anchoring is CTM-independent.
+     *
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha?: float}> $stops
+     *   Resolved stops, offsets in [0, 1] ascending, first at 0 / last at 1.
+     * @param array{float, float, float, float} $domain [x0, x1, y0, y1] box rect.
+     */
+    public function addConicShadingStops(
+        Point $center,
+        float $fromAngleDeg,
+        array $stops,
+        array $domain,
+        bool $repeating = false,
+    ): ShadingPattern {
+        $postScript = $this->buildConicPostScript(
+            $center->x,
+            $center->y,
+            $fromAngleDeg,
+            $stops,
+            $repeating,
+        );
+        $fn = new FunctionType4(
+            new PdfArray([
+                new PdfNumber($domain[0]),
+                new PdfNumber($domain[1]),
+                new PdfNumber($domain[2]),
+                new PdfNumber($domain[3]),
+            ]),
+            new PdfArray([
+                new PdfNumber(0.0), new PdfNumber(1.0),
+                new PdfNumber(0.0), new PdfNumber(1.0),
+                new PdfNumber(0.0), new PdfNumber(1.0),
+            ]),
+            $postScript,
+        );
+        $this->writer->register($fn);
+        $shading = new ShadingType1(
+            new PdfName('DeviceRGB'),
+            new PdfReference($fn->objectNumber),
+        );
+        $shading->domain = new PdfArray([
+            new PdfNumber($domain[0]),
+            new PdfNumber($domain[1]),
+            new PdfNumber($domain[2]),
+            new PdfNumber($domain[3]),
+        ]);
+        $this->writer->register($shading);
+
+        $pattern = new ShadingPattern(new PdfReference($shading->objectNumber));
+        $this->writer->register($pattern);
+        return $pattern;
+    }
+
+    /**
+     * Emit the PostScript calculator body for {@see addConicShadingStops()}.
+     * Consumes `x y` from the stack, leaves `r g b`.
+     *
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha?: float}> $stops
+     */
+    private function buildConicPostScript(
+        float $cx,
+        float $cy,
+        float $fromAngleDeg,
+        array $stops,
+        bool $repeating,
+    ): string {
+        $n = static fn(float $v): string => rtrim(rtrim(sprintf('%.6f', $v), '0'), '.') ?: '0';
+        // Segments between consecutive distinct-offset stops; zero-width
+        // pairs (hard stops) are skipped so adjacent solid bands abut.
+        $segments = [];
+        $count = count($stops);
+        for ($i = 0; $i < $count - 1; $i++) {
+            $o0 = $stops[$i]['offset'];
+            $o1 = $stops[$i + 1]['offset'];
+            if ($o1 <= $o0) {
+                continue;
+            }
+            $segments[] = [$o0, $o1, $stops[$i]['rgb'], $stops[$i + 1]['rgb']];
+        }
+        if ($segments === []) {
+            // Degenerate (all stops coincident) — emit a solid fill.
+            $rgb = $stops[0]['rgb'];
+            return sprintf('{ pop pop %s %s %s }', $n($rgb[0]), $n($rgb[1]), $n($rgb[2]));
+        }
+        // Angle → t ∈ [0,1). Stack in: x y.
+        $ps = '{ ';
+        // exch cx sub exch cy sub → dx dy ; atan → CSS angle [0,360)
+        $ps .= sprintf('exch %s sub exch %s sub atan ', $n($cx), $n($cy));
+        // (angle - from) wrapped to [0, 360) — Type-4 `mod` is integer-only,
+        // so one conditional subtract does the wrap (value ∈ (0, 720)).
+        $ps .= sprintf('%s sub 360 add dup 360 ge { 360 sub } if 360 div ', $n($fromAngleDeg));
+        if ($repeating) {
+            // Wrap into one cycle = last segment offset, then rescale so the
+            // stop list (authored over [0, cycle]) tiles the full sweep.
+            $cycle = $segments[count($segments) - 1][1];
+            if ($cycle > 0.0 && $cycle < 1.0) {
+                $ps .= sprintf('%s div dup floor sub %s mul ', $n($cycle), $n($cycle));
+            }
+        }
+        // t is on the stack. Build the nested ifelse over segments.
+        $ps .= $this->buildConicSegmentChain($segments, 0, $n);
+        $ps .= ' }';
+        return $ps;
+    }
+
+    /**
+     * Recursively build the `dup <o1> le { interp } { rest } ifelse` chain
+     * that interpolates the conic stop segments. Consumes `t`, leaves
+     * `r g b`.
+     *
+     * @param list<array{float, float, array{float,float,float}, array{float,float,float}}> $segments
+     * @param \Closure(float): string $n number formatter
+     */
+    private function buildConicSegmentChain(array $segments, int $i, \Closure $n): string
+    {
+        $last = count($segments) - 1;
+        [$o0, $o1, $c0, $c1] = $segments[$i];
+        $span = $o1 - $o0;
+        $invSpan = $span > 0.0 ? 1.0 / $span : 0.0;
+        // frac = (t - o0) / span ; then R G B = c0 + frac*(c1 - c0).
+        $interp = sprintf('%s sub %s mul ', $n($o0), $n($invSpan))
+            . sprintf('dup %s mul %s add exch ', $n($c1[0] - $c0[0]), $n($c0[0]))
+            . sprintf('dup %s mul %s add exch ', $n($c1[1] - $c0[1]), $n($c0[1]))
+            . sprintf('%s mul %s add', $n($c1[2] - $c0[2]), $n($c0[2]));
+        if ($i === $last) {
+            // Final segment is the catch-all else branch (t already on stack).
+            return $interp;
+        }
+        return sprintf('dup %s le { %s } { %s } ifelse', $n($o1), $interp, $this->buildConicSegmentChain($segments, $i + 1, $n));
     }
 
     /**
