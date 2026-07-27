@@ -118,6 +118,25 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testCornerLinearGradientOnNonSquareBoxProducesValidPdf(): void
+    {
+        // CSS Images 3 §3.1 — a `to <corner>` linear gradient's angle
+        // depends on the box aspect ratio. A 200×100 box with
+        // `to right bottom` resolves to ~153deg (not the square 135deg);
+        // this pins that it renders to a real PDF with an axial shading.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:200px;height:100px;'
+            . 'background:linear-gradient(to right bottom,black 50%,lightgray 50%)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint

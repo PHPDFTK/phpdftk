@@ -4524,7 +4524,14 @@ final class Painter
         // CSS angle convention: 0deg points up, increases clockwise. The
         // gradient line passes through the centre of the *tile*. Compute
         // its start and end points on the tile's edge per CSS Images 3 §3.1.
-        $angle = fmod($gradient->angleDeg, 360.0);
+        // A `to <corner>` direction's angle depends on the tile's aspect
+        // ratio (the gradient line is perpendicular to the diagonal joining
+        // the other two corners), so resolve it here where the tile size
+        // is known rather than using the parser's square-box fallback.
+        $rawAngle = $gradient->corner !== null
+            ? $gradient->corner->angleFor($tileWidth, $tileHeight)
+            : $gradient->angleDeg;
+        $angle = fmod($rawAngle, 360.0);
         if ($angle < 0.0) {
             $angle += 360.0;
         }

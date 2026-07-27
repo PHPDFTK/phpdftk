@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Phpdftk\Css\Value;
 
 /**
- * `linear-gradient(<angle> | to <side>, <stops>)`. The angle is stored in
- * degrees normalised to [0, 360). When the input used `to <side>` (e.g.
- * `to right`) the parser converts it to the equivalent angle.
+ * `linear-gradient(<angle> | to <side-or-corner>, <stops>)`. The angle is
+ * stored in degrees normalised to [0, 360). A `to <side>` (e.g. `to right`)
+ * converts to a fixed equivalent angle, but a `to <corner>` also records
+ * the {@see GradientCorner}: a corner's angle depends on the gradient box's
+ * aspect ratio, so it can only be finalised at paint time. `$angleDeg` then
+ * holds the square-box angle as a fallback.
  */
 final readonly class LinearGradient extends Gradient
 {
@@ -18,6 +21,7 @@ final readonly class LinearGradient extends Gradient
         public bool $repeating = false,
         public ?ColorSpace $interpolationSpace = null,
         public ?HueInterpolation $hueInterpolation = null,
+        public ?GradientCorner $corner = null,
     ) {}
 
     public function toCss(): string

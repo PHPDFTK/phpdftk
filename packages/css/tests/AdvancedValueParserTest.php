@@ -341,6 +341,43 @@ final class AdvancedValueParserTest extends TestCase
         self::assertSame(90.0, $v->angleDeg);
     }
 
+    public function testLinearGradientWithSideHasNoCorner(): void
+    {
+        // A single side keyword is box-independent, so no corner is recorded.
+        $v = $this->parser->parseFromString('linear-gradient(to right, red, blue)');
+        self::assertInstanceOf(LinearGradient::class, $v);
+        self::assertNull($v->corner);
+    }
+
+    public function testLinearGradientToCornerRecordsCorner(): void
+    {
+        // A `to <corner>` direction records the corner (its angle is
+        // aspect-ratio dependent, resolved at paint time). `angleDeg` keeps
+        // the square-box fallback (135deg for bottom-right).
+        $v = $this->parser->parseFromString('linear-gradient(to right bottom, black 50%, lightgray 50%)');
+        self::assertInstanceOf(LinearGradient::class, $v);
+        self::assertSame(\Phpdftk\Css\Value\GradientCorner::BottomRight, $v->corner);
+        self::assertSame(135.0, $v->angleDeg);
+        // On a 200×100 box the corner resolves to ~153.43deg, not 135.
+        self::assertEqualsWithDelta(153.435, $v->corner->angleFor(200.0, 100.0), 0.01);
+    }
+
+    public function testGradientCornerAnglesMatchSpecFormula(): void
+    {
+        // CSS Images 3 §3.1 — the corner angle is perpendicular to the
+        // diagonal joining the other two corners: base = atan2(h, w).
+        // For 200×100, base = 26.565deg.
+        $w = 200.0;
+        $h = 100.0;
+        self::assertEqualsWithDelta(26.565, \Phpdftk\Css\Value\GradientCorner::TopRight->angleFor($w, $h), 0.01);
+        self::assertEqualsWithDelta(153.435, \Phpdftk\Css\Value\GradientCorner::BottomRight->angleFor($w, $h), 0.01);
+        self::assertEqualsWithDelta(206.565, \Phpdftk\Css\Value\GradientCorner::BottomLeft->angleFor($w, $h), 0.01);
+        self::assertEqualsWithDelta(333.435, \Phpdftk\Css\Value\GradientCorner::TopLeft->angleFor($w, $h), 0.01);
+        // A square keeps the familiar 45 / 135 / 225 / 315 family.
+        self::assertEqualsWithDelta(45.0, \Phpdftk\Css\Value\GradientCorner::TopRight->angleFor(50.0, 50.0), 0.01);
+        self::assertEqualsWithDelta(135.0, \Phpdftk\Css\Value\GradientCorner::BottomRight->angleFor(50.0, 50.0), 0.01);
+    }
+
     public function testLinearGradientWithStopPositions(): void
     {
         $v = $this->parser->parseFromString('linear-gradient(red 0%, yellow 50%, blue 100%)');

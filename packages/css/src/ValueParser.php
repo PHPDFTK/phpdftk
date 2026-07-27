@@ -67,6 +67,7 @@ use Phpdftk\Css\Value\ConicGradient;
 use Phpdftk\Css\Value\ContrastColor;
 use Phpdftk\Css\Value\CrossFade;
 use Phpdftk\Css\Value\CrossFadeOption;
+use Phpdftk\Css\Value\GradientCorner;
 use Phpdftk\Css\Value\GradientShape;
 use Phpdftk\Css\Value\GradientStop;
 use Phpdftk\Css\Value\ImageSet;
@@ -2203,6 +2204,7 @@ final class ValueParser
         //   - or directly a colour stop.
         $first = self::trimWhitespace($groups[0]);
         $angleDeg = 180.0;
+        $corner = null;
         $interpSpace = null;
         $hueInterp = null;
         $stopGroups = $groups;
@@ -2229,12 +2231,14 @@ final class ValueParser
                     return null;
                 }
                 $angleDeg = $maybeAngle;
+                $corner = self::linearCornerFromHeader($headerTokens);
                 $stopGroups = array_slice($groups, 1);
             }
         } else {
             $maybeAngle = $this->parseLinearAngleHeader($first);
             if ($maybeAngle !== null) {
                 $angleDeg = $maybeAngle;
+                $corner = self::linearCornerFromHeader($first);
                 $stopGroups = array_slice($groups, 1);
             }
         }
@@ -2260,7 +2264,36 @@ final class ValueParser
             repeating: $repeating,
             interpolationSpace: $interpSpace,
             hueInterpolation: $hueInterp,
+            corner: $corner,
         );
+    }
+
+    /**
+     * Extract the {@see GradientCorner} from a `to <side-or-corner>`
+     * header, or null when it isn't a two-sided corner direction (an
+     * angle, a single side, or an interpolation-only header).
+     *
+     * @param list<Token> $tokens
+     */
+    private static function linearCornerFromHeader(array $tokens): ?GradientCorner
+    {
+        $head = null;
+        foreach ($tokens as $t) {
+            if (!($t instanceof WhitespaceToken)) {
+                $head = $t;
+                break;
+            }
+        }
+        if (!($head instanceof IdentToken) || strtolower($head->value) !== 'to') {
+            return null;
+        }
+        $sides = [];
+        foreach ($tokens as $t) {
+            if ($t instanceof IdentToken && strtolower($t->value) !== 'to') {
+                $sides[] = strtolower($t->value);
+            }
+        }
+        return GradientCorner::fromSides($sides);
     }
 
     /**
