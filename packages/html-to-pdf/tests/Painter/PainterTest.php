@@ -3536,6 +3536,53 @@ final class PainterTest extends TestCase
         self::assertStringContainsString('/ShadingType 3', $writer->generate());
     }
 
+    public function testGradientStopsPadEndsToSpanFullRange(): void
+    {
+        // CSS Images 3 §3.5.1 — before the first stop the gradient is the
+        // first colour and after the last stop it is the last colour. A
+        // gradient whose stops don't reach 0/1 (here a last stop clamped to
+        // 70%) must get synthetic flat end stops so the PDF stitching
+        // function holds a solid band instead of stretching the final
+        // segment. `linear-gradient(yellow, blue 70%, green 0)` → green's 0
+        // clamps up to 70%, and a green stop is anchored at 100%.
+        $yellow = new \Phpdftk\Css\Value\Color(1.0, 1.0, 0.0, 1.0);
+        $blue = new \Phpdftk\Css\Value\Color(0.0, 0.0, 1.0, 1.0);
+        $green = new \Phpdftk\Css\Value\Color(0.0, 0.5, 0.0, 1.0);
+        $stops = [
+            new \Phpdftk\Css\Value\GradientStop($yellow, null),
+            new \Phpdftk\Css\Value\GradientStop($blue, new \Phpdftk\Css\Value\Percentage(70.0)),
+            new \Phpdftk\Css\Value\GradientStop($green, new \Phpdftk\Css\Value\Length(0.0, \Phpdftk\Css\Value\LengthUnit::Px)),
+        ];
+        $method = new \ReflectionMethod(Painter::class, 'resolveGradientStops');
+        /** @var list<array{offset: float, rgb: array{float, float, float}, alpha: float}> $out */
+        $out = $method->invoke(new Painter(792.0), $stops, 200.0);
+
+        // yellow@0, blue@0.7, green@0.7 (clamped up), green@1.0 (padded).
+        self::assertCount(4, $out);
+        self::assertEqualsWithDelta(0.0, $out[0]['offset'], 0.001);
+        self::assertEqualsWithDelta(0.7, $out[1]['offset'], 0.001);
+        self::assertEqualsWithDelta(0.7, $out[2]['offset'], 0.001);
+        self::assertEqualsWithDelta(1.0, $out[3]['offset'], 0.001);
+        // The padded stop holds the last colour (green) flat.
+        self::assertSame($out[2]['rgb'], $out[3]['rgb']);
+        self::assertEqualsWithDelta(0.5, $out[3]['rgb'][1], 0.001);
+    }
+
+    public function testFullSpanGradientStopsAreNotPadded(): void
+    {
+        // A gradient already spanning [0, 1] (`red, blue`) keeps exactly its
+        // two stops — the padding must be a no-op for the common case.
+        $stops = [
+            new \Phpdftk\Css\Value\GradientStop(new \Phpdftk\Css\Value\Color(1.0, 0.0, 0.0, 1.0), null),
+            new \Phpdftk\Css\Value\GradientStop(new \Phpdftk\Css\Value\Color(0.0, 0.0, 1.0, 1.0), null),
+        ];
+        $method = new \ReflectionMethod(Painter::class, 'resolveGradientStops');
+        $out = $method->invoke(new Painter(792.0), $stops, 200.0);
+        self::assertCount(2, $out);
+        self::assertEqualsWithDelta(0.0, $out[0]['offset'], 0.001);
+        self::assertEqualsWithDelta(1.0, $out[1]['offset'], 0.001);
+    }
+
     public function testCurrentColorResolvesToBoxColorOnBackground(): void
     {
         // CSS Color 4 §3.6 — `currentcolor` on `background-color`

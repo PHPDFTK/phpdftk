@@ -4221,6 +4221,22 @@ final class Painter
                 'alpha' => $s->color->a,
             ];
         }
+        // Step 6: pad the ends so the stop list always spans [0, 1] with the
+        // terminal colours held flat. CSS Images 3 §3.5.1 — before the first
+        // stop the gradient is the first colour, after the last stop it is
+        // the last colour. The PDF stitching function assumes its input runs
+        // first-stop → last-stop, so a last stop authored at e.g. 70% (`…,
+        // green 0` clamped up, or `…, green 70%`) would otherwise stretch
+        // the final segment across the remaining 30% instead of holding a
+        // solid band. Anchoring synthetic end stops keeps the colour flat.
+        $first = $out[0];
+        if ($first['offset'] > 0.0) {
+            array_unshift($out, ['offset' => 0.0, 'rgb' => $first['rgb'], 'alpha' => $first['alpha']]);
+        }
+        $last = $out[count($out) - 1];
+        if ($last['offset'] < 1.0) {
+            $out[] = ['offset' => 1.0, 'rgb' => $last['rgb'], 'alpha' => $last['alpha']];
+        }
         return $out;
     }
 
