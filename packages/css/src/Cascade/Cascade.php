@@ -2565,6 +2565,13 @@ final class Cascade
             }
         }
         $bodyCtx = $context->withCurrentFontSize($currentFontSize);
+        // Resolve the used `line-height` up front so the `lh` unit (CSS
+        // Values 4 §6.1.1) has a reference for every other property in the
+        // pass. `normal` and unresolved values leave it at 0, where the
+        // resolver falls back to `1.2 × font-size`.
+        $bodyCtx = $bodyCtx->withLineHeight(
+            $this->resolveLineHeightPx($values->get('line-height'), $currentFontSize, $bodyCtx),
+        );
 
         foreach ($values->all() as $name => $value) {
             if ($name === 'font-size') {
@@ -2610,6 +2617,70 @@ final class Cascade
             }
             return $changed ? new \Phpdftk\Css\Value\ValueList($children, $value->separator) : $value;
         }
+        if ($value instanceof \Phpdftk\Css\Value\RadialGradient) {
+            return $this->resolveRadialGradientLengths($value, $ctx);
+        }
         return $value;
+    }
+
+    /**
+     * Resolve the relative `<length>` fields of a `radial-gradient()` — the
+     * `at <position>` centre and the ending-shape radii — to absolute
+     * pixels so the painter (which reads raw `Length->value`) sees resolved
+     * units. Without this, font-relative positions like `at 1lh 50px` reach
+     * paint unresolved (`1lh` → `1`). Stop positions stay as authored
+     * (`%` offsets resolve against the gradient line at paint time).
+     */
+    private function resolveRadialGradientLengths(
+        \Phpdftk\Css\Value\RadialGradient $g,
+        LengthContext $ctx,
+    ): \Phpdftk\Css\Value\RadialGradient {
+        $toPx = static fn(?Length $l): ?Length => $l === null
+            ? null
+            : new Length(LengthResolver::toPx($l, $ctx), LengthUnit::Px);
+        return new \Phpdftk\Css\Value\RadialGradient(
+            $g->shape,
+            $toPx($g->sizeX),
+            $toPx($g->sizeY),
+            $toPx($g->centerX),
+            $toPx($g->centerY),
+            $g->stops,
+            $g->repeating,
+            $g->interpolationSpace,
+            $g->hueInterpolation,
+        );
+    }
+
+    /**
+     * Compute the used `line-height` in CSS pixels for the `lh` unit.
+     * `<number>` multiplies the font-size; `<length>` resolves against the
+     * context; `<percentage>` is that fraction of the font-size; `normal`
+     * (and anything unrecognised) returns 0 so the resolver applies its
+     * `normal` approximation.
+     */
+    private function resolveLineHeightPx(
+        ?\Phpdftk\Css\Value\Value $value,
+        float $fontSize,
+        LengthContext $ctx,
+    ): float {
+        if ($value instanceof \Phpdftk\Css\Value\Number) {
+            return $value->value * $fontSize;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Integer) {
+            return $value->value * $fontSize;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Percentage) {
+            return $fontSize * ($value->value / 100.0);
+        }
+        if ($value instanceof Length) {
+            return LengthResolver::toPx($value, $ctx);
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Calc) {
+            $resolved = CalcEvaluator::resolveValue($value, $ctx);
+            if ($resolved instanceof Length) {
+                return $resolved->value;
+            }
+        }
+        return 0.0;
     }
 }

@@ -3446,6 +3446,96 @@ final class PainterTest extends TestCase
         self::assertStringContainsString('/FunctionType 4', $bytes);
     }
 
+    public function testRadialGradientPaintsRadialShadingAtAbsoluteCentre(): void
+    {
+        // CSS Images 3 §3.5.1 — `radial-gradient()` paints via a
+        // ShadingType-3 (concentric circles) pattern. The shading is
+        // anchored in ABSOLUTE page coordinates (a PDF shading pattern
+        // ignores the CTM), so the Coords array must carry the box's
+        // page-space centre, NOT the origin. Box is 100×100 at the top of
+        // an 800-tall body on a 792-pt page; its centre x = 50.
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: radial-gradient(circle 40px at 50px 50px, red, blue); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('scn', $opcodes, 'radial gradient fills with a shading pattern');
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/ShadingType 3', $bytes);
+        // Opaque last stop (blue) → the shading extends past the outer
+        // circle to flood the box edge.
+        self::assertStringContainsString('/Extend [ true true ]', $bytes);
+        // Coords: inner (x, y, 0) then outer (x, y, 40). Centre x = 50 in
+        // page space — proves it is not left at the origin.
+        self::assertMatchesRegularExpression('#/Coords \[ 50 #', $bytes);
+    }
+
+    public function testRadialGradientWithTransparentLastStopDoesNotExtend(): void
+    {
+        // A translucent final stop (`…, transparent`) must fade out rather
+        // than flood the box with the stop's opaque RGB — PDF colour
+        // shadings have no alpha, so the painter leaves Extend off there,
+        // stopping paint at the outer circle (reads as transparency).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: radial-gradient(25px at 50px 50px, green 100%, transparent); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/ShadingType 3', $bytes);
+        self::assertStringNotContainsString('/Extend', $bytes, 'transparent last stop must not extend');
+    }
+
+    public function testImageSetRadialGradientUnwrapsToShading(): void
+    {
+        // CSS Images 4 §6 — `image-set()` wrapping a gradient paints the
+        // selected option's image. `image-set(radial-gradient(...) 1x)`
+        // must render the same ShadingType-3 as the bare gradient (the 1x
+        // option is chosen for the print target).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: image-set(radial-gradient(green, blue) 1x); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('scn', $opcodes, 'image-set gradient fills with a shading pattern');
+        self::assertStringContainsString('/ShadingType 3', $writer->generate());
+    }
+
     public function testCurrentColorResolvesToBoxColorOnBackground(): void
     {
         // CSS Color 4 §3.6 — `currentcolor` on `background-color`

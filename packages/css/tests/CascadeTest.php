@@ -392,6 +392,41 @@ final class CascadeTest extends TestCase
         self::assertSame(20.0, $margin->value);
     }
 
+    public function testLhResolvesAgainstUsedLineHeight(): void
+    {
+        // `line-height: 2` at `font-size: 50px` → used line-height 100px,
+        // so a `1lh` margin resolves to 100px (not the 60px `normal`
+        // approximation). The cascade must compute line-height before the
+        // general length pass for the `lh` unit to see it.
+        $sheet = $this->parser->parseStylesheet('p { font-size: 50px; line-height: 2; margin-top: 1lh; }');
+        $values = $this->cascade->computeFor([$sheet], new FakeElement('p'));
+        $this->cascade->resolveLengths($values, new LengthContext());
+        $margin = $values->get('margin-top');
+        self::assertInstanceOf(Length::class, $margin);
+        self::assertEqualsWithDelta(100.0, $margin->value, 0.001);
+    }
+
+    public function testRadialGradientLengthPositionResolvesToPx(): void
+    {
+        // The `at <position>` centre of a radial-gradient must be resolved
+        // to absolute px so the painter (which reads raw Length->value)
+        // places it correctly. `at 1lh 50px` with line-height 100px →
+        // centre x = 100px.
+        $sheet = $this->parser->parseStylesheet(
+            'p { font-size: 50px; line-height: 2; '
+            . 'background-image: radial-gradient(25px at 1lh 50px, red 100%, green); }',
+        );
+        $values = $this->cascade->computeFor([$sheet], new FakeElement('p'));
+        $this->cascade->resolveLengths($values, new LengthContext());
+        $bg = $values->get('background-image');
+        self::assertInstanceOf(\Phpdftk\Css\Value\RadialGradient::class, $bg);
+        self::assertInstanceOf(Length::class, $bg->centerX);
+        self::assertSame(LengthUnit::Px, $bg->centerX->unit);
+        self::assertEqualsWithDelta(100.0, $bg->centerX->value, 0.001);
+        self::assertInstanceOf(Length::class, $bg->sizeX);
+        self::assertEqualsWithDelta(25.0, $bg->sizeX->value, 0.001);
+    }
+
     public function testRemResolvesAgainstRootFontSize(): void
     {
         $sheet = $this->parser->parseStylesheet('p { margin-top: 1.5rem; }');

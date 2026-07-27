@@ -35,6 +35,25 @@ final class LengthResolverTest extends TestCase
         self::assertEqualsWithDelta(70.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Cap), $bare), 0.001);
     }
 
+    public function testLhResolvesAgainstUsedLineHeight(): void
+    {
+        // CSS Values 4 §6.1.1 — `lh` is the element's used line-height.
+        // With `line-height: 2` at `font-size: 50px`, the used line-height
+        // is 100px, so `1lh` = 100px and `0.5lh` = 50px — NOT the
+        // `1.2 × font-size` (60px) `normal` approximation.
+        $ctx = (new LengthContext(currentFontSize: 50.0))->withLineHeight(100.0);
+        self::assertEqualsWithDelta(100.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Lh), $ctx), 0.001);
+        self::assertEqualsWithDelta(50.0, LengthResolver::toPx(new Length(0.5, LengthUnit::Rlh), $ctx), 0.001);
+    }
+
+    public function testLhFallsBackToNormalApproximationWithoutLineHeight(): void
+    {
+        // When the context carries no resolved line-height (0 — `normal`
+        // or not yet computed), `lh` falls back to `1.2 × font-size`.
+        $ctx = new LengthContext(currentFontSize: 50.0);
+        self::assertEqualsWithDelta(60.0, LengthResolver::toPx(new Length(1.0, LengthUnit::Lh), $ctx), 0.001);
+    }
+
     public function testToPxClampsValuesAboveTheLayoutCeiling(): void
     {
         // Adversarial CSS: `padding: 2880804336vmax …` (one of the

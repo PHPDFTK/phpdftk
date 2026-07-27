@@ -390,10 +390,11 @@ final class Painter
         if ($color instanceof Color && $color->a > 0.0) {
             return true;
         }
-        return $bgImage instanceof \Phpdftk\Css\Value\Url
-            || $bgImage instanceof \Phpdftk\Css\Value\LinearGradient
-            || $bgImage instanceof \Phpdftk\Css\Value\RadialGradient
-            || $bgImage instanceof \Phpdftk\Css\Value\ConicGradient;
+        // Any recognised background-image layer (url, gradient, image(),
+        // or an image-set() wrapping one) makes the background paintable.
+        // Delegating to extractBackgroundLayers keeps this in lockstep with
+        // what the paint loop will actually draw.
+        return $this->extractBackgroundLayers($bgImage) !== [];
     }
 
     /**
@@ -3730,7 +3731,15 @@ final class Painter
                         $this->paintLinearGradient($layer, $stream, $x, $top, $width, $height);
                     }
                 } elseif ($layer instanceof \Phpdftk\Css\Value\RadialGradient) {
-                    $this->paintRadialGradient($layer, $stream, $x, $top, $width, $height);
+                    // A non-default `background-size` tiles the gradient into
+                    // cells (with `background-position` / `-repeat`), which we
+                    // don't yet reproduce for radial gradients. Paint the
+                    // single box-filling gradient only when the size is the
+                    // default; otherwise skip rather than mis-render one giant
+                    // gradient where the spec wants a tiled grid.
+                    if ($this->isDefaultGradientSize($sizeValue)) {
+                        $this->paintRadialGradient($layer, $stream, $x, $top, $width, $height);
+                    }
                 } elseif ($layer instanceof \Phpdftk\Css\Value\ConicGradient) {
                     $this->paintConicGradient($layer, $stream, $x, $top, $width, $height);
                 } elseif (($imgArg = $this->imageFunctionColorArg($layer)) !== null) {
@@ -3762,17 +3771,30 @@ final class Painter
         ) {
             $layers = [];
             foreach ($value->values as $v) {
-                if ($v instanceof \Phpdftk\Css\Value\Url
-                    || $v instanceof \Phpdftk\Css\Value\LinearGradient
-                    || $v instanceof \Phpdftk\Css\Value\RadialGradient
-                    || $v instanceof \Phpdftk\Css\Value\ConicGradient
-                    || ($v instanceof \Phpdftk\Css\Value\CssFunction
-                        && $this->imageFunctionColorArg($v) !== null)
-                ) {
-                    $layers[] = $v;
+                $layer = $this->resolveBackgroundLayer($v);
+                if ($layer !== null) {
+                    $layers[] = $layer;
                 }
             }
             return $layers;
+        }
+        $layer = $this->resolveBackgroundLayer($value);
+        return $layer !== null ? [$layer] : [];
+    }
+
+    /**
+     * Classify a single `background-image` list entry into the paintable
+     * layer value the painter understands, or null when it's not one we
+     * render. `image-set()` is unwrapped to its selected option's image
+     * (CSS Images 4 §6) so a gradient / url wrapped in `image-set()`
+     * paints identically to the bare image.
+     *
+     * @return \Phpdftk\Css\Value\Url|\Phpdftk\Css\Value\LinearGradient|\Phpdftk\Css\Value\RadialGradient|\Phpdftk\Css\Value\ConicGradient|\Phpdftk\Css\Value\CssFunction|null
+     */
+    private function resolveBackgroundLayer(mixed $value): ?\Phpdftk\Css\Value\Value
+    {
+        if ($value instanceof \Phpdftk\Css\Value\ImageSet) {
+            $value = $this->selectImageSetOption($value);
         }
         if ($value instanceof \Phpdftk\Css\Value\Url
             || $value instanceof \Phpdftk\Css\Value\LinearGradient
@@ -3781,9 +3803,29 @@ final class Painter
             || ($value instanceof \Phpdftk\Css\Value\CssFunction
                 && $this->imageFunctionColorArg($value) !== null)
         ) {
-            return [$value];
+            return $value;
         }
-        return [];
+        return null;
+    }
+
+    /**
+     * Pick the {@see \Phpdftk\Css\Value\ImageSetOption} that best matches
+     * the print target (1 device-pixel-per-CSS-pixel). Prefers the entry
+     * whose resolution is closest to 1x; a missing resolution counts as
+     * 1x. Returns the option's image, or null for an empty set.
+     */
+    private function selectImageSetOption(\Phpdftk\Css\Value\ImageSet $set): ?\Phpdftk\Css\Value\Value
+    {
+        $best = null;
+        $bestDelta = null;
+        foreach ($set->options as $option) {
+            $delta = abs(($option->resolutionDppx ?? 1.0) - 1.0);
+            if ($bestDelta === null || $delta < $bestDelta) {
+                $best = $option;
+                $bestDelta = $delta;
+            }
+        }
+        return $best?->image;
     }
 
     private function imageFunctionColorArg(mixed $value): ?\Phpdftk\Css\Value\Value
@@ -3970,68 +4012,105 @@ final class Painter
             $this->fillGradientSolidStop($gradient->stops[0], $stream, $x, $top, $width, $height);
             return;
         }
-        if ($this->writer === null) {
+        if ($this->writer === null || $this->page === null) {
+            return;
+        }
+        if ($width <= 0.0 || $height <= 0.0) {
             return;
         }
         $pdfY = $this->pageHeight - $top - $height;
         // Centre: default to the box centre when no `at <position>` is
         // supplied. Author-supplied length values resolve relative to
-        // the box's content rect.
+        // the box's content rect. centerY is measured from the CSS top,
+        // so flip into the PDF y-up box.
         $cx = $x + ($gradient->centerX !== null ? $gradient->centerX->value : $width / 2);
         $cy = $pdfY + ($height - ($gradient->centerY !== null ? $gradient->centerY->value : $height / 2));
-        // Radii: prefer author lengths, otherwise default to the
-        // farthest-corner distance for circles (PDF's two-stop primitive
-        // assumes a single outer radius; we use the larger axis).
+        // Radii: prefer author lengths, otherwise default to the box
+        // half-extent per axis. PDF's ShadingType-3 primitive is circular,
+        // so we build a circle of radius r = max(rx, ry) and, for ellipses
+        // (rx != ry), scale pattern space via the pattern /Matrix.
+        //
+        // A single authored `<length>` (`radial-gradient(25px …)`) is a
+        // *circle* of that radius per CSS Images 3 §3.5.1 — an ellipse
+        // needs two radii — so mirror sizeX onto the missing sizeY rather
+        // than falling back to the box half-height (which would stretch
+        // the circle into a tall ellipse).
         $rx = $gradient->sizeX !== null ? $gradient->sizeX->value : $width / 2;
-        $ry = $gradient->sizeY !== null ? $gradient->sizeY->value : $height / 2;
+        if ($gradient->sizeY !== null) {
+            $ry = $gradient->sizeY->value;
+        } elseif ($gradient->sizeX !== null) {
+            $ry = $rx;
+        } else {
+            $ry = $height / 2;
+        }
+        if ($rx <= 0.0 || $ry <= 0.0) {
+            return;
+        }
+        $r = max($rx, $ry);
         // For radial, the gradient line is from centre to the ending
         // shape — its length is the outer radius (the larger axis).
-        $stopList = $this->resolveGradientStops($gradient->stops, max($rx, $ry));
-        // ShadingType3 takes inner+outer concentric circles. Phase-1 has
-        // a single outer radius (inner = 0); scale the user-space matrix
-        // for elliptical aspect when sizeX != sizeY.
+        $stopList = $this->resolveGradientStops($gradient->stops, $r);
+        // Beyond the ending shape, CSS Images 3 §3.5.1 paints the last
+        // stop's colour outward to the box edge. Extend the shading only
+        // when that last stop is opaque: a translucent final stop (e.g.
+        // `…, transparent`) must fade OUT rather than flood the box with
+        // the stop's RGB — and PDF colour shadings carry no alpha, so
+        // extending it would paint opaque black. Leaving extend off there
+        // stops painting past the outer circle, which reads as the
+        // intended transparency. (Full per-stop alpha is a later soft-mask
+        // pass — see the note below.)
+        $lastStop = $gradient->stops[count($gradient->stops) - 1];
+        $extend = $lastStop->color->a >= 1.0;
+        // Build the concentric-circle shading in ABSOLUTE page coordinates
+        // (inner radius 0, outer r at the box centre) with an identity
+        // pattern matrix. A shading pattern anchors via its own /Matrix
+        // relative to the page default coordinate system and IGNORES the
+        // current CTM, so — like the linear path — we must place the
+        // shading at real page coordinates rather than relying on
+        // `concatMatrix`. (The old CTM-based placement left the shading at
+        // the page origin, painting nothing.)
         try {
             $doc = \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer);
             $pattern = $doc->addRadialGradientStops(
-                new \Phpdftk\Geometry\Point(0, 0),
+                new \Phpdftk\Geometry\Point($cx, $cy),
                 0.0,
-                new \Phpdftk\Geometry\Point(0, 0),
-                max($rx, $ry),
+                new \Phpdftk\Geometry\Point($cx, $cy),
+                $r,
                 $stopList,
+                $extend,
             );
         } catch (\Throwable) {
             return;
         }
-        $patternName = $this->page?->useGradient($pattern);
-        if ($patternName === null) {
-            return;
+        // Elliptical ending shape: scale pattern space about the centre so
+        // the radius-r circle becomes an rx × ry ellipse. Scaling P about
+        // C by s is P' = s·P + C(1−s); the pattern /Matrix carries that.
+        if ($rx !== $ry) {
+            $sx = $rx / $r;
+            $sy = $ry / $r;
+            $pattern->matrix = new \Phpdftk\Pdf\Core\PdfArray([
+                new \Phpdftk\Pdf\Core\PdfNumber($sx),
+                new \Phpdftk\Pdf\Core\PdfNumber(0.0),
+                new \Phpdftk\Pdf\Core\PdfNumber(0.0),
+                new \Phpdftk\Pdf\Core\PdfNumber($sy),
+                new \Phpdftk\Pdf\Core\PdfNumber($cx - $sx * $cx),
+                new \Phpdftk\Pdf\Core\PdfNumber($cy - $sy * $cy),
+            ]);
         }
         // NOTE: per-stop alpha is not yet honoured for radial gradients.
         // A Luminosity soft mask analogous to the linear path (see
-        // {@see paintLinearGradient()}) needs the colour shading pattern
-        // and the mask's `sh` to share a coordinate space, but the radial
-        // colour pattern's anchoring is independent of the current CTM,
-        // so the two would not align. The writer primitive
+        // {@see paintLinearGradient()}) would reuse the same absolute
+        // anchoring; the writer primitive
         // ({@see \Phpdftk\Pdf\Writer\PdfDoc::addRadialAlphaShading()})
-        // exists for when the radial paint path is reworked.
-        $extent = max($rx, $ry);
+        // exists for when that is wired up.
+        $patternName = $this->page->useGradient($pattern);
         $stream->saveGraphicsState();
-        // Clip to the box rect, then translate to the centre and scale
-        // for elliptical shapes so the unit-radius gradient covers the
-        // right footprint.
         $stream->rectangle($x, $pdfY, $width, $height);
         $stream->clip();
         $stream->endPath();
-        $scaleX = $rx / max($rx, $ry);
-        $scaleY = $ry / max($rx, $ry);
-        $stream->concatMatrix($scaleX, 0.0, 0.0, $scaleY, $cx, $cy);
         $stream->setFillColorSpace('Pattern');
         $stream->setFillColor($patternName);
-        // Paint over a rect big enough to cover the largest possible
-        // gradient extent (in the un-scaled space the gradient sits at
-        // origin with radius `max(rx, ry)`, so a square of side 2*max
-        // covers it).
-        $stream->rectangle(-$extent, -$extent, 2 * $extent, 2 * $extent);
+        $stream->rectangle($x, $pdfY, $width, $height);
         $stream->fill();
         $stream->restoreGraphicsState();
     }

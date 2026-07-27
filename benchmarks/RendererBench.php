@@ -427,6 +427,22 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchRadialGradients(): void
+    {
+        // `radial-gradient()` compiles to a ShadingType-3 (concentric
+        // circles) pattern anchored in absolute page coordinates, with an
+        // optional pattern /Matrix for elliptical ending shapes. 30 boxes ×
+        // a 4-stop radial exercises the stop normalisation, circle/ellipse
+        // radius resolution, and shading-pattern emission.
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background-image: '
+                . 'radial-gradient(circle at 30% 40%, red, yellow 25%, lime 50%, blue);">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchTranslucentGradients(): void
     {
         // Translucent-stop gradients add a per-box Luminosity soft mask:

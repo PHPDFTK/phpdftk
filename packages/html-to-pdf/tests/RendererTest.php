@@ -83,6 +83,41 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testRadialGradientProducesRadialShadedPdf(): void
+    {
+        // CSS Images 3 §3.5.1 — `radial-gradient()` renders through the
+        // full pipeline to a real PDF backed by a ShadingType-3 pattern
+        // anchored in absolute page coordinates.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;'
+            . 'background-image:radial-gradient(circle 40px at 30px 30px,red,blue)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 3', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
+    public function testImageSetGradientProducesShadedPdf(): void
+    {
+        // CSS Images 4 §6 — a gradient wrapped in `image-set()` renders to
+        // a real PDF identically to the bare gradient (1x option selected).
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;'
+            . 'background-image:image-set(radial-gradient(green,blue) 1x)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 3', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint

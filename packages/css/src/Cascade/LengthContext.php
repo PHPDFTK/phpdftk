@@ -62,6 +62,13 @@ final readonly class LengthContext
          */
         public float $containerInlineSize = 0.0,
         public float $containerBlockSize = 0.0,
+        /**
+         * The element's used `line-height` in CSS pixels — the reference
+         * for the `lh` unit (CSS Values 4 §6.1.1). Zero means "not yet
+         * resolved / `normal`", in which case {@see LengthResolver} falls
+         * back to the `normal` approximation (`currentFontSize × 1.2`).
+         */
+        public float $lineHeight = 0.0,
     ) {}
 
     public function withCurrentFontSize(float $px): self
@@ -78,6 +85,7 @@ final readonly class LengthContext
             $this->capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
+            $this->lineHeight,
         );
     }
 
@@ -95,6 +103,7 @@ final readonly class LengthContext
             $this->capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
+            $this->lineHeight,
         );
     }
 
@@ -112,6 +121,7 @@ final readonly class LengthContext
             $capHeightRatio,
             $this->containerInlineSize,
             $this->containerBlockSize,
+            $this->lineHeight,
         );
     }
 
@@ -129,6 +139,25 @@ final readonly class LengthContext
             $this->capHeightRatio,
             $inlineSize,
             $blockSize,
+            $this->lineHeight,
+        );
+    }
+
+    public function withLineHeight(float $px): self
+    {
+        return new self(
+            $this->parentFontSize,
+            $this->currentFontSize,
+            $this->rootFontSize,
+            $this->viewportWidth,
+            $this->viewportHeight,
+            $this->percentageBasis,
+            $this->xHeightRatio,
+            $this->chWidthRatio,
+            $this->capHeightRatio,
+            $this->containerInlineSize,
+            $this->containerBlockSize,
+            $px,
         );
     }
 }

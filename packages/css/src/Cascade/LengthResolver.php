@@ -103,7 +103,13 @@ final class LengthResolver
             LengthUnit::Ex => $v * $ctx->currentFontSize * $ctx->xHeightRatio,
             LengthUnit::Ch => $v * $ctx->currentFontSize * $ctx->chWidthRatio,
             LengthUnit::Cap => $v * $ctx->currentFontSize * $ctx->capHeightRatio,
-            LengthUnit::Lh, LengthUnit::Rlh => $v * $ctx->currentFontSize * 1.2,
+            // CSS Values 4 §6.1.1 — `lh` / `rlh` resolve against the used
+            // `line-height`. When the cascade has resolved it (non-zero on
+            // the context) use it directly; otherwise fall back to the
+            // `normal` approximation of `1.2 × font-size`.
+            LengthUnit::Lh, LengthUnit::Rlh => $v * (
+                $ctx->lineHeight > 0.0 ? $ctx->lineHeight : $ctx->currentFontSize * 1.2
+            ),
             LengthUnit::Vw, LengthUnit::Svw, LengthUnit::Lvw, LengthUnit::Dvw
                 => $v * ($ctx->viewportWidth / 100.0),
             LengthUnit::Vh, LengthUnit::Svh, LengthUnit::Lvh, LengthUnit::Dvh
