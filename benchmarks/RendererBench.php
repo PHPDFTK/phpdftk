@@ -412,6 +412,36 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchTranslucentGradients(): void
+    {
+        // Translucent-stop gradients add a per-box Luminosity soft mask:
+        // a DeviceGray alpha shading rendered into a transparency group +
+        // an ExtGState `gs`. 30 elements exercises the mask-build hot path
+        // (group creation, alpha-stop mapping, ExtGState registration).
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background-image: '
+                . 'linear-gradient(to right, rgba(200,0,120,0), rgba(200,0,120,1));">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
+    public function benchGradientMasks(): void
+    {
+        // `mask-image: <linear-gradient>` with translucent stops wraps
+        // each box paint in a Luminosity soft mask (alpha shading +
+        // transparency group + ExtGState). 30 masked boxes exercises the
+        // mask-resolution + group-build hot path in the painter.
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background: purple; '
+                . 'mask-image: linear-gradient(rgba(0,0,255,0), rgba(0,0,255,1));">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchPhase2BorderCollapseHeavy(): void
     {
         // Phase-2: border-collapse conflict resolution runs per joint

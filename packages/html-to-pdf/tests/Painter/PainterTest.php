@@ -3212,6 +3212,64 @@ final class PainterTest extends TestCase
         self::assertGreaterThan(0, $counts['gradient'], 'gradient mask → element still painted');
     }
 
+    public function testTranslucentGradientMaskInstallsLuminositySoftMask(): void
+    {
+        // CSS Masking 1 §4 — `mask-image: linear-gradient(rgba(...,0),
+        // rgba(...,1))` in the default `match-source` (alpha) mode masks
+        // the box by the gradient's alpha. The painter wraps the box paint
+        // in a Luminosity soft mask built from that alpha (`gs` + SMask).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background: purple;
+                   mask-image: linear-gradient(rgba(0,0,255,0), rgba(0,0,255,1)); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('gs', $opcodes, 'translucent gradient mask installs a soft-mask ExtGState');
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/SMask', $bytes);
+        self::assertStringContainsString('/S /Luminosity', $bytes);
+        // The purple background still paints (masked, not hidden).
+        self::assertContains('rg', $opcodes, 'masked box still paints its background');
+    }
+
+    public function testNonDefaultMaskGeometryLeavesGradientMaskUnapplied(): void
+    {
+        // The gradient-mask path only models the default full-border-box
+        // geometry; an explicit non-default `mask-size` bails to unmasked
+        // paint rather than mis-positioning the mask (no `gs`).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background: purple;
+                   mask-image: linear-gradient(rgba(0,0,255,0), rgba(0,0,255,1));
+                   mask-size: 50px 50px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('gs', $opcodes, 'non-default mask-size bails to unmasked paint');
+        self::assertContains('rg', $opcodes, 'box still paints its background');
+    }
+
     public function testGridGapRulesPaintStrokes(): void
     {
         // CSS Gaps 1 — a grid with `column-rule` / `row-rule` and gaps
@@ -3299,6 +3357,63 @@ final class PainterTest extends TestCase
         $opcodes = $this->operatorTokens($stream->getOperators());
         self::assertContains('rg', $opcodes, 'single-stop gradient sets an RGB fill colour');
         self::assertContains('f', $opcodes, 'single-stop gradient fills a rectangle');
+    }
+
+    public function testTranslucentLinearGradientEmitsLuminositySoftMask(): void
+    {
+        // A `linear-gradient` whose stops carry alpha (`rgba(...,0)` →
+        // `rgba(...,1)`) can't be expressed by a PDF colour shading alone
+        // (shadings have no alpha), so the painter installs a Luminosity
+        // soft mask built from the per-stop alpha and emits `gs` before
+        // the fill (ISO 32000-2 §11.6.5.2).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: linear-gradient(to right,
+                     rgba(128,0,128,0), rgba(128,0,128,1)); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('gs', $opcodes, 'translucent gradient installs a soft-mask ExtGState');
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/SMask', $bytes);
+        self::assertStringContainsString('/S /Luminosity', $bytes);
+        self::assertStringContainsString('/DeviceGray', $bytes, 'alpha carried as a DeviceGray shading');
+    }
+
+    public function testOpaqueLinearGradientEmitsNoSoftMask(): void
+    {
+        // The alpha soft mask is only built when a stop is translucent —
+        // a fully-opaque gradient keeps the pre-existing byte output with
+        // no `gs` / SMask overhead (zero-regression fast path).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: linear-gradient(to right, red, blue); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('gs', $opcodes, 'opaque gradient installs no soft mask');
     }
 
     public function testCurrentColorResolvesToBoxColorOnBackground(): void

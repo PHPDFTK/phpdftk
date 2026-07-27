@@ -492,7 +492,7 @@ class PdfDoc
      * Type-2 function as `addLinearGradient`; three-or-more produces
      * a Type-3 stitching function with N-1 Type-2 sub-functions.
      *
-     * @param list<array{offset: float, rgb: array{float, float, float}}> $stops
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha?: float}> $stops
      */
     public function addLinearGradientStops(
         Point $from,
@@ -525,7 +525,7 @@ class PdfDoc
      * Register an N-stop radial gradient. Same stop semantics as
      * {@see addLinearGradientStops()}.
      *
-     * @param list<array{offset: float, rgb: array{float, float, float}}> $stops
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha?: float}> $stops
      */
     public function addRadialGradientStops(
         Point $innerCenter,
@@ -565,7 +565,7 @@ class PdfDoc
      * function: bounds at the intermediate stop offsets, N-1 child
      * Type-2 functions each linearly interpolating one segment.
      *
-     * @param list<array{offset: float, rgb: array{float, float, float}}> $stops
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha?: float}> $stops
      */
     private function buildRgbStopFunction(array $stops): FunctionType2|FunctionType3
     {
@@ -631,6 +631,129 @@ class PdfDoc
             new PdfNumber(0.0), new PdfNumber(1.0),
             new PdfNumber(0.0), new PdfNumber(1.0),
         ]);
+        $this->writer->register($fn);
+        return $fn;
+    }
+
+    /**
+     * Register a linear DeviceGray shading whose gray value at each
+     * offset equals the *alpha* of the corresponding gradient stop
+     * (0 → black → fully transparent, 1 → white → fully opaque). Painted
+     * with the `sh` operator inside a transparency group, it becomes the
+     * `/G` of a Luminosity soft mask (ISO 32000-2 §11.6.5.2) that
+     * modulates a colour gradient's per-stop opacity — the CSS
+     * `linear-gradient(rgba(c,0), rgba(c,1))` case, which the colour
+     * shading alone cannot express (PDF shadings carry no alpha).
+     *
+     * @param list<array{offset: float, gray: float}> $stops
+     */
+    public function addLinearAlphaShading(
+        Point $from,
+        Point $to,
+        array $stops,
+        bool $extend = true,
+    ): ShadingType2 {
+        $fn = $this->buildGrayStopFunction($stops);
+        $shading = new ShadingType2(
+            new PdfName('DeviceGray'),
+            new PdfArray([
+                new PdfNumber($from->x),
+                new PdfNumber($from->y),
+                new PdfNumber($to->x),
+                new PdfNumber($to->y),
+            ]),
+            new PdfReference($fn->objectNumber),
+        );
+        if ($extend) {
+            $shading->extend = self::extendBothEnds();
+        }
+        $this->writer->register($shading);
+        return $shading;
+    }
+
+    /**
+     * Radial counterpart to {@see addLinearAlphaShading()} — a
+     * DeviceGray Type-3 shading carrying the gradient's per-stop alpha
+     * as gray, for use as a Luminosity soft-mask `/G` form.
+     *
+     * @param list<array{offset: float, gray: float}> $stops
+     */
+    public function addRadialAlphaShading(
+        Point $innerCenter,
+        float $innerRadius,
+        Point $outerCenter,
+        float $outerRadius,
+        array $stops,
+        bool $extend = true,
+    ): ShadingType3 {
+        $fn = $this->buildGrayStopFunction($stops);
+        $shading = new ShadingType3(
+            new PdfName('DeviceGray'),
+            new PdfArray([
+                new PdfNumber($innerCenter->x),
+                new PdfNumber($innerCenter->y),
+                new PdfNumber($innerRadius),
+                new PdfNumber($outerCenter->x),
+                new PdfNumber($outerCenter->y),
+                new PdfNumber($outerRadius),
+            ]),
+            new PdfReference($fn->objectNumber),
+        );
+        if ($extend) {
+            $shading->extend = self::extendBothEnds();
+        }
+        $this->writer->register($shading);
+        return $shading;
+    }
+
+    /**
+     * DeviceGray analogue of {@see buildRgbStopFunction()} — maps
+     * [0,1] → a single gray component through the stop list, for
+     * alpha soft-mask shadings.
+     *
+     * @param list<array{offset: float, gray: float}> $stops
+     */
+    private function buildGrayStopFunction(array $stops): FunctionType2|FunctionType3
+    {
+        if (count($stops) < 2) {
+            throw new \InvalidArgumentException('Alpha shading requires at least 2 stops.');
+        }
+        if (count($stops) === 2) {
+            return $this->buildGrayFunction($stops[0]['gray'], $stops[1]['gray']);
+        }
+        $subFunctions = [];
+        $bounds = [];
+        $encode = [];
+        $count = count($stops);
+        for ($i = 0; $i < $count - 1; $i++) {
+            $segment = $this->buildGrayFunction($stops[$i]['gray'], $stops[$i + 1]['gray']);
+            $subFunctions[] = new PdfReference($segment->objectNumber);
+            if ($i > 0) {
+                $bounds[] = new PdfNumber($stops[$i]['offset']);
+            }
+            $encode[] = new PdfNumber(0.0);
+            $encode[] = new PdfNumber(1.0);
+        }
+        $fn = new FunctionType3(
+            domain: new PdfArray([new PdfNumber(0.0), new PdfNumber(1.0)]),
+            functions: new PdfArray($subFunctions),
+            bounds: new PdfArray($bounds),
+            encode: new PdfArray($encode),
+        );
+        $fn->range = new PdfArray([new PdfNumber(0.0), new PdfNumber(1.0)]);
+        $this->writer->register($fn);
+        return $fn;
+    }
+
+    private function buildGrayFunction(float $startGray, float $endGray): FunctionType2
+    {
+        $fn = new FunctionType2(
+            domain: new PdfArray([new PdfNumber(0.0), new PdfNumber(1.0)]),
+            c0: new PdfArray([new PdfNumber($startGray)]),
+            c1: new PdfArray([new PdfNumber($endGray)]),
+            n: 1.0,
+        );
+        $fn->range = new PdfArray([new PdfNumber(0.0), new PdfNumber(1.0)]);
         $this->writer->register($fn);
         return $fn;
     }

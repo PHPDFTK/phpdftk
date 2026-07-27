@@ -42,6 +42,27 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testGradientMaskImageProducesSoftMaskedPdf(): void
+    {
+        // CSS Masking 1 §4 — `mask-image: linear-gradient(rgba(...,0),
+        // rgba(...,1))` masks the box by the gradient alpha, rendered
+        // through the full pipeline to a real PDF that installs a
+        // Luminosity soft mask (ISO 32000-2 §11.6.5.2).
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;background:purple;'
+            . 'mask-image:linear-gradient(rgba(0,0,255,0),rgba(0,0,255,1))"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/SMask', $bytes);
+        self::assertStringContainsString('/S /Luminosity', $bytes);
+        self::assertStringContainsString('/DeviceGray', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint
@@ -1759,6 +1780,32 @@ final class RendererTest extends TestCase
         self::assertMatchesRegularExpression('~/P\d+ scn~', $bytes, 'pattern resource fill emitted');
         // Confirm a ShadingType2 (axial gradient) object was registered.
         self::assertStringContainsString('/ShadingType 2', $bytes, 'axial shading dict written');
+    }
+
+    public function testTranslucentLinearGradientRendersWithLuminositySoftMask(): void
+    {
+        // A `linear-gradient` with translucent stops renders through the
+        // full pipeline to a real PDF that installs a Luminosity soft
+        // mask (per-stop alpha → DeviceGray shading) modulating the
+        // colour shading pattern (ISO 32000-2 §11.6.5.2).
+        $renderer = new Renderer();
+        $writer = new PdfWriter(compressStreams: false);
+        $css = 'body { background-image: linear-gradient(to right, '
+            . 'rgba(128,0,128,0), rgba(128,0,128,1)); height: 100pt; }';
+        $renderer->renderInto(
+            $writer,
+            '<html><head><style>' . $css . '</style></head><body></body></html>',
+        );
+        $bytes = $writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        // The colour shading pattern is still emitted...
+        self::assertStringContainsString('/Pattern cs', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        // ...plus a Luminosity soft mask carrying the alpha as gray.
+        self::assertStringContainsString('/SMask', $bytes);
+        self::assertStringContainsString('/S /Luminosity', $bytes);
+        self::assertStringContainsString('/Group', $bytes);
+        self::assertStringContainsString('/DeviceGray', $bytes);
     }
 
     public function testLinearGradientThreeStopsUsesStitchingFunction(): void

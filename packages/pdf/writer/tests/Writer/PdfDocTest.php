@@ -106,6 +106,85 @@ class PdfDocTest extends TestCase
         $this->assertQpdfValidBytes($pdf);
     }
 
+    public function testAddLinearAlphaShadingEmitsDeviceGrayShading(): void
+    {
+        // A gradient's per-stop alpha becomes a DeviceGray Type-2 shading
+        // (gray = alpha) painted into a Luminosity soft-mask group so the
+        // colour gradient fades with opacity (ISO 32000-2 §11.6.5.2).
+        $doc = new PdfDoc(compressStreams: false);
+        $doc->addPage();
+        $shading = $doc->addLinearAlphaShading(
+            new \Phpdftk\Geometry\Point(0.0, 0.0),
+            new \Phpdftk\Geometry\Point(100.0, 0.0),
+            [
+                ['offset' => 0.0, 'gray' => 0.0],
+                ['offset' => 1.0, 'gray' => 1.0],
+            ],
+        );
+        self::assertGreaterThan(0, $shading->objectNumber);
+        $pdf = $doc->writer()->generate();
+        self::assertStringStartsWith('%PDF-', $pdf);
+        self::assertStringContainsString('/ShadingType 2', $pdf);
+        self::assertStringContainsString('/DeviceGray', $pdf);
+        // extend defaults to true so the alpha pads beyond the endpoints.
+        self::assertStringContainsString('/Extend [ true true ]', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
+    public function testAddLinearAlphaShadingWithThreeStopsStitches(): void
+    {
+        // Three+ alpha stops build a Type-3 stitching function over
+        // DeviceGray segment functions.
+        $doc = new PdfDoc();
+        $doc->addPage();
+        $doc->addLinearAlphaShading(
+            new \Phpdftk\Geometry\Point(0.0, 0.0),
+            new \Phpdftk\Geometry\Point(100.0, 0.0),
+            [
+                ['offset' => 0.0, 'gray' => 0.0],
+                ['offset' => 0.5, 'gray' => 1.0],
+                ['offset' => 1.0, 'gray' => 0.0],
+            ],
+        );
+        $pdf = $doc->writer()->generate();
+        self::assertStringContainsString('/FunctionType 3', $pdf);
+        self::assertStringContainsString('/DeviceGray', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
+    public function testAddRadialAlphaShadingEmitsDeviceGrayType3(): void
+    {
+        $doc = new PdfDoc();
+        $doc->addPage();
+        $shading = $doc->addRadialAlphaShading(
+            new \Phpdftk\Geometry\Point(0.0, 0.0),
+            0.0,
+            new \Phpdftk\Geometry\Point(0.0, 0.0),
+            50.0,
+            [
+                ['offset' => 0.0, 'gray' => 1.0],
+                ['offset' => 1.0, 'gray' => 0.0],
+            ],
+        );
+        self::assertGreaterThan(0, $shading->objectNumber);
+        $pdf = $doc->writer()->generate();
+        self::assertStringContainsString('/ShadingType 3', $pdf);
+        self::assertStringContainsString('/DeviceGray', $pdf);
+        $this->assertQpdfValidBytes($pdf);
+    }
+
+    public function testAddLinearAlphaShadingRejectsSingleStop(): void
+    {
+        $doc = new PdfDoc();
+        $doc->addPage();
+        $this->expectException(\InvalidArgumentException::class);
+        $doc->addLinearAlphaShading(
+            new \Phpdftk\Geometry\Point(0.0, 0.0),
+            new \Phpdftk\Geometry\Point(100.0, 0.0),
+            [['offset' => 0.0, 'gray' => 0.5]],
+        );
+    }
+
     public function testSetInfoAttachesInfoDictionary(): void
     {
         $doc = new PdfDoc(compressStreams: false);

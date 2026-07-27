@@ -894,6 +894,15 @@ final class Painter
         if ($this->maskHidesElement($box)) {
             return;
         }
+        // CSS Masking 1 §4 — a `mask-image: <linear-gradient>` masks the
+        // box (and its subtree) by the gradient's alpha. Install a
+        // Luminosity soft mask over the whole box paint, mirroring how
+        // opacity wraps below (ISO 32000-2 §11.6.5.2).
+        $maskGsName = $this->buildBoxGradientMaskGsName($box, $stream);
+        if ($maskGsName !== null) {
+            $stream->saveGraphicsState();
+            $stream->setGraphicsState($maskGsName);
+        }
         $opacityGsName = $this->resolveOpacityGsName($box);
         if ($opacityGsName !== null) {
             $stream->saveGraphicsState();
@@ -989,6 +998,9 @@ final class Painter
             $stream->restoreGraphicsState();
         }
         if ($opacityGsName !== null) {
+            $stream->restoreGraphicsState();
+        }
+        if ($maskGsName !== null) {
             $stream->restoreGraphicsState();
         }
     }
@@ -1828,6 +1840,131 @@ final class Painter
     private function maskHidesElement(Box $box): bool
     {
         return $box->style->get('mask-image') instanceof \Phpdftk\Css\Value\Url;
+    }
+
+    /**
+     * CSS Masking 1 §4 — resolve a `mask-image: <linear-gradient>` to the
+     * Luminosity soft-mask ExtGState name that masks the box (and its
+     * subtree) by the gradient, or null when the mask isn't a supported
+     * single translucent linear gradient in the default `match-source`
+     * (alpha) mode.
+     *
+     * `match-source` on a CSS `<image>` (a gradient, not an SVG `<mask>`)
+     * resolves to `alpha`, so the mask value is the gradient's alpha
+     * channel — exactly the DeviceGray alpha shading the background path
+     * builds ({@see addLinearAlphaShading()}). The gradient is laid out
+     * over the box's border box (the default mask-origin / mask-clip),
+     * at its default size (auto → fills the box), so the geometry mirrors
+     * a background gradient painted over that box.
+     *
+     * Bails (returns null → box paints unmasked) for anything outside this
+     * narrow case — multi-layer masks, non-linear gradients, explicit
+     * `luminance` mode, or any non-default mask geometry longhand — so an
+     * unsupported mask never silently hides content.
+     */
+    private function buildBoxGradientMaskGsName(Box $box, ContentStream $stream): ?string
+    {
+        if ($this->writer === null || $this->page === null) {
+            return null;
+        }
+        $maskImage = $box->style->get('mask-image');
+        if (!$maskImage instanceof \Phpdftk\Css\Value\LinearGradient) {
+            return null;
+        }
+        // Only the default `match-source` (→ alpha for a CSS image) or an
+        // explicit `alpha` mode maps cleanly to the alpha shading. Any
+        // other mode (`luminance`) would need a different mask value.
+        $maskMode = $box->style->get('mask-mode');
+        if ($maskMode instanceof \Phpdftk\Css\Value\Keyword) {
+            $mode = strtolower($maskMode->name);
+            if ($mode !== 'match-source' && $mode !== 'alpha') {
+                return null;
+            }
+        }
+        // Bail on any non-default mask geometry — those change where / how
+        // the gradient tiles and we only model the full-border-box case.
+        // The longhands are registered with initial values, so compare the
+        // computed value's serialisation against the CSS initial rather
+        // than testing for absence.
+        $defaults = [
+            'mask-repeat' => 'repeat',
+            'mask-size' => 'auto',
+            'mask-position' => '0% 0%',
+            'mask-clip' => 'border-box',
+            'mask-origin' => 'border-box',
+            'mask-composite' => 'add',
+        ];
+        foreach ($defaults as $prop => $initial) {
+            $value = $box->style->get($prop);
+            if ($value !== null && $value->toCss() !== $initial) {
+                return null;
+            }
+        }
+        // A gradient with no translucent stop masks nothing out (mask is
+        // fully opaque) — skip the soft mask entirely (fast path, no-op).
+        if (!$this->gradientHasAlpha($maskImage->stops)) {
+            return null;
+        }
+        [$bx, $by, $bw, $bh] = $this->clipReferenceBox($box->geometry, 'border-box');
+        if ($bw <= 0.0 || $bh <= 0.0) {
+            return null;
+        }
+        $tilePdfY = $this->pageHeight - $by - $bh;
+        [$startX, $startY, $endX, $endY, $lineLength] =
+            $this->linearGradientLine($maskImage->angleDeg, $bx, $tilePdfY, $bw, $bh);
+        $stopList = $this->resolveGradientStops($maskImage->stops, $lineLength);
+        if (count($stopList) < 2) {
+            return null;
+        }
+        $alphaStops = $this->alphaStopsFrom($stopList);
+        return $this->buildGradientAlphaMaskState(
+            \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer),
+            fn(\Phpdftk\Pdf\Writer\PdfDoc $d): int => $d->addLinearAlphaShading(
+                new \Phpdftk\Geometry\Point($startX, $startY),
+                new \Phpdftk\Geometry\Point($endX, $endY),
+                $alphaStops,
+            )->objectNumber,
+            $bx,
+            $tilePdfY,
+            $bw,
+            $bh,
+        );
+    }
+
+    /**
+     * Compute a CSS linear-gradient line over a tile: its start / end
+     * points (PDF coordinates) and full length. `angleDeg` follows the
+     * CSS convention (0° points up, increases clockwise); the endpoints
+     * land on the tile boundary corners per CSS Images 3 §3.1. Shared by
+     * the background gradient painter and the gradient mask builder.
+     *
+     * @return array{float, float, float, float, float}
+     *   [startX, startY, endX, endY, lineLength]
+     */
+    private function linearGradientLine(
+        float $angleDeg,
+        float $tileX,
+        float $tilePdfY,
+        float $tileWidth,
+        float $tileHeight,
+    ): array {
+        $angle = fmod($angleDeg, 360.0);
+        if ($angle < 0.0) {
+            $angle += 360.0;
+        }
+        $rad = deg2rad($angle);
+        $cx = $tileX + $tileWidth / 2;
+        $cy = $tilePdfY + $tileHeight / 2;
+        $sin = sin($rad);
+        $cos = cos($rad);
+        $halfLen = (abs($tileWidth * $sin) + abs($tileHeight * $cos)) / 2;
+        return [
+            $cx - $sin * $halfLen,
+            $cy - $cos * $halfLen,
+            $cx + $sin * $halfLen,
+            $cy + $cos * $halfLen,
+            $halfLen * 2,
+        ];
     }
 
     private function applyClipPath(Box $box, ContentStream $stream): bool
@@ -3798,6 +3935,15 @@ final class Painter
         if ($patternName === null) {
             return;
         }
+        // NOTE: per-stop alpha is not yet honoured for radial gradients.
+        // A Luminosity soft mask analogous to the linear path (see
+        // {@see paintLinearGradient()}) needs the colour shading pattern
+        // and the mask's `sh` to share a coordinate space, but the radial
+        // colour pattern's anchoring is independent of the current CTM,
+        // so the two would not align. The writer primitive
+        // ({@see \Phpdftk\Pdf\Writer\PdfDoc::addRadialAlphaShading()})
+        // exists for when the radial paint path is reworked.
+        $extent = max($rx, $ry);
         $stream->saveGraphicsState();
         // Clip to the box rect, then translate to the centre and scale
         // for elliptical shapes so the unit-radius gradient covers the
@@ -3814,7 +3960,6 @@ final class Painter
         // gradient extent (in the un-scaled space the gradient sits at
         // origin with radius `max(rx, ry)`, so a square of side 2*max
         // covers it).
-        $extent = max($rx, $ry);
         $stream->rectangle(-$extent, -$extent, 2 * $extent, 2 * $extent);
         $stream->fill();
         $stream->restoreGraphicsState();
@@ -3857,7 +4002,7 @@ final class Painter
      *   fractional [0, 1] offsets. Pass 0 to skip length-position
      *   resolution (degrades length-positioned stops to "no authored
      *   position" — the spec's interpolation algorithm fills them in).
-     * @return list<array{offset: float, rgb: array{float, float, float}}>
+     * @return list<array{offset: float, rgb: array{float, float, float}, alpha: float}>
      */
     private function resolveGradientStops(array $stops, float $gradientLineLength = 0.0): array
     {
@@ -3923,9 +4068,93 @@ final class Painter
             $out[] = [
                 'offset' => (float) $offsets[$i],
                 'rgb' => [$s->color->r, $s->color->g, $s->color->b],
+                'alpha' => $s->color->a,
             ];
         }
         return $out;
+    }
+
+    /**
+     * True when any stop of a gradient carries alpha < 1 — the case a
+     * plain PDF colour shading cannot express (shadings have no alpha
+     * channel). Such gradients need a Luminosity soft mask built from
+     * the per-stop alpha (see {@see applyGradientAlphaMask()}).
+     *
+     * @param list<\Phpdftk\Css\Value\GradientStop> $stops
+     */
+    private function gradientHasAlpha(array $stops): bool
+    {
+        foreach ($stops as $s) {
+            if ($s->color->a < 1.0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Map a resolved stop list (offset + rgb + alpha) to the gray-stop
+     * list {@see \Phpdftk\Pdf\Writer\PdfDoc::addLinearAlphaShading()}
+     * consumes: gray = alpha, so the Luminosity mask is opaque where
+     * the gradient is opaque and transparent where it is transparent.
+     *
+     * @param list<array{offset: float, rgb: array{float, float, float}, alpha: float}> $stopList
+     * @return list<array{offset: float, gray: float}>
+     */
+    private function alphaStopsFrom(array $stopList): array
+    {
+        $out = [];
+        foreach ($stopList as $s) {
+            $out[] = ['offset' => $s['offset'], 'gray' => $s['alpha']];
+        }
+        return $out;
+    }
+
+    /**
+     * Build a Luminosity soft-mask ExtGState carrying a gradient's
+     * per-stop alpha and return its resource name (or null when the
+     * mask can't be built). `$registerShading` registers the DeviceGray
+     * alpha shading (linear or radial) on the PdfDoc and returns its
+     * object number; the mask group paints it with `sh`, clipped to the
+     * clip rect, in absolute page coordinates — a soft-mask group
+     * inherits the CTM in effect when its `gs` is set, and the painter
+     * paints gradients under an identity CTM. Emit `/<name> gs` inside
+     * the gradient's save/restore scope before the pattern fill so the
+     * alpha modulates the colour shading (ISO 32000-2 §11.6.5.2).
+     *
+     * @param \Closure(\Phpdftk\Pdf\Writer\PdfDoc): int $registerShading
+     */
+    private function buildGradientAlphaMaskState(
+        \Phpdftk\Pdf\Writer\PdfDoc $doc,
+        \Closure $registerShading,
+        float $clipX,
+        float $clipPdfY,
+        float $clipWidth,
+        float $clipHeight,
+    ): ?string {
+        if ($this->page === null || $clipWidth <= 0.0 || $clipHeight <= 0.0) {
+            return null;
+        }
+        try {
+            $shadingObjNum = $registerShading($doc);
+            $bbox = new \Phpdftk\Geometry\Rectangle($clipX, $clipPdfY, $clipWidth, $clipHeight);
+            $group = $doc->createTransparencyGroup(
+                $bbox,
+                function (
+                    ContentStream $cs,
+                    \Phpdftk\Pdf\Core\Content\Resources $res,
+                ) use ($shadingObjNum, $clipX, $clipPdfY, $clipWidth, $clipHeight): void {
+                    $res->shading['Sh0'] = new \Phpdftk\Pdf\Core\PdfReference($shadingObjNum);
+                    $cs->rectangle($clipX, $clipPdfY, $clipWidth, $clipHeight);
+                    $cs->clip();
+                    $cs->endPath();
+                    $cs->paintShading('Sh0');
+                },
+            );
+            return $this->page->ensureSoftMaskState($group, 'Luminosity');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -4204,6 +4433,26 @@ final class Painter
         } catch (\Throwable) {
             return;
         }
+        // CSS gradient stops can carry alpha (`rgba(c, 0)` → `rgba(c, 1)`),
+        // but a PDF colour shading has no alpha channel. When any stop is
+        // translucent, build a Luminosity soft mask from the per-stop
+        // alpha so the fill fades with opacity instead of rendering solid.
+        $maskGsName = null;
+        if ($this->gradientHasAlpha($gradient->stops)) {
+            $alphaStops = $this->alphaStopsFrom($stopList);
+            $maskGsName = $this->buildGradientAlphaMaskState(
+                $doc,
+                fn(\Phpdftk\Pdf\Writer\PdfDoc $d): int => $d->addLinearAlphaShading(
+                    new \Phpdftk\Geometry\Point($startPdfX, $startPdfY),
+                    new \Phpdftk\Geometry\Point($endPdfX, $endPdfY),
+                    $alphaStops,
+                )->objectNumber,
+                $clipX,
+                $clipPdfY,
+                $clipWidth,
+                $clipHeight,
+            );
+        }
         $stream->saveGraphicsState();
         // Clip first to the bg-clip rect, then fill at the (typically
         // smaller) tile rect. When tile == clip the two are identical
@@ -4211,6 +4460,9 @@ final class Painter
         $stream->rectangle($clipX, $clipPdfY, $clipWidth, $clipHeight);
         $stream->clip();
         $stream->endPath();
+        if ($maskGsName !== null) {
+            $stream->setGraphicsState($maskGsName);
+        }
         $patternName = $this->page?->useGradient($pattern);
         if ($patternName !== null) {
             $stream->setFillColorSpace('Pattern');
