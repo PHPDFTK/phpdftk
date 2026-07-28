@@ -124,19 +124,19 @@ final class ColorMixTest extends TestCase
         self::assertSame(ColorSpace::Lch, $mix->space);
     }
 
-    public function testHslMapsToSrgbForStorage(): void
+    public function testHslKeepsPolarSpace(): void
     {
-        // HSL is a polar space for mixing purposes — we store it
-        // as sRGB and let the color engine handle the polar
-        // interpolation lift.
+        // HSL is a polar space — it keeps a distinct space tag so the
+        // interpolation engine can travel the hue channel (CSS Color 4
+        // §12.4), rather than collapsing onto sRGB.
         $mix = $this->parseMix('color-mix(in hsl, #ff0000, #00ff00)');
-        self::assertSame(ColorSpace::sRGB, $mix->space);
+        self::assertSame(ColorSpace::HSL, $mix->space);
     }
 
-    public function testHwbMapsToSrgbForStorage(): void
+    public function testHwbKeepsPolarSpace(): void
     {
         $mix = $this->parseMix('color-mix(in hwb, #ff0000, #00ff00)');
-        self::assertSame(ColorSpace::sRGB, $mix->space);
+        self::assertSame(ColorSpace::HWB, $mix->space);
     }
 
     public function testXyzAliasMapsToD65(): void

@@ -24,4 +24,5 @@ enum ColorSpace
     case A98RGBLinear;
     case ProPhotoRGBLinear;
     case HWB;
+    case HSL;
 }

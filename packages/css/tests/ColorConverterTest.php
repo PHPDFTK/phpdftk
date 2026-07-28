@@ -7,6 +7,7 @@ namespace Phpdftk\Css\Tests;
 use Phpdftk\Css\Value\Color;
 use Phpdftk\Css\Value\ColorConverter;
 use Phpdftk\Css\Value\ColorSpace;
+use Phpdftk\Css\Value\HueInterpolation;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -211,5 +212,105 @@ final class ColorConverterTest extends TestCase
         self::assertEqualsWithDelta(1.0, $out->g, 0.01);
         self::assertLessThan(0.6, $out->r);
         self::assertLessThan(0.6, $out->b);
+    }
+
+    // ---- Color-space interpolation (CSS Color 4 §12) ---------------------
+
+    /**
+     * Endpoints are exact at t=0/t=1 for every supported space — the
+     * forward matrices being exact inverses of the backward ones is what
+     * guarantees the round-trip lands back on the authored colour.
+     */
+    #[DataProvider('interpolationSpaces')]
+    public function testInterpolationEndpointsAreExact(ColorSpace $space): void
+    {
+        $red = new Color(1.0, 0.0, 0.0);
+        $blue = new Color(0.0, 0.0, 1.0);
+        $t0 = ColorConverter::interpolate($red, $blue, 0.0, $space, null);
+        $t1 = ColorConverter::interpolate($red, $blue, 1.0, $space, null);
+        self::assertEqualsWithDelta(1.0, $t0->r, 1e-3, $space->name . ' t0.r');
+        self::assertEqualsWithDelta(0.0, $t0->b, 1e-3, $space->name . ' t0.b');
+        self::assertEqualsWithDelta(0.0, $t1->r, 1e-3, $space->name . ' t1.r');
+        self::assertEqualsWithDelta(1.0, $t1->b, 1e-3, $space->name . ' t1.b');
+    }
+
+    /** @return iterable<string, array{ColorSpace}> */
+    public static function interpolationSpaces(): iterable
+    {
+        yield 'sRGB' => [ColorSpace::sRGB];
+        yield 'sRGB-linear' => [ColorSpace::sRGBLinear];
+        yield 'OKLab' => [ColorSpace::OKLab];
+        yield 'OKLCH' => [ColorSpace::OKLCH];
+        yield 'Lab' => [ColorSpace::Lab];
+        yield 'LCH' => [ColorSpace::Lch];
+        yield 'HSL' => [ColorSpace::HSL];
+        yield 'HWB' => [ColorSpace::HWB];
+        yield 'XYZ-D65' => [ColorSpace::XYZD65];
+        yield 'Display-P3' => [ColorSpace::DisplayP3];
+    }
+
+    public function testOklchShorterAndLongerHueTakeOppositeArcs(): void
+    {
+        $red = new Color(1.0, 0.0, 0.0);
+        $blue = new Color(0.0, 0.0, 1.0);
+        // Shorter arc red→blue passes through magenta (high R and B).
+        $short = ColorConverter::interpolate($red, $blue, 0.5, ColorSpace::OKLCH, HueInterpolation::Shorter);
+        self::assertGreaterThan(0.5, $short->r);
+        self::assertGreaterThan(0.5, $short->b);
+        self::assertLessThan(0.2, $short->g);
+        // Longer arc goes the other way, through green (high G, low R/B).
+        $long = ColorConverter::interpolate($red, $blue, 0.5, ColorSpace::OKLCH, HueInterpolation::Longer);
+        self::assertGreaterThan(0.4, $long->g);
+        self::assertLessThan(0.2, $long->r);
+    }
+
+    public function testHslShorterMidpointIsMagenta(): void
+    {
+        // red hue 0°, blue hue 240°: the shorter arc runs 360°→240° (the
+        // 120° way), whose midpoint 300° is magenta (1, 0, 1).
+        $mid = ColorConverter::interpolate(
+            new Color(1.0, 0.0, 0.0),
+            new Color(0.0, 0.0, 1.0),
+            0.5,
+            ColorSpace::HSL,
+            HueInterpolation::Shorter,
+        );
+        self::assertEqualsWithDelta(1.0, $mid->r, 1e-3);
+        self::assertEqualsWithDelta(0.0, $mid->g, 1e-3);
+        self::assertEqualsWithDelta(1.0, $mid->b, 1e-3);
+    }
+
+    public function testPowerlessHueAdoptsNeighbourHue(): void
+    {
+        // White is achromatic — its OKLCH hue is powerless and adopts
+        // blue's, so white→blue interpolates lightness/chroma at a fixed
+        // blue hue: the midpoint stays a blue (B the dominant channel),
+        // never drifting toward a red/green off-hue.
+        $mid = ColorConverter::interpolate(
+            new Color(1.0, 1.0, 1.0),
+            new Color(0.0, 0.0, 1.0),
+            0.5,
+            ColorSpace::OKLCH,
+            HueInterpolation::Shorter,
+        );
+        self::assertGreaterThan($mid->r, $mid->b);
+        self::assertGreaterThan($mid->g, $mid->b);
+    }
+
+    public function testUnsupportedSpaceFallsBackToSrgbInterpolation(): void
+    {
+        // A98-RGB has no forward conversion yet — interpolation must fall
+        // back to plain sRGB (the previous behaviour), i.e. the midpoint of
+        // red→blue is (0.5, 0, 0.5) as under DeviceRGB.
+        $mid = ColorConverter::interpolate(
+            new Color(1.0, 0.0, 0.0),
+            new Color(0.0, 0.0, 1.0),
+            0.5,
+            ColorSpace::A98RGB,
+            null,
+        );
+        self::assertEqualsWithDelta(0.5, $mid->r, 1e-6);
+        self::assertEqualsWithDelta(0.0, $mid->g, 1e-6);
+        self::assertEqualsWithDelta(0.5, $mid->b, 1e-6);
     }
 }

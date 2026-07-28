@@ -85,6 +85,7 @@ final class ColorConverter
             ColorSpace::sRGB => $color,
             ColorSpace::sRGBLinear => self::fromLinearSrgb($color->r, $color->g, $color->b, $color->a),
             ColorSpace::HWB => self::fromHwb($color->r, $color->g, $color->b, $color->a),
+            ColorSpace::HSL => self::fromHsl($color->r, $color->g, $color->b, $color->a),
             ColorSpace::Lab => self::labToSrgb($color->r, $color->g, $color->b, $color->a),
             ColorSpace::Lch => self::lchToSrgbGamutMapped($color->r, $color->g, $color->b, $color->a),
             ColorSpace::OKLab => self::fromOklab($color->r, $color->g, $color->b, $color->a),
@@ -216,6 +217,16 @@ final class ColorConverter
         $g = $gh * (1.0 - $w - $b) + $w;
         $b2 = $bh * (1.0 - $w - $b) + $w;
         return new Color(self::clip01($r), self::clip01($g), self::clip01($b2), $alpha);
+    }
+
+    /**
+     * CSS Color 4 §7 — HSL(h, s, l) → sRGB. Components stored as
+     * `r=h(deg)`, `g=s(0–1)`, `b=l(0–1)`.
+     */
+    private static function fromHsl(float $h, float $s, float $l, float $alpha): Color
+    {
+        [$r, $g, $b] = self::hslToSrgb($h, $s, $l);
+        return new Color(self::clip01($r), self::clip01($g), self::clip01($b), $alpha);
     }
 
     /**
@@ -440,6 +451,353 @@ final class ColorConverter
             $m[0][0] * $v[0] + $m[0][1] * $v[1] + $m[0][2] * $v[2],
             $m[1][0] * $v[0] + $m[1][1] * $v[1] + $m[1][2] * $v[2],
             $m[2][0] * $v[0] + $m[2][1] * $v[1] + $m[2][2] * $v[2],
+        ];
+    }
+
+    // ------------------------------------------------------------------
+    // Color-space interpolation (CSS Color 4 §12 / CSS Images 4 §3.1)
+    //
+    // A gradient with `in <space> [<hue> hue]` interpolates its stop
+    // colours in <space>, not sRGB. PDF colour shadings only interpolate
+    // linearly in DeviceRGB, so the painter pre-samples each segment via
+    // {@see interpolate()} and emits the samples as sRGB — the shading's
+    // linear DeviceRGB interpolation between dense samples then tracks the
+    // true curve. The forward (sRGB → space) matrices are computed once as
+    // exact runtime inverses of the published backward matrices above, so
+    // a round-trip is identity to float precision.
+    // ------------------------------------------------------------------
+
+    /** @var array<int, array<int, float>>|null */
+    private static ?array $mLinSrgbToXyzD65 = null;
+    /** @var array<int, array<int, float>>|null */
+    private static ?array $mXyzD65ToLinDisplayP3 = null;
+    /** @var array<int, array<int, float>>|null */
+    private static ?array $mXyzD65ToD50 = null;
+    /** @var array<int, array<int, float>>|null */
+    private static ?array $mLinSrgbToLms = null;
+    /** @var array<int, array<int, float>>|null */
+    private static ?array $mLmsCbrtToOklab = null;
+
+    /**
+     * Interpolate two colours at fraction `$t` in `$space`, returning an
+     * sRGB Color. For polar spaces (OKLCH, LCH, HSL, HWB) the hue channel
+     * follows `$hue` (default: shorter) per CSS Color 4 §12.4, with a
+     * powerless (achromatic) endpoint adopting its neighbour's hue. Spaces
+     * without a forward conversion fall back to plain sRGB interpolation,
+     * i.e. the previous behaviour.
+     */
+    public static function interpolate(Color $a, Color $b, float $t, ColorSpace $space, ?HueInterpolation $hue): Color
+    {
+        $ca = self::toSpaceCoords($a, $space);
+        $cb = self::toSpaceCoords($b, $space);
+        if ($ca === null || $cb === null) {
+            return self::interpolateSrgb($a, $b, $t);
+        }
+        $hueIndex = self::hueChannel($space);
+        if ($hueIndex !== null) {
+            $aPowerless = self::hueIsPowerless($space, $ca);
+            $bPowerless = self::hueIsPowerless($space, $cb);
+            if ($aPowerless && !$bPowerless) {
+                $ca[$hueIndex] = $cb[$hueIndex];
+            } elseif ($bPowerless && !$aPowerless) {
+                $cb[$hueIndex] = $ca[$hueIndex];
+            }
+            [$h0, $h1] = self::adjustHuePair($ca[$hueIndex], $cb[$hueIndex], $hue ?? HueInterpolation::Shorter);
+            $ca[$hueIndex] = $h0;
+            $cb[$hueIndex] = $h1;
+        }
+        $mixed = new Color(
+            $ca[0] + ($cb[0] - $ca[0]) * $t,
+            $ca[1] + ($cb[1] - $ca[1]) * $t,
+            $ca[2] + ($cb[2] - $ca[2]) * $t,
+            $ca[3] + ($cb[3] - $ca[3]) * $t,
+            $space,
+        );
+        return self::toSrgb($mixed);
+    }
+
+    private static function interpolateSrgb(Color $a, Color $b, float $t): Color
+    {
+        $sa = self::toSrgb($a);
+        $sb = self::toSrgb($b);
+        return new Color(
+            $sa->r + ($sb->r - $sa->r) * $t,
+            $sa->g + ($sb->g - $sa->g) * $t,
+            $sa->b + ($sb->b - $sa->b) * $t,
+            $sa->a + ($sb->a - $sa->a) * $t,
+        );
+    }
+
+    /**
+     * Convert a colour into the channel coordinates of `$space`
+     * (`[c0, c1, c2, alpha]`), or null when `$space` has no forward
+     * conversion. Colours already stored in `$space` are returned
+     * verbatim (exact); everything else goes via sRGB.
+     *
+     * @return array{float, float, float, float}|null
+     */
+    private static function toSpaceCoords(Color $c, ColorSpace $space): ?array
+    {
+        if ($c->space === $space) {
+            return [$c->r, $c->g, $c->b, $c->a];
+        }
+        $s = self::toSrgb($c);
+        $r = $s->r;
+        $g = $s->g;
+        $b = $s->b;
+        $al = $s->a;
+        switch ($space) {
+            case ColorSpace::sRGB:
+                return [$r, $g, $b, $al];
+            case ColorSpace::sRGBLinear:
+                return [self::srgbDegamma($r), self::srgbDegamma($g), self::srgbDegamma($b), $al];
+            case ColorSpace::HSL:
+                [$h, $sat, $l] = self::srgbToHsl($r, $g, $b);
+                return [$h, $sat, $l, $al];
+            case ColorSpace::HWB:
+                [$h, $w, $bl] = self::srgbToHwb($r, $g, $b);
+                return [$h, $w, $bl, $al];
+            case ColorSpace::OKLab:
+                [$L, $A, $B] = self::srgbToOklab($r, $g, $b);
+                return [$L, $A, $B, $al];
+            case ColorSpace::OKLCH:
+                [$L, $A, $B] = self::srgbToOklab($r, $g, $b);
+                [$Lc, $C, $H] = self::labToLch($L, $A, $B);
+                return [$Lc, $C, $H, $al];
+            case ColorSpace::Lab:
+                [$L, $A, $B] = self::srgbToLab($r, $g, $b);
+                return [$L, $A, $B, $al];
+            case ColorSpace::Lch:
+                [$L, $A, $B] = self::srgbToLab($r, $g, $b);
+                [$Lc, $C, $H] = self::labToLch($L, $A, $B);
+                return [$Lc, $C, $H, $al];
+            case ColorSpace::XYZ:
+            case ColorSpace::XYZD65:
+                [$x, $y, $z] = self::srgbToXyzD65($r, $g, $b);
+                return [$x, $y, $z, $al];
+            case ColorSpace::DisplayP3:
+                [$pr, $pg, $pb] = self::srgbToDisplayP3($r, $g, $b);
+                return [$pr, $pg, $pb, $al];
+            default:
+                // sRGB-linear-family wide gamuts, ProPhoto etc. — no
+                // forward path yet; caller falls back to sRGB interp.
+                return null;
+        }
+    }
+
+    private static function hueChannel(ColorSpace $space): ?int
+    {
+        return match ($space) {
+            ColorSpace::OKLCH, ColorSpace::Lch => 2,
+            ColorSpace::HSL, ColorSpace::HWB => 0,
+            default => null,
+        };
+    }
+
+    /**
+     * A hue is "powerless" (undefined, to be adopted from the neighbour)
+     * when the colour is achromatic: zero chroma/saturation, or in HWB
+     * when whiteness + blackness saturate. CSS Color 4 §4.4 / §12.4.
+     *
+     * @param array{float, float, float, float} $c
+     */
+    private static function hueIsPowerless(ColorSpace $space, array $c): bool
+    {
+        return match ($space) {
+            ColorSpace::OKLCH, ColorSpace::Lch, ColorSpace::HSL => abs($c[1]) < 1e-6,
+            ColorSpace::HWB => ($c[1] + $c[2]) >= 1.0 - 1e-6,
+            default => false,
+        };
+    }
+
+    /**
+     * Adjust a hue pair (degrees) so a linear interpolation between them
+     * travels the arc the method selects. CSS Color 4 §12.4.
+     *
+     * @return array{float, float}
+     */
+    private static function adjustHuePair(float $h0, float $h1, HueInterpolation $method): array
+    {
+        $h0 = fmod($h0, 360.0);
+        if ($h0 < 0.0) {
+            $h0 += 360.0;
+        }
+        $h1 = fmod($h1, 360.0);
+        if ($h1 < 0.0) {
+            $h1 += 360.0;
+        }
+        $d = $h1 - $h0;
+        switch ($method) {
+            case HueInterpolation::Shorter:
+                if ($d > 180.0) {
+                    $h0 += 360.0;
+                } elseif ($d < -180.0) {
+                    $h1 += 360.0;
+                }
+                break;
+            case HueInterpolation::Longer:
+                if ($d > 0.0 && $d < 180.0) {
+                    $h0 += 360.0;
+                } elseif ($d > -180.0 && $d <= 0.0) {
+                    $h1 += 360.0;
+                }
+                break;
+            case HueInterpolation::Increasing:
+                if ($d < 0.0) {
+                    $h1 += 360.0;
+                }
+                break;
+            case HueInterpolation::Decreasing:
+                if ($d > 0.0) {
+                    $h0 += 360.0;
+                }
+                break;
+        }
+        return [$h0, $h1];
+    }
+
+    /**
+     * @return array{float, float, float}
+     */
+    private static function srgbToXyzD65(float $r, float $g, float $b): array
+    {
+        self::$mLinSrgbToXyzD65 ??= self::invert3x3(self::M_XYZD65_TO_LINEAR_SRGB);
+        return self::mul3(self::$mLinSrgbToXyzD65, [self::srgbDegamma($r), self::srgbDegamma($g), self::srgbDegamma($b)]);
+    }
+
+    /**
+     * @return array{float, float, float}
+     */
+    private static function srgbToDisplayP3(float $r, float $g, float $b): array
+    {
+        self::$mXyzD65ToLinDisplayP3 ??= self::invert3x3(self::M_LINEAR_DISPLAYP3_TO_XYZD65);
+        [$x, $y, $z] = self::srgbToXyzD65($r, $g, $b);
+        [$lr, $lg, $lb] = self::mul3(self::$mXyzD65ToLinDisplayP3, [$x, $y, $z]);
+        // Display-P3 shares sRGB's transfer curve (CSS Color 4 §10.2).
+        return [self::srgbGamma($lr), self::srgbGamma($lg), self::srgbGamma($lb)];
+    }
+
+    /**
+     * @return array{float, float, float}
+     */
+    private static function srgbToOklab(float $r, float $g, float $b): array
+    {
+        self::$mLinSrgbToLms ??= self::invert3x3(self::M_OKLAB_LMS_TO_LINEAR_SRGB);
+        self::$mLmsCbrtToOklab ??= self::invert3x3(self::M_OKLAB_LAB_TO_LMS_CBRT);
+        $lin = [self::srgbDegamma($r), self::srgbDegamma($g), self::srgbDegamma($b)];
+        [$l, $m, $s] = self::mul3(self::$mLinSrgbToLms, $lin);
+        return self::mul3(self::$mLmsCbrtToOklab, [self::cbrt($l), self::cbrt($m), self::cbrt($s)]);
+    }
+
+    /**
+     * @return array{float, float, float}
+     */
+    private static function srgbToLab(float $r, float $g, float $b): array
+    {
+        self::$mXyzD65ToD50 ??= self::invert3x3(self::M_D50_TO_D65_BRADFORD);
+        [$x, $y, $z] = self::srgbToXyzD65($r, $g, $b);
+        [$x50, $y50, $z50] = self::mul3(self::$mXyzD65ToD50, [$x, $y, $z]);
+        return self::xyzD50ToLab($x50, $y50, $z50);
+    }
+
+    /**
+     * XYZ-D50 → Lab (CSS Color 4 §10.4, inverse of {@see labToXyzD50}).
+     *
+     * @return array{float, float, float}
+     */
+    private static function xyzD50ToLab(float $x, float $y, float $z): array
+    {
+        $epsilon = 216.0 / 24389.0;
+        $kappa = 24389.0 / 27.0;
+        $xr = $x / 0.96422;
+        $yr = $y / 1.0;
+        $zr = $z / 0.82521;
+        $fx = $xr > $epsilon ? self::cbrt($xr) : ($kappa * $xr + 16.0) / 116.0;
+        $fy = $yr > $epsilon ? self::cbrt($yr) : ($kappa * $yr + 16.0) / 116.0;
+        $fz = $zr > $epsilon ? self::cbrt($zr) : ($kappa * $zr + 16.0) / 116.0;
+        return [116.0 * $fy - 16.0, 500.0 * ($fx - $fy), 200.0 * ($fy - $fz)];
+    }
+
+    /**
+     * Rectangular Lab/OKLab → polar LCH/OKLCH. Space-agnostic, mirroring
+     * {@see lchToLab}.
+     *
+     * @return array{float, float, float}
+     */
+    private static function labToLch(float $l, float $a, float $b): array
+    {
+        $c = sqrt($a * $a + $b * $b);
+        $h = atan2($b, $a) * 180.0 / M_PI;
+        if ($h < 0.0) {
+            $h += 360.0;
+        }
+        return [$l, $c, $h];
+    }
+
+    /**
+     * sRGB → HSL (h in degrees, s/l in [0, 1]). Achromatic colours return
+     * hue 0 / saturation 0 (the hue is powerless).
+     *
+     * @return array{float, float, float}
+     */
+    private static function srgbToHsl(float $r, float $g, float $b): array
+    {
+        $max = max($r, $g, $b);
+        $min = min($r, $g, $b);
+        $l = ($max + $min) / 2.0;
+        $d = $max - $min;
+        if ($d < 1e-9) {
+            return [0.0, 0.0, $l];
+        }
+        $s = $l > 0.5 ? $d / (2.0 - $max - $min) : $d / ($max + $min);
+        if ($max === $r) {
+            $h = ($g - $b) / $d + ($g < $b ? 6.0 : 0.0);
+        } elseif ($max === $g) {
+            $h = ($b - $r) / $d + 2.0;
+        } else {
+            $h = ($r - $g) / $d + 4.0;
+        }
+        return [$h * 60.0, $s, $l];
+    }
+
+    /**
+     * sRGB → HWB (h in degrees, w/b in [0, 1]). CSS Color 4 §6.
+     *
+     * @return array{float, float, float}
+     */
+    private static function srgbToHwb(float $r, float $g, float $b): array
+    {
+        [$h] = self::srgbToHsl($r, $g, $b);
+        return [$h, min($r, $g, $b), 1.0 - max($r, $g, $b)];
+    }
+
+    private static function cbrt(float $v): float
+    {
+        return $v < 0.0 ? -((-$v) ** (1.0 / 3.0)) : $v ** (1.0 / 3.0);
+    }
+
+    /**
+     * Invert a 3×3 matrix (adjugate / determinant). Used to derive the
+     * sRGB → space forward matrices as exact inverses of the published
+     * backward matrices, avoiding transcription drift.
+     *
+     * @param array<int, array<int, float>> $m
+     * @return array<int, array<int, float>>
+     */
+    private static function invert3x3(array $m): array
+    {
+        [$a, $b, $c] = [$m[0][0], $m[0][1], $m[0][2]];
+        [$d, $e, $f] = [$m[1][0], $m[1][1], $m[1][2]];
+        [$g, $h, $i] = [$m[2][0], $m[2][1], $m[2][2]];
+        $A = $e * $i - $f * $h;
+        $B = -($d * $i - $f * $g);
+        $C = $d * $h - $e * $g;
+        $det = $a * $A + $b * $B + $c * $C;
+        $inv = 1.0 / $det;
+        return [
+            [$A * $inv, ($c * $h - $b * $i) * $inv, ($b * $f - $c * $e) * $inv],
+            [$B * $inv, ($a * $i - $c * $g) * $inv, ($c * $d - $a * $f) * $inv],
+            [$C * $inv, ($b * $g - $a * $h) * $inv, ($a * $e - $b * $d) * $inv],
         ];
     }
 }

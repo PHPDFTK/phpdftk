@@ -458,6 +458,22 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchInterpolatedGradients(): void
+    {
+        // A gradient with an explicit `in <space>` interpolation method is
+        // densely resampled in that space (colour math per sample) so the
+        // PDF DeviceRGB shading tracks the true curve. 30 boxes × an
+        // `in oklch longer hue` gradient (64 samples/segment) exercises the
+        // per-sample ColorConverter::interpolate hot path.
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background-image: '
+                . 'linear-gradient(in oklch longer hue, red, blue);">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchTranslucentGradients(): void
     {
         // Translucent-stop gradients add a per-box Luminosity soft mask:

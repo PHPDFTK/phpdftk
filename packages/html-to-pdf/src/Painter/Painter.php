@@ -6,6 +6,9 @@ namespace Phpdftk\HtmlToPdf\Painter;
 
 use Phpdftk\Css\Cascade\WritingMode;
 use Phpdftk\Css\Value\Color;
+use Phpdftk\Css\Value\ColorConverter;
+use Phpdftk\Css\Value\ColorSpace;
+use Phpdftk\Css\Value\HueInterpolation;
 use Phpdftk\Css\Value\Keyword;
 use Phpdftk\HtmlToPdf\Box\Box;
 use Phpdftk\HtmlToPdf\Layout\BoxGeometry;
@@ -751,6 +754,7 @@ final class Painter
             \Phpdftk\Css\Value\ColorSpace::Rec2020Linear
                 => [['r', 'g', 'b']],
             \Phpdftk\Css\Value\ColorSpace::HWB => [['h', 'w', 'b']],
+            \Phpdftk\Css\Value\ColorSpace::HSL => [['h', 's', 'l']],
             \Phpdftk\Css\Value\ColorSpace::Lab => [['l', 'a', 'b']],
             \Phpdftk\Css\Value\ColorSpace::Lch => [['l', 'c', 'h']],
             \Phpdftk\Css\Value\ColorSpace::OKLab => [['l', 'a', 'b']],
@@ -4049,7 +4053,7 @@ final class Painter
         $r = max($rx, $ry);
         // For radial, the gradient line is from centre to the ending
         // shape — its length is the outer radius (the larger axis).
-        $stopList = $this->resolveGradientStops($gradient->stops, $r);
+        $stopList = $this->resolveGradientStops($gradient->stops, $r, $gradient->interpolationSpace, $gradient->hueInterpolation);
         // Beyond the ending shape, CSS Images 3 §3.5.1 paints the last
         // stop's colour outward to the box edge. Extend the shading only
         // when that last stop is opaque: a translucent final stop (e.g.
@@ -4154,8 +4158,12 @@ final class Painter
      *   position" — the spec's interpolation algorithm fills them in).
      * @return list<array{offset: float, rgb: array{float, float, float}, alpha: float}>
      */
-    private function resolveGradientStops(array $stops, float $gradientLineLength = 0.0): array
-    {
+    private function resolveGradientStops(
+        array $stops,
+        float $gradientLineLength = 0.0,
+        ?ColorSpace $interpSpace = null,
+        ?HueInterpolation $hueInterp = null,
+    ): array {
         $count = count($stops);
         if ($count === 0) {
             return [];
@@ -4212,14 +4220,12 @@ final class Painter
             }
             $i = $end;
         }
-        // Step 5: emit tuples.
-        $out = [];
+        // Step 5: build entries carrying the authored Colour + resolved
+        // offset (the colour is converted to sRGB — or resampled in the
+        // interpolation space — in step 7).
+        $entries = [];
         foreach ($stops as $i => $s) {
-            $out[] = [
-                'offset' => (float) $offsets[$i],
-                'rgb' => [$s->color->r, $s->color->g, $s->color->b],
-                'alpha' => $s->color->a,
-            ];
+            $entries[] = ['offset' => (float) $offsets[$i], 'color' => $s->color];
         }
         // Step 6: pad the ends so the stop list always spans [0, 1] with the
         // terminal colours held flat. CSS Images 3 §3.5.1 — before the first
@@ -4229,15 +4235,98 @@ final class Painter
         // green 0` clamped up, or `…, green 70%`) would otherwise stretch
         // the final segment across the remaining 30% instead of holding a
         // solid band. Anchoring synthetic end stops keeps the colour flat.
-        $first = $out[0];
-        if ($first['offset'] > 0.0) {
-            array_unshift($out, ['offset' => 0.0, 'rgb' => $first['rgb'], 'alpha' => $first['alpha']]);
+        if ($entries[0]['offset'] > 0.0) {
+            array_unshift($entries, ['offset' => 0.0, 'color' => $entries[0]['color']]);
         }
-        $last = $out[count($out) - 1];
-        if ($last['offset'] < 1.0) {
-            $out[] = ['offset' => 1.0, 'rgb' => $last['rgb'], 'alpha' => $last['alpha']];
+        $lastEntry = $entries[count($entries) - 1];
+        if ($lastEntry['offset'] < 1.0) {
+            $entries[] = ['offset' => 1.0, 'color' => $lastEntry['color']];
+        }
+        // Step 7: flatten to {offset, rgb, alpha}, resampling in the
+        // interpolation space when the gradient names one.
+        return $this->flattenGradientStops($entries, $interpSpace, $hueInterp);
+    }
+
+    /**
+     * Flatten resolved stop entries to the `{offset, rgb, alpha}` tuples the
+     * PDF writer consumes. Each colour is converted to sRGB. When `$space`
+     * is an explicit interpolation space PDF cannot express natively (i.e.
+     * anything but sRGB), each segment is densely resampled via
+     * {@see ColorConverter::interpolate()} so the shading's linear DeviceRGB
+     * interpolation between samples tracks the true in-space curve
+     * (CSS Color 4 §12 / CSS Images 4 §3.1). Otherwise stops are emitted
+     * verbatim and the shading interpolates them linearly — the default.
+     *
+     * @param  list<array{offset: float, color: Color}> $entries
+     * @return list<array{offset: float, rgb: array{float, float, float}, alpha: float}>
+     */
+    private function flattenGradientStops(array $entries, ?ColorSpace $space, ?HueInterpolation $hue): array
+    {
+        if ($space === null || !$this->interpolationSpaceNeedsResample($space)) {
+            $out = [];
+            foreach ($entries as $e) {
+                $c = ColorConverter::toSrgb($e['color']);
+                $out[] = ['offset' => $e['offset'], 'rgb' => [$c->r, $c->g, $c->b], 'alpha' => $c->a];
+            }
+            return $out;
+        }
+        $out = [];
+        $n = count($entries);
+        for ($k = 0; $k < $n - 1; $k++) {
+            $a = $entries[$k];
+            $b = $entries[$k + 1];
+            if ($k === 0) {
+                $ca = ColorConverter::toSrgb($a['color']);
+                $out[] = ['offset' => $a['offset'], 'rgb' => [$ca->r, $ca->g, $ca->b], 'alpha' => $ca->a];
+            }
+            $span = $b['offset'] - $a['offset'];
+            if ($span > 1e-9) {
+                $steps = $this->gradientSampleSteps($space, $hue);
+                for ($m = 1; $m < $steps; $m++) {
+                    $t = $m / $steps;
+                    $ci = ColorConverter::interpolate($a['color'], $b['color'], $t, $space, $hue);
+                    $out[] = ['offset' => $a['offset'] + $span * $t, 'rgb' => [$ci->r, $ci->g, $ci->b], 'alpha' => $ci->a];
+                }
+            }
+            $cb = ColorConverter::toSrgb($b['color']);
+            $out[] = ['offset' => $b['offset'], 'rgb' => [$cb->r, $cb->g, $cb->b], 'alpha' => $cb->a];
         }
         return $out;
+    }
+
+    /**
+     * Whether interpolating in `$space` requires pre-sampling. sRGB (and any
+     * space without a forward conversion) matches PDF's native DeviceRGB
+     * interpolation, so no resampling is needed.
+     */
+    private function interpolationSpaceNeedsResample(ColorSpace $space): bool
+    {
+        return match ($space) {
+            ColorSpace::OKLab, ColorSpace::OKLCH, ColorSpace::Lab, ColorSpace::Lch,
+            ColorSpace::HSL, ColorSpace::HWB, ColorSpace::sRGBLinear,
+            ColorSpace::XYZ, ColorSpace::XYZD65, ColorSpace::DisplayP3 => true,
+            default => false,
+        };
+    }
+
+    /**
+     * Samples per gradient segment when resampling in `$space`. Polar spaces
+     * (hue channel) get more samples — and `longer`/`increasing`/`decreasing`
+     * hue can traverse up to a full turn — so the piecewise-linear sRGB
+     * approximation stays smooth.
+     */
+    private function gradientSampleSteps(ColorSpace $space, ?HueInterpolation $hue): int
+    {
+        $isPolar = match ($space) {
+            ColorSpace::OKLCH, ColorSpace::Lch, ColorSpace::HSL, ColorSpace::HWB => true,
+            default => false,
+        };
+        if (!$isPolar) {
+            return 16;
+        }
+        return $hue === HueInterpolation::Longer
+            || $hue === HueInterpolation::Increasing
+            || $hue === HueInterpolation::Decreasing ? 64 : 32;
     }
 
     /**
@@ -4595,7 +4684,7 @@ final class Painter
                 [$startPdfX, $startPdfY, $endPdfX, $endPdfY, $stopList] = $extended;
             }
         }
-        $stopList ??= $this->resolveGradientStops($gradient->stops, $lineLength);
+        $stopList ??= $this->resolveGradientStops($gradient->stops, $lineLength, $gradient->interpolationSpace, $gradient->hueInterpolation);
         try {
             $doc = \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer);
             $pattern = $doc->addLinearGradientStops(

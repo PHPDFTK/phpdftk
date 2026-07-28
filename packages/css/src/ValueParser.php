@@ -1851,12 +1851,12 @@ final class ValueParser
             'oklch' => ColorSpace::OKLCH,
             'xyz', 'xyz-d65' => ColorSpace::XYZD65,
             'xyz-d50' => ColorSpace::XYZD50,
-            // HSL and HWB are polar spaces for mixing only —
-            // they're handled by the engine via a sRGB round-trip;
-            // we accept them at parse time but tag as sRGB so the
-            // engine can lift back into the polar space for hue
-            // interpolation.
-            'hsl', 'hwb' => ColorSpace::sRGB,
+            // HSL and HWB are polar spaces — the gradient/paint engine
+            // interpolates their hue channel directly (CSS Color 4 §12.4),
+            // so they keep a distinct space tag rather than collapsing to
+            // sRGB (which would lose the hue-interpolation direction).
+            'hsl' => ColorSpace::HSL,
+            'hwb' => ColorSpace::HWB,
             default => null,
         };
         if ($space === null) {

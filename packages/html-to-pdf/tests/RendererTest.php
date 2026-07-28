@@ -156,6 +156,48 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testColorSpaceInterpolatedGradientResamplesInSpace(): void
+    {
+        // CSS Color 4 §12 / CSS Images 4 §3.1 — a gradient with an explicit
+        // `in oklch` interpolation method is densely resampled in OKLCH so
+        // the PDF DeviceRGB shading tracks the perceptual curve. The axial
+        // shading is emitted as a Type-3 stitching function over many
+        // sampled Type-2 sub-functions (vs. a single Type-2 for a plain
+        // sRGB two-stop gradient).
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:200px;height:80px;'
+            . 'background:linear-gradient(in oklch, red, blue)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        self::assertStringContainsString('/FunctionType 3', $bytes, 'resampled stops → stitching function');
+        self::assertGreaterThan(8, substr_count($bytes, '/FunctionType 2'), 'many sampled sub-functions');
+        self::assertFalse($result->hasErrors());
+    }
+
+    public function testLongerHueGradientProducesValidPdf(): void
+    {
+        // `in hsl longer hue` travels the long way around the colour wheel
+        // (CSS Color 4 §12.4); the polar hue channel is sampled at high
+        // density so the sRGB approximation of the full-turn sweep stays
+        // smooth. Round-trips through the full pipeline to a real PDF.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:200px;height:80px;'
+            . 'background:linear-gradient(in hsl longer hue, red, blue)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint
