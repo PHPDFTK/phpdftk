@@ -249,4 +249,57 @@ final class Color4FunctionsTest extends TestCase
         $value = $this->parser->parseFromString('lab(50 "twenty" 30)');
         self::assertNotInstanceOf(Color::class, $value);
     }
+
+    // -----------------------------------------------------------------------
+    // Modern hsl()/hwb() accept a bare <number> for S/L/W/B (≡ percentage)
+    // -----------------------------------------------------------------------
+
+    public function testHslAcceptsUnitlessNumberSaturation(): void
+    {
+        // CSS Color 4 §7 — `hsl(60deg 0 50%)`: the unitless `0` saturation
+        // is a <number> treated as `0%`, so the colour is 50 % grey.
+        $c = $this->parseColor('hsl(60deg 0 50%)');
+        self::assertEqualsWithDelta(0.5, $c->r, 1e-3);
+        self::assertEqualsWithDelta(0.5, $c->g, 1e-3);
+        self::assertEqualsWithDelta(0.5, $c->b, 1e-3);
+    }
+
+    public function testHslNumberSaturationEqualsPercentage(): void
+    {
+        // `50` ≡ `50%` for hsl saturation.
+        $num = $this->parseColor('hsl(120deg 50 50%)');
+        $pct = $this->parseColor('hsl(120deg 50% 50%)');
+        self::assertEqualsWithDelta($pct->r, $num->r, 1e-6);
+        self::assertEqualsWithDelta($pct->g, $num->g, 1e-6);
+        self::assertEqualsWithDelta($pct->b, $num->b, 1e-6);
+    }
+
+    public function testHwbAcceptsUnitlessNumberComponents(): void
+    {
+        $num = $this->parseColor('hwb(90 20 30)');
+        $pct = $this->parseColor('hwb(90 20% 30%)');
+        self::assertEqualsWithDelta($pct->r, $num->r, 1e-6);
+        self::assertEqualsWithDelta($pct->g, $num->g, 1e-6);
+        self::assertEqualsWithDelta($pct->b, $num->b, 1e-6);
+    }
+
+    // -----------------------------------------------------------------------
+    // Modern rgb()/alpha accept `none` (resolves to 0 outside interpolation)
+    // -----------------------------------------------------------------------
+
+    public function testRgbNoneChannelResolvesToZero(): void
+    {
+        // `rgb(none 255 0)` is valid modern syntax — the missing red
+        // resolves to 0, giving pure green.
+        $c = $this->parseColor('rgb(none 255 0)');
+        self::assertEqualsWithDelta(0.0, $c->r, 1e-6);
+        self::assertEqualsWithDelta(1.0, $c->g, 1e-6);
+        self::assertEqualsWithDelta(0.0, $c->b, 1e-6);
+    }
+
+    public function testRgbNoneAlphaResolvesToZero(): void
+    {
+        $c = $this->parseColor('rgb(255 0 0 / none)');
+        self::assertEqualsWithDelta(0.0, $c->a, 1e-6);
+    }
 }

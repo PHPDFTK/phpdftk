@@ -4,7 +4,7 @@
   "tolerance": 2,
   "buckets": {
     "html":   { "filter": "html/**",   "pass": 564,   "inScopeTotal": 584 },
-    "css":    { "filter": "css/**",    "pass": 15145, "inScopeTotal": 21270 },
+    "css":    { "filter": "css/**",    "pass": 15147, "inScopeTotal": 21270 },
     "svg":    { "filter": "svg/**",    "pass": 164,   "inScopeTotal": 174 },
     "mathml": { "filter": "mathml/**", "pass": 166,   "inScopeTotal": 167 }
   }

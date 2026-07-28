@@ -865,6 +865,11 @@ final class ValueParser
             return null;
         }
         $t = $group[0];
+        if ($t instanceof IdentToken && strtolower($t->value) === 'none') {
+            // CSS Color 4 §10.5 — `none` in a channel resolves to 0 outside
+            // interpolation contexts, so `rgb(none 255 0)` is valid.
+            return 0.0;
+        }
         if ($t instanceof NumberToken) {
             return max(0.0, min(1.0, $t->value / 255.0));
         }
@@ -882,6 +887,10 @@ final class ValueParser
             return null;
         }
         $t = $group[0];
+        if ($t instanceof IdentToken && strtolower($t->value) === 'none') {
+            // `/ none` alpha resolves to 0 outside interpolation (CSS Color 4 §4.4).
+            return 0.0;
+        }
         if ($t instanceof NumberToken) {
             return max(0.0, min(1.0, $t->value));
         }
@@ -1078,6 +1087,13 @@ final class ValueParser
             return 0.0;
         }
         if ($t instanceof PercentageToken) {
+            return max(0.0, min(1.0, $t->value / 100.0));
+        }
+        if ($t instanceof NumberToken) {
+            // CSS Color 4 §7 — the modern `hsl()` / `hwb()` syntaxes accept a
+            // bare <number> for saturation / lightness / whiteness / blackness,
+            // interpreted identically to the equivalent <percentage> (`50` ≡
+            // `50%`), so `hsl(60deg 0 50%)` is valid.
             return max(0.0, min(1.0, $t->value / 100.0));
         }
         return null;
