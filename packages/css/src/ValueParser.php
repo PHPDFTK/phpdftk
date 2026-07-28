@@ -2425,6 +2425,13 @@ final class ValueParser
             return null;
         }
         $colorValue = $this->parseSingle($parts[0]);
+        // A `color-mix()` stop resolves to a concrete colour up front (its
+        // arguments are already concrete), so the gradient carries plain
+        // Colors — e.g. `linear-gradient(in lch, red, color-mix(in lch
+        // longer hue, red, blue), blue)`.
+        if ($colorValue instanceof ColorMix) {
+            $colorValue = $colorValue->evaluate();
+        }
         if (!$colorValue instanceof Color) {
             return null;
         }

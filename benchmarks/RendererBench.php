@@ -474,6 +474,20 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchColorMixResolution(): void
+    {
+        // `color-mix(in <space>, …)` resolves to a concrete colour during
+        // the cascade via the interpolation engine. 30 boxes × a non-sRGB
+        // (oklch, polar) mix exercise ColorMix::evaluate on the hot path.
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; background-color: '
+                . 'color-mix(in oklch shorter hue, red 40%, blue);">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchTranslucentGradients(): void
     {
         // Translucent-stop gradients add a per-box Luminosity soft mask:

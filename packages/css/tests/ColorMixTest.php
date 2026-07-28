@@ -13,13 +13,11 @@ use Phpdftk\Css\ValueParser;
 use PHPUnit\Framework\TestCase;
 
 /**
- * CSS Color 5 §3 — `color-mix(in <space>, c1 [%], c2 [%])` parsing.
- * Tests cover the percentage-normalisation rules, polar vs
- * rectangular spaces, hue interpolation methods, and graceful
- * fallback on malformed input.
- *
- * Actual mixing math lands with the 4E color engine; this is the
- * parser layer.
+ * CSS Color 5 §3 — `color-mix(in <space>, c1 [%], c2 [%])` parsing +
+ * evaluation. Tests cover the percentage-normalisation rules, polar vs
+ * rectangular spaces, hue interpolation methods, graceful fallback on
+ * malformed input, and {@see ColorMix::evaluate()} resolving to a concrete
+ * sRGB colour via the shared interpolation engine.
  */
 final class ColorMixTest extends TestCase
 {
@@ -217,5 +215,56 @@ final class ColorMixTest extends TestCase
         $mix = $this->parseMix('color-mix(in oklab, lab(50 20 -30), oklch(0.6 0.2 240))');
         self::assertSame(ColorSpace::Lab, $mix->color1->space);
         self::assertSame(ColorSpace::OKLCH, $mix->color2->space);
+    }
+
+    // -----------------------------------------------------------------------
+    // evaluate() — resolve to a concrete sRGB colour
+    // -----------------------------------------------------------------------
+
+    public function testEvaluateSrgbMidpoint(): void
+    {
+        // sRGB mix of red + blue is the linear midpoint (0.5, 0, 0.5).
+        $out = $this->parseMix('color-mix(in srgb, red, blue)')->evaluate();
+        self::assertEqualsWithDelta(0.5, $out->r, 1e-6);
+        self::assertEqualsWithDelta(0.0, $out->g, 1e-6);
+        self::assertEqualsWithDelta(0.5, $out->b, 1e-6);
+        self::assertEqualsWithDelta(1.0, $out->a, 1e-6);
+    }
+
+    public function testEvaluateWeightedPercentageShiftsTowardSecondColor(): void
+    {
+        // `red 30%` → 70 % blue, so the result sits 0.7 of the way to blue.
+        $out = $this->parseMix('color-mix(in srgb, red 30%, blue)')->evaluate();
+        self::assertEqualsWithDelta(0.3, $out->r, 1e-6);
+        self::assertEqualsWithDelta(0.7, $out->b, 1e-6);
+    }
+
+    public function testEvaluateSubHundredPercentSumScalesAlpha(): void
+    {
+        // 25 % + 25 % sums to 50 %: colours normalise to 50/50 but the
+        // result alpha is scaled by 0.5 (CSS Color 5 §3.1).
+        $out = $this->parseMix('color-mix(in srgb, red 25%, blue 25%)')->evaluate();
+        self::assertEqualsWithDelta(0.5, $out->a, 1e-6);
+    }
+
+    public function testEvaluateLchLongerHuePassesThroughGreen(): void
+    {
+        // The longer-hue arc red→blue in LCH passes through green, so the
+        // 50 % mix has a dominant green channel (this is exactly the middle
+        // stop WPT's gradient-longer-hue-lch reference builds).
+        $out = $this->parseMix('color-mix(in lch longer hue, red, blue)')->evaluate();
+        self::assertGreaterThan($out->r, $out->g);
+        self::assertGreaterThan($out->b, $out->g);
+    }
+
+    public function testEvaluateOklchIsConcreteSrgbColor(): void
+    {
+        // Non-sRGB spaces now resolve (previously passed through unmixed);
+        // the result is a concrete in-gamut sRGB colour.
+        $out = $this->parseMix('color-mix(in oklch, red, blue)')->evaluate();
+        self::assertInstanceOf(Color::class, $out);
+        self::assertGreaterThanOrEqual(0.0, $out->r);
+        self::assertLessThanOrEqual(1.0, $out->r);
+        self::assertSame(ColorSpace::sRGB, $out->space);
     }
 }

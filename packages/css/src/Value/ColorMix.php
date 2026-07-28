@@ -71,6 +71,29 @@ final readonly class ColorMix extends Value
         );
     }
 
+    /**
+     * CSS Color 5 §3 — resolve the mix to a concrete sRGB {@see Color} by
+     * interpolating the two colours in `$space` (with the hue direction for
+     * polar spaces) at the fraction implied by the normalised percentages,
+     * then scaling the result alpha by `$alphaMultiplier` (non-100 %-sum
+     * mixes make the result partly transparent). Both colours are always
+     * concrete — the parser rejects unresolvable arguments to a plain
+     * {@see \Phpdftk\Css\Value\CssFunction} — so this never fails.
+     */
+    public function evaluate(): Color
+    {
+        $total = $this->percentage1 + $this->percentage2;
+        if ($total <= 0.0) {
+            // Degenerate (both 0 %); the parser normally rejects this, but
+            // fall back to transparent rather than dividing by zero.
+            return new Color(0.0, 0.0, 0.0, 0.0);
+        }
+        $t = $this->percentage2 / $total;
+        $mixed = ColorConverter::interpolate($this->color1, $this->color2, $t, $this->space, $this->hueInterpolation);
+        $alpha = max(0.0, min(1.0, $mixed->a * $this->alphaMultiplier));
+        return new Color($mixed->r, $mixed->g, $mixed->b, $alpha);
+    }
+
     private static function trim(float $v): string
     {
         return fmod($v, 1.0) === 0.0 ? (string) (int) $v : (string) $v;

@@ -198,6 +198,43 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testGradientWithColorMixStopProducesValidPdf(): void
+    {
+        // CSS Color 5 §3 — a `color-mix()` used as a gradient stop resolves
+        // to a concrete colour up front, so the gradient paints an axial
+        // shading (this is the shape WPT's gradient-longer-hue references
+        // use: a middle stop = color-mix(in lch longer hue, red, blue)).
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:200px;height:80px;'
+            . 'background:linear-gradient(to right in lch, red, '
+            . 'color-mix(in lch longer hue, red, blue), blue)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
+    public function testColorMixBackgroundColorResolvesToConcreteFill(): void
+    {
+        // A non-sRGB `color-mix()` as `background-color` now resolves to a
+        // concrete colour (previously passed through unmixed and dropped to
+        // the fallback), so the box paints a solid fill.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;'
+            . 'background-color:color-mix(in oklab, red, blue)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint

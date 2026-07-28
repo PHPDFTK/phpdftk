@@ -782,36 +782,18 @@ final readonly class ComputedStyle
     }
 
     /**
-     * CSS Color 5 §3 — resolve `color-mix(in srgb, A p%, B q%)` to
-     * the linearly-interpolated sRGB Color. Other spaces (lab, lch,
-     * etc.) are passed through unchanged for now; full per-space
-     * mixing math lands with the color engine (Phase 4E).
+     * CSS Color 5 §3 — resolve `color-mix(in <space>, A p%, B q%)` to a
+     * concrete sRGB Color by interpolating the arguments in the named space
+     * (polar spaces travel the hue direction). Delegates to
+     * {@see ColorMix::evaluate()}, which drives the shared
+     * {@see ColorConverter::interpolate()} engine.
      */
     private function resolveColorMix(?Value $v): ?Value
     {
         if (!$v instanceof ColorMix) {
             return $v;
         }
-        // Only sRGB-space mixing is supported here; other spaces
-        // fall through to the renderer's color engine.
-        if ($v->space !== ColorSpace::sRGB && $v->space !== ColorSpace::sRGBLinear) {
-            return $v;
-        }
-        $total = $v->percentage1 + $v->percentage2;
-        if ($total <= 0.0) {
-            return $v;
-        }
-        $t = $v->percentage2 / $total;
-        $mix = static fn(float $a, float $b): float => $a * (1.0 - $t) + $b * $t;
-        $a = $v->color1;
-        $b = $v->color2;
-        $alpha = $mix($a->a, $b->a) * $v->alphaMultiplier;
-        return new Color(
-            $mix($a->r, $b->r),
-            $mix($a->g, $b->g),
-            $mix($a->b, $b->b),
-            max(0.0, min(1.0, $alpha)),
-        );
+        return $v->evaluate();
     }
 
     /**
