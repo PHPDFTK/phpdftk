@@ -3718,29 +3718,32 @@ final class Painter
                         $originRect,
                     );
                 } elseif ($layer instanceof \Phpdftk\Css\Value\LinearGradient) {
-                    $useTilePath = !$this->isDefaultGradientSize($sizeValue)
-                        && $this->isNoRepeat($repeatValue);
-                    if ($useTilePath) {
-                        $tile = $this->computeGradientTileRect($sizeValue, $positionValue, $originRect);
-                        $this->paintLinearGradient(
+                    if ($this->isDefaultGradientSize($sizeValue)) {
+                        $this->paintLinearGradient($layer, $stream, $x, $top, $width, $height);
+                    } else {
+                        // Non-default `background-size` tiles the gradient
+                        // across the box per `background-repeat` (no-repeat
+                        // reduces to one positioned tile).
+                        $this->paintTiledLinearGradient(
                             $layer,
                             $stream,
-                            $tile['x'],
-                            $tile['top'],
-                            $tile['w'],
-                            $tile['h'],
-                            [$x, $top, $width, $height],
+                            $x,
+                            $top,
+                            $width,
+                            $height,
+                            $originRect,
+                            $sizeValue,
+                            $positionValue,
+                            $repeatValue,
                         );
-                    } else {
-                        $this->paintLinearGradient($layer, $stream, $x, $top, $width, $height);
                     }
                 } elseif ($layer instanceof \Phpdftk\Css\Value\RadialGradient) {
                     // A non-default `background-size` tiles the gradient into
-                    // cells (with `background-position` / `-repeat`), which we
-                    // don't yet reproduce for radial gradients. Paint the
-                    // single box-filling gradient only when the size is the
-                    // default; otherwise skip rather than mis-render one giant
-                    // gradient where the spec wants a tiled grid.
+                    // cells; we tile linear gradients (above) but not radial
+                    // yet — a radial with translucent stops (the common tiled
+                    // case) still floods rather than fades, so painting the
+                    // tiled grid would unmask worse than skipping. Paint the
+                    // single box-filling gradient only at the default size.
                     if ($this->isDefaultGradientSize($sizeValue)) {
                         $this->paintRadialGradient($layer, $stream, $x, $top, $width, $height);
                     }
@@ -5350,46 +5353,6 @@ final class Painter
     }
 
     /**
-     * Return true when `background-repeat` paints a *single tile*
-     * (or close to it). Used to gate the gradient tile-rect path —
-     * single-tile semantics only make sense when the gradient
-     * actually paints once.
-     *
-     * Honoured as single-tile:
-     *   • `no-repeat` — one tile, exact spec
-     *   • `space` — degenerate to no-repeat when only one tile
-     *     fits, which is the common case for small tiles in small
-     *     boxes. Tests in this cluster use `space` with positioned
-     *     tiles where exactly one tile fits — matches `no-repeat`
-     *     visually until we ship a real `space` distributor.
-     */
-    private function isNoRepeat(?\Phpdftk\Css\Value\Value $repeatValue): bool
-    {
-        if ($repeatValue instanceof \Phpdftk\Css\Value\Keyword) {
-            $kw = strtolower($repeatValue->name);
-            return $kw === 'no-repeat' || $kw === 'space';
-        }
-        if ($repeatValue instanceof \Phpdftk\Css\Value\ValueList
-            && $repeatValue->separator === \Phpdftk\Css\Value\ListSeparator::Space
-        ) {
-            $allNoRepeat = $repeatValue->values !== [];
-            foreach ($repeatValue->values as $v) {
-                if (!$v instanceof \Phpdftk\Css\Value\Keyword) {
-                    $allNoRepeat = false;
-                    break;
-                }
-                $kw = strtolower($v->name);
-                if ($kw !== 'no-repeat' && $kw !== 'space') {
-                    $allNoRepeat = false;
-                    break;
-                }
-            }
-            return $allNoRepeat;
-        }
-        return false;
-    }
-
-    /**
      * Return true when the `background-size` value resolves to the
      * "fill the box" default. Treated as default:
      *   • null (property unset)
@@ -5440,49 +5403,122 @@ final class Painter
      * area (CSS Backgrounds 3 §3.6 — keywords / percentages anchor;
      * lengths are direct offsets).
      *
+     * Tile a linear gradient across the box when `background-size` makes
+     * the tile smaller than the positioning area (CSS Backgrounds 3 §3.9).
+     * Mirrors the image tiling loop: resolve the tile size + positioned
+     * offset, compute per-axis cell offsets (with `background-repeat`'s
+     * repeat / round / space handling via {@see tileOffsets}), and paint
+     * the gradient once per cell, each clipped to the box. `no-repeat`
+     * reduces to a single positioned tile.
+     *
      * @param array{x: float, top: float, width: float, height: float} $originRect
-     * @return array{x: float, top: float, w: float, h: float}
      */
-    private function computeGradientTileRect(
+    private function paintTiledLinearGradient(
+        \Phpdftk\Css\Value\LinearGradient $gradient,
+        ContentStream $stream,
+        float $boxX,
+        float $boxTop,
+        float $boxWidth,
+        float $boxHeight,
+        array $originRect,
         ?\Phpdftk\Css\Value\Value $sizeValue,
         ?\Phpdftk\Css\Value\Value $positionValue,
+        ?\Phpdftk\Css\Value\Value $repeatValue,
+    ): void {
+        $grid = $this->gradientTileCells($originRect, $boxX, $boxTop, $boxWidth, $boxHeight, $sizeValue, $positionValue, $repeatValue);
+        if ($grid === null) {
+            // Degenerate or sub-pixel tile — a dense grid of tiny tiles
+            // approximates one box-filling gradient (and avoids blowing the
+            // tile cap), so paint it once (e.g. `background-size: 0.2px`).
+            $this->paintLinearGradient($gradient, $stream, $boxX, $boxTop, $boxWidth, $boxHeight);
+            return;
+        }
+        // A linear-gradient shading is confined to the tile rect it's built
+        // for, so paint each cell clipped to the box (the shading carries
+        // its own extent).
+        $clip = [$boxX, $boxTop, $boxWidth, $boxHeight];
+        foreach ($grid['cells'] as $cell) {
+            $this->paintLinearGradient($gradient, $stream, $cell['x'], $cell['top'], $grid['tileW'], $grid['tileH'], $clip);
+        }
+    }
+
+    /**
+     * Compute the tile size and per-cell top-left positions for tiling a
+     * gradient across the box under `background-size` / `-position` /
+     * `-repeat`. Mirrors the image tiling geometry (back-shift on repeating
+     * axes, {@see tileOffsets} for repeat / round / space). Returns null
+     * when the tile is degenerate.
+     *
+     * @param  array{x: float, top: float, width: float, height: float} $originRect
+     * @return array{tileW: float, tileH: float, cells: list<array{x: float, top: float}>}|null
+     */
+    private function gradientTileCells(
         array $originRect,
-    ): array {
+        float $boxX,
+        float $boxTop,
+        float $boxWidth,
+        float $boxHeight,
+        ?\Phpdftk\Css\Value\Value $sizeValue,
+        ?\Phpdftk\Css\Value\Value $positionValue,
+        ?\Phpdftk\Css\Value\Value $repeatValue,
+    ): ?array {
+        $originX = $originRect['x'];
+        $originTop = $originRect['top'];
         $originWidth = $originRect['width'];
         $originHeight = $originRect['height'];
-        [$tileW, $tileH] = $this->resolveGradientTileSize(
-            $sizeValue,
-            $originWidth,
-            $originHeight,
-        );
-        // resolveBackgroundPosition takes (image-w, image-h, box-w, box-h).
-        // The gradient *tile* is the "image" being positioned within the
-        // bg-positioning area (the "box"). When bg-position is null /
-        // empty, the helper already defaults to 50%/50% — matches the
-        // existing paintBackgroundImage handling.
+        $repeat = $this->repeatAxes($repeatValue);
+        $modes = $this->repeatModes($repeatValue);
+        [$tileW, $tileH] = $this->resolveGradientTileSize($sizeValue, $originWidth, $originHeight);
+        // `round` rescales the tile so a whole number fits (same as the
+        // image path); apply before computing offsets.
+        $tileW = $this->roundTileDim($modes['x'], $tileW, $originWidth);
+        $tileH = $this->roundTileDim($modes['y'], $tileH, $originHeight);
+        // Degenerate or sub-pixel tiles can't be tiled meaningfully (they'd
+        // demand thousands of tiles); the caller falls back to a single fill.
+        if ($tileW < 1.0 || $tileH < 1.0) {
+            return null;
+        }
         $offsets = $positionValue === null
-            ? ['offsetX' => max(0.0, ($originWidth - $tileW) / 2),
-                'offsetY' => max(0.0, ($originHeight - $tileH) / 2)]
-            : $this->resolveBackgroundPosition(
-                $positionValue,
-                $tileW,
-                $tileH,
-                $originWidth,
-                $originHeight,
-            );
-        return [
-            'x' => $originRect['x'] + $offsets['offsetX'],
-            'top' => $originRect['top'] + $offsets['offsetY'],
-            'w' => $tileW,
-            'h' => $tileH,
-        ];
+            ? ['offsetX' => max(0.0, ($originWidth - $tileW) / 2), 'offsetY' => max(0.0, ($originHeight - $tileH) / 2)]
+            : $this->resolveBackgroundPosition($positionValue, $tileW, $tileH, $originWidth, $originHeight);
+        // Back-shift the anchor and extend the far bound to the box edge on
+        // repeating axes, exactly as paintBackgroundImage does.
+        $startX = $offsets['offsetX'];
+        $farX = $originWidth;
+        if ($repeat['x']) {
+            $farX = $boxX + $boxWidth - $originX;
+            while ($originX + $startX > $boxX) {
+                $startX -= $tileW;
+            }
+        }
+        $startY = $offsets['offsetY'];
+        $farY = $originHeight;
+        if ($repeat['y']) {
+            $farY = $boxTop + $boxHeight - $originTop;
+            while ($originTop + $startY > $boxTop) {
+                $startY -= $tileH;
+            }
+        }
+        $xOffsets = $this->tileOffsets($modes['x'], $repeat['x'], $startX, $farX, $tileW, $offsets['offsetX'], $originWidth);
+        $yOffsets = $this->tileOffsets($modes['y'], $repeat['y'], $startY, $farY, $tileH, $offsets['offsetY'], $originHeight);
+        // Gradient tiles each register a shading pattern, heavier than an
+        // XObject draw — cap lower than the image loop.
+        $cells = [];
+        foreach ($yOffsets as $oy) {
+            foreach ($xOffsets as $ox) {
+                if (count($cells) >= 512) {
+                    break 2;
+                }
+                $cells[] = ['x' => $originX + $ox, 'top' => $originTop + $oy];
+            }
+        }
+        return ['tileW' => $tileW, 'tileH' => $tileH, 'cells' => $cells];
     }
 
     /**
      * Resolve a CSS `background-size` value to a concrete (w, h)
      * for a gradient (no intrinsic dimensions, no intrinsic ratio).
-     * See {@see computeGradientTileRect} for the matrix this
-     * implements.
+     * See {@see gradientTileCells} for how the tile is positioned.
      *
      * @return array{0: float, 1: float}
      */

@@ -474,6 +474,21 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchTiledGradients(): void
+    {
+        // A non-default `background-size` tiles a linear gradient across the
+        // box, painting one axial shading per cell (CSS Backgrounds 3 §3.9).
+        // 20 boxes × a 25%×50% tile → 4×2 = 8 shadings each exercises the
+        // per-cell tile-offset + shading-registration hot path.
+        $body = '';
+        for ($i = 0; $i < 20; $i++) {
+            $body .= '<div style="height: 48px; background-image: '
+                . 'linear-gradient(to bottom right, red, blue); '
+                . 'background-size: 25% 50%;"></div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchColorMixResolution(): void
     {
         // `color-mix(in <space>, …)` resolves to a concrete colour during

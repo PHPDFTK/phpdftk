@@ -1016,6 +1016,38 @@ final class RendererTest extends TestCase
         self::assertEqualsWithDelta(60.0, $xs[1] - $xs[0], 0.5, 'column step = tile 40 + gap 20');
     }
 
+    public function testGradientTilingRepeatsAcrossBox(): void
+    {
+        // CSS Backgrounds 3 §3.9 — a linear gradient with a non-default
+        // `background-size` tiles across the box per `background-repeat`.
+        // A 50%×50% tile in a 100×100 box repeats 2×2 = 4 times, each a
+        // separately-anchored axial shading.
+        $result = (new Renderer())->render(
+            '<html><body><div style="width:100px;height:100px;'
+            . 'background-image:linear-gradient(red,blue);'
+            . 'background-size:50% 50%;background-repeat:repeat"></div></body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertSame(4, substr_count($bytes, '/ShadingType 2'), '2×2 tiled gradient = 4 shadings');
+        self::assertFalse($result->hasErrors());
+    }
+
+    public function testNearZeroGradientSizeFallsBackToSingleFill(): void
+    {
+        // A sub-pixel `background-size` would demand thousands of tiles; the
+        // painter falls back to one box-filling gradient instead.
+        $result = (new Renderer())->render(
+            '<html><body><div style="width:100px;height:100px;'
+            . 'background-image:linear-gradient(red,blue);'
+            . 'background-size:0.2px 0.2px;background-repeat:repeat"></div></body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertSame(1, substr_count($bytes, '/ShadingType 2'), 'sub-pixel size = one fill, not a tile storm');
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testBackgroundOriginBorderBoxAnchorsAtBorderEdge(): void
     {
         // `border-box` origin anchors at the outermost edge — image
