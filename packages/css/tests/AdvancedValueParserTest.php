@@ -420,6 +420,19 @@ final class AdvancedValueParserTest extends TestCase
         self::assertSame(0.0, $v->stops[0]->position?->value);
     }
 
+    public function testGradientStopKeepsCalcPosition(): void
+    {
+        // A `calc()` stop position carries relative units the cascade
+        // resolves later; the parser must keep the Calc rather than
+        // dropping the position to null (which would strip the stop's
+        // offset entirely). CSS Images 3 §3.5.1 + Values 4 §10.
+        $v = $this->parser->parseFromString('linear-gradient(blue calc(2em), yellow)');
+        self::assertInstanceOf(LinearGradient::class, $v);
+        self::assertCount(2, $v->stops);
+        self::assertInstanceOf(Calc::class, $v->stops[0]->position);
+        self::assertNull($v->stops[1]->position);
+    }
+
     // ============================================================
     // radial-gradient
     // ============================================================

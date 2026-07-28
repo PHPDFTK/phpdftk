@@ -443,6 +443,21 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchCalcStopGradients(): void
+    {
+        // A `calc()` stop position carrying a font-relative unit resolves
+        // to absolute pixels during the cascade length pass before paint.
+        // 30 boxes × a two-stop `calc(2em)` gradient exercises the
+        // stop-length resolution hot path (Calc reduction per stop).
+        $body = '';
+        for ($i = 0; $i < 30; $i++) {
+            $body .= '<div style="height: 24pt; font-size: 12pt; background-image: '
+                . 'linear-gradient(blue calc(2em), yellow);">'
+                . '</div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchTranslucentGradients(): void
     {
         // Translucent-stop gradients add a per-box Luminosity soft mask:

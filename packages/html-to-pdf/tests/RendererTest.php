@@ -137,6 +137,25 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testCalcEmGradientStopProducesValidPdf(): void
+    {
+        // CSS Images 3 §3.5.1 + Values 4 §10 — a `calc()` stop position
+        // carrying a font-relative unit (`calc(2em)`) resolves against the
+        // element's font-size before paint, so the gradient renders to a
+        // real PDF axial shading rather than dropping the stop offset.
+        $result = (new Renderer())->render(
+            '<html><body>'
+            . '<div style="width:100px;height:100px;font-size:30px;'
+            . 'background:linear-gradient(blue calc(2em),yellow)"></div>'
+            . '</body></html>',
+        );
+        $bytes = $result->writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        self::assertStringContainsString('/ShadingType 2', $bytes);
+        self::assertFalse($result->hasErrors());
+    }
+
     public function testGridGapDecorationsProduceValidPdf(): void
     {
         // CSS Gaps 1 — grid `column-rule` / `row-rule` decorations paint

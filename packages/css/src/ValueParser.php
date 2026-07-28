@@ -2443,19 +2443,21 @@ final class ValueParser
 
     /**
      * Resolve a gradient stop position token list. Accepts `<length>` /
-     * `<percentage>` and the unitless-zero form CSS Values 4 §5.2
-     * carves out as a valid length. Returns `null` for absent or
-     * unrecognised tokens (caller keeps the stop with no position).
+     * `<percentage>`, a `calc()` carrying relative units (resolved to an
+     * absolute length by the cascade), and the unitless-zero form CSS
+     * Values 4 §5.2 carves out as a valid length. Returns `null` for
+     * absent or unrecognised tokens (caller keeps the stop with no
+     * position).
      *
      * @param list<Token>|null $tokens
      */
-    private function parseStopPosition(?array $tokens): Length|Percentage|null
+    private function parseStopPosition(?array $tokens): Length|Percentage|Calc|null
     {
         if ($tokens === null) {
             return null;
         }
         $val = $this->parseSingle($tokens);
-        if ($val instanceof Length || $val instanceof Percentage) {
+        if ($val instanceof Length || $val instanceof Percentage || $val instanceof Calc) {
             return $val;
         }
         if ($val instanceof Integer && $val->value === 0) {

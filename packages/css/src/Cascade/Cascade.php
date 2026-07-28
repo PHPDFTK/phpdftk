@@ -2620,7 +2620,58 @@ final class Cascade
         if ($value instanceof \Phpdftk\Css\Value\RadialGradient) {
             return $this->resolveRadialGradientLengths($value, $ctx);
         }
+        if ($value instanceof \Phpdftk\Css\Value\LinearGradient) {
+            return $this->resolveLinearGradientLengths($value, $ctx);
+        }
         return $value;
+    }
+
+    /**
+     * Resolve font-/container-relative stop positions of a
+     * `linear-gradient()` to absolute pixels. A `<length>` position (`2em`,
+     * `1lh`) resolves via the context; a `calc()` reduces to a pixel
+     * {@see Length} when it carries no percentage (else it stays a Calc for
+     * paint-time deferral); `<percentage>` positions are left as authored
+     * (resolved against the gradient line at paint time).
+     */
+    private function resolveLinearGradientLengths(
+        \Phpdftk\Css\Value\LinearGradient $g,
+        LengthContext $ctx,
+    ): \Phpdftk\Css\Value\LinearGradient {
+        return new \Phpdftk\Css\Value\LinearGradient(
+            $g->angleDeg,
+            $this->resolveStopLengths($g->stops, $ctx),
+            $g->repeating,
+            $g->interpolationSpace,
+            $g->hueInterpolation,
+            $g->corner,
+        );
+    }
+
+    /**
+     * Resolve the relative `<length>` / `calc()` positions of a gradient
+     * stop list to absolute pixels, leaving `<percentage>` and unset
+     * positions untouched.
+     *
+     * @param  list<\Phpdftk\Css\Value\GradientStop> $stops
+     * @return list<\Phpdftk\Css\Value\GradientStop>
+     */
+    private function resolveStopLengths(array $stops, LengthContext $ctx): array
+    {
+        $out = [];
+        foreach ($stops as $stop) {
+            $pos = $stop->position;
+            if ($pos instanceof Length) {
+                $pos = new Length(LengthResolver::toPx($pos, $ctx), LengthUnit::Px);
+            } elseif ($pos instanceof \Phpdftk\Css\Value\Calc) {
+                $resolved = CalcEvaluator::resolveValue($pos, $ctx);
+                $pos = $resolved instanceof Length ? $resolved : $pos;
+            }
+            $out[] = $pos === $stop->position
+                ? $stop
+                : new \Phpdftk\Css\Value\GradientStop($stop->color, $pos);
+        }
+        return $out;
     }
 
     /**
@@ -2644,7 +2695,7 @@ final class Cascade
             $toPx($g->sizeY),
             $toPx($g->centerX),
             $toPx($g->centerY),
-            $g->stops,
+            $this->resolveStopLengths($g->stops, $ctx),
             $g->repeating,
             $g->interpolationSpace,
             $g->hueInterpolation,

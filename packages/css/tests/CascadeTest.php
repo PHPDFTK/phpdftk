@@ -427,6 +427,41 @@ final class CascadeTest extends TestCase
         self::assertEqualsWithDelta(25.0, $bg->sizeX->value, 0.001);
     }
 
+    public function testLinearGradientCalcEmStopResolvesToPx(): void
+    {
+        // `linear-gradient(blue calc(2em), yellow)` at font-size 30px → the
+        // blue stop lands at 60px. The Calc must resolve against the
+        // element's own font-size during the length pass so the painter
+        // (which reads raw Length->value) sees an absolute pixel offset.
+        $sheet = $this->parser->parseStylesheet(
+            'p { font-size: 30px; background-image: linear-gradient(blue calc(2em), yellow); }',
+        );
+        $values = $this->cascade->computeFor([$sheet], new FakeElement('p'));
+        $this->cascade->resolveLengths($values, new LengthContext());
+        $bg = $values->get('background-image');
+        self::assertInstanceOf(\Phpdftk\Css\Value\LinearGradient::class, $bg);
+        self::assertInstanceOf(Length::class, $bg->stops[0]->position);
+        self::assertSame(LengthUnit::Px, $bg->stops[0]->position->unit);
+        self::assertEqualsWithDelta(60.0, $bg->stops[0]->position->value, 0.001);
+        self::assertNull($bg->stops[1]->position);
+    }
+
+    public function testLinearGradientEmStopResolvesToPx(): void
+    {
+        // A plain `<length>` stop position with a font-relative unit must
+        // resolve too — `2em` at font-size 10px → 20px.
+        $sheet = $this->parser->parseStylesheet(
+            'p { font-size: 10px; background-image: linear-gradient(blue 2em, yellow); }',
+        );
+        $values = $this->cascade->computeFor([$sheet], new FakeElement('p'));
+        $this->cascade->resolveLengths($values, new LengthContext());
+        $bg = $values->get('background-image');
+        self::assertInstanceOf(\Phpdftk\Css\Value\LinearGradient::class, $bg);
+        self::assertInstanceOf(Length::class, $bg->stops[0]->position);
+        self::assertSame(LengthUnit::Px, $bg->stops[0]->position->unit);
+        self::assertEqualsWithDelta(20.0, $bg->stops[0]->position->value, 0.001);
+    }
+
     public function testRemResolvesAgainstRootFontSize(): void
     {
         $sheet = $this->parser->parseStylesheet('p { margin-top: 1.5rem; }');
