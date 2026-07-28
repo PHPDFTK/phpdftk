@@ -4877,12 +4877,16 @@ final class Painter
         }
         $originBottomLayoutY = $originTop + $originHeight;
         $originPdfBottom = $this->pageHeight - $originBottomLayoutY;
+        // Precompute the per-axis tile offsets (relative to the origin
+        // edge). This unifies repeat / round / no-repeat / space: `space`
+        // distributes even gaps rather than butting tiles, the others step
+        // continuously.
+        $xOffsets = $this->tileOffsets($repeatModes['x'], $repeat['x'], $startX, $farX, $tileW, $paint['offsetX'], $originWidth);
+        $yOffsets = $this->tileOffsets($repeatModes['y'], $repeat['y'], $startY, $farY, $tileH, $paint['offsetY'], $originHeight);
         $maxTiles = 4096;
         $tileCount = 0;
-        $offsetY = $startY;
-        while ($offsetY < $farY) {
-            $offsetX = $startX;
-            while ($offsetX < $farX) {
+        foreach ($yOffsets as $offsetY) {
+            foreach ($xOffsets as $offsetX) {
                 if ($tileCount >= $maxTiles) {
                     break 2;
                 }
@@ -4917,15 +4921,7 @@ final class Painter
                     $stream->restoreGraphicsState();
                 }
                 $tileCount++;
-                if (!$repeat['x']) {
-                    break;
-                }
-                $offsetX += $tileW;
             }
-            if (!$repeat['y']) {
-                break;
-            }
-            $offsetY += $tileH;
         }
         $stream->restoreGraphicsState();
     }
@@ -5011,6 +5007,57 @@ final class Painter
         // At least 1 — a tile larger than the box still emits once.
         $n = max(1, (int) round($originDim / $tileDim));
         return $originDim / $n;
+    }
+
+    /**
+     * Compute the per-axis list of tile offsets (relative to the
+     * background-origin edge) for one axis of a repeated background image.
+     *
+     *   - `no-repeat` → a single tile at the background-position offset.
+     *   - `repeat` / `round` → tiles butt together, stepping by `$tileDim`
+     *     from the back-shifted `$start` across the paint area to `$far`
+     *     (`round` has already rescaled `$tileDim` so a whole number fit).
+     *   - `space` (CSS Backgrounds 3 §3.7) → as many whole tiles as fit
+     *     without clipping, the remaining space distributed evenly so the
+     *     first and last tiles touch the two edges; background-position is
+     *     ignored on this axis. When 0 or 1 tile fits, a single tile is
+     *     placed at the background-position offset.
+     *
+     * @return list<float>
+     */
+    private function tileOffsets(
+        string $mode,
+        bool $repeats,
+        float $start,
+        float $far,
+        float $tileDim,
+        float $positionedOffset,
+        float $originDim,
+    ): array {
+        if (!$repeats) {
+            return [$positionedOffset];
+        }
+        if ($mode === 'space') {
+            $n = $tileDim > 0.0 ? (int) floor($originDim / $tileDim + 1e-6) : 0;
+            if ($n >= 2) {
+                $step = $tileDim + ($originDim - $n * $tileDim) / ($n - 1);
+                $offsets = [];
+                for ($i = 0; $i < $n; $i++) {
+                    $offsets[] = $i * $step;
+                }
+                return $offsets;
+            }
+            return [$positionedOffset];
+        }
+        // repeat / round — continuous butting tiles from the shifted start.
+        $offsets = [];
+        for ($o = $start; $o < $far; $o += $tileDim) {
+            $offsets[] = $o;
+            if (count($offsets) >= 4096) {
+                break;
+            }
+        }
+        return $offsets === [] ? [$start] : $offsets;
     }
 
     /**

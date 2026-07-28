@@ -982,6 +982,40 @@ final class RendererTest extends TestCase
         );
     }
 
+    public function testBackgroundRepeatSpaceDistributesTilesEvenly(): void
+    {
+        // CSS Backgrounds 3 §3.7 — `background-repeat: space` fits as many
+        // whole tiles as possible and distributes the leftover space evenly,
+        // the first and last flush to the edges. A 40px tile in a 100px box
+        // fits n = floor(100/40) = 2 per axis → 2×2 = 4 tiles, the columns
+        // stepping by 40 + (100−80)/(2−1) = 60px.
+        $pngBase64 = base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $writer = new PdfWriter(compressStreams: false);
+        (new Renderer())->renderInto(
+            $writer,
+            sprintf(
+                '<html><body><div style="width:100px;height:100px;'
+                . 'background-image:url(\'data:image/png;base64,%s\');'
+                . 'background-size:40px 40px;background-repeat:space"></div></body></html>',
+                $pngBase64,
+            ),
+        );
+        $bytes = $writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        // Every tile is a `40 0 0 40 tx ty cm /Im.. Do`.
+        $count = preg_match_all('~40 0 0 40 (\S+) (\S+) cm\s+/Im\d+ Do~', $bytes, $m);
+        self::assertSame(4, $count, 'space fits 2×2 = 4 tiles');
+        $xs = array_values(array_unique(array_map(static fn(string $v): float => round((float) $v, 1), $m[1])));
+        sort($xs);
+        self::assertCount(2, $xs, 'two evenly-spaced tile columns');
+        self::assertEqualsWithDelta(60.0, $xs[1] - $xs[0], 0.5, 'column step = tile 40 + gap 20');
+    }
+
     public function testBackgroundOriginBorderBoxAnchorsAtBorderEdge(): void
     {
         // `border-box` origin anchors at the outermost edge — image

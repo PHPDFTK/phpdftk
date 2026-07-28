@@ -518,6 +518,27 @@ class RendererBench
         $this->renderer->render('<html><body>' . $body . '</body></html>');
     }
 
+    public function benchBackgroundRepeatSpace(): void
+    {
+        // `background-repeat: space` tiles the image with even inter-tile
+        // gaps (CSS Backgrounds 3 §3.7). 20 boxes × a 16px tile spaced
+        // across a wide box exercises the per-axis tile-offset computation
+        // and the multi-tile XObject-draw loop.
+        $png = base64_encode((string) hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $body = '';
+        for ($i = 0; $i < 20; $i++) {
+            $body .= '<div style="height: 48px; background-image: '
+                . 'url(\'data:image/png;base64,' . $png . '\'); '
+                . 'background-size: 16px 16px; background-repeat: space;"></div>';
+        }
+        $this->renderer->render('<html><body>' . $body . '</body></html>');
+    }
+
     public function benchPhase2BorderCollapseHeavy(): void
     {
         // Phase-2: border-collapse conflict resolution runs per joint
