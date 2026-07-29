@@ -4050,6 +4050,38 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta($cb->geometry->x, $flt->geometry->x, 0.001);
     }
 
+    public function testFloatFirstChildMarginTopDoesNotCollapseThroughParent(): void
+    {
+        // CSS 2.1 §8.3.1 — a floated element's margins never collapse.
+        // When a float with `margin-top` is a block's first child, its
+        // margin must NOT collapse through into the parent (which would
+        // shift the parent — and every following in-flow sibling — up by
+        // the float's margin). The following in-flow block must stay at
+        // the parent's content top (y=0), unaffected by the float.
+        $box = $this->buildTree(
+            '<html><body><section>'
+                . '<div class="flt" style="float: left; width: 40px; height: 40px; margin-top: 20px;"></div>'
+                . '<div class="flow" style="height: 30px;"></div>'
+                . '</section></body></html>',
+            'html, body, section, div { display: block; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        // The float's margin is not absorbed into the parent.
+        self::assertSame(0.0, $section->geometry->marginTop, 'float margin not collapsed into parent');
+        self::assertSame(0.0, $section->geometry->y, 'parent stays at document top');
+        // The following in-flow block sits at the parent content top,
+        // NOT shifted up by the float's 20px margin-top.
+        $flow = $this->find($box, 'div.flow');
+        self::assertNotNull($flow);
+        self::assertSame(0.0, $flow->geometry->y, 'in-flow sibling unaffected by float margin');
+        // The float itself is offset down by its own margin-top.
+        $flt = $this->find($box, 'div.flt');
+        self::assertNotNull($flt);
+        self::assertSame(20.0, $flt->geometry->y, 'float positioned below its own margin-top');
+    }
+
     public function testGridUnknownPlacementKeywordFallsBackToAuto(): void
     {
         // Negative: a non-numeric placement keyword that isn't `auto`

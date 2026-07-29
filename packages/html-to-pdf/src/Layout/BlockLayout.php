@@ -1227,6 +1227,7 @@ final class BlockLayout
             $first = $box->children[0];
             if ($first instanceof BlockBox
                 && !$this->isOutOfFlow($first)
+                && $this->floatSide($first) === null
                 && $first->geometry->marginTop > 0.0
             ) {
                 $childTopMargin = $first->geometry->marginTop;
@@ -1450,6 +1451,7 @@ final class BlockLayout
             $last = $box->children[count($box->children) - 1];
             if ($last instanceof BlockBox
                 && !$this->isOutOfFlow($last)
+                && $this->floatSide($last) === null
                 && $last->geometry->marginBottom > 0.0
             ) {
                 $childBottomMargin = $last->geometry->marginBottom;
