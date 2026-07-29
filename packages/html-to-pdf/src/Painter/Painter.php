@@ -839,12 +839,27 @@ final class Painter
     }
 
     /**
-     * Paint order for a box's children. Grid items with a `z-index` other than
-     * `auto` paint in z-index order (CSS Grid 1 §4.4), ties broken by document
-     * order. For every other container the raw document order is returned
-     * unchanged. (Flex items also z-order per Flexbox 1 §5.4, but negative
-     * z-index on flex containers themselves needs stacking-context handling
-     * this simple child-sort lacks — deferred.)
+     * Paint order for a box's children, following the CSS 2.1 §9.9.1 /
+     * Appendix E stacking order for the common flat case:
+     *
+     *   - Positioned children (`position` ≠ `static`) with a negative
+     *     `z-index` paint first (most-negative first) — behind the
+     *     box's non-positioned in-flow descendants.
+     *   - Everything with `z-index: auto` / `0` (positioned or not) keeps
+     *     document order.
+     *   - Positioned children with a positive `z-index` paint last.
+     *
+     * Grid / flex items also take `z-index` even when not positioned
+     * (CSS Grid 1 §4.4, Flexbox 1 §5.4), so their children are bucketed
+     * by z-index regardless of `position`.
+     *
+     * The sort is stable (document-order tiebreak) and is skipped
+     * entirely — returning the children array untouched — whenever no
+     * child carries a non-zero effective z-index, so the overwhelming
+     * majority of boxes emit byte-identical paint output. This does not
+     * model nested stacking contexts (a positive-z grandchild of a
+     * negative-z child), which needs a full context tree; the flat
+     * reorder covers the ubiquitous "z-index: -1 backdrop" pattern.
      *
      * @return list<Box>
      */
@@ -855,20 +870,48 @@ final class Painter
             return $children;
         }
         $display = $box->style->get('display');
-        $isGrid = $display instanceof Keyword
-            && str_contains(strtolower($display->name), 'grid');
-        if (!$isGrid) {
-            return $children;
-        }
+        $isGridOrFlex = $display instanceof Keyword
+            && (str_contains(strtolower($display->name), 'grid')
+                || str_contains(strtolower($display->name), 'flex'));
         $indexed = [];
+        $anyNonZero = false;
         foreach ($children as $i => $child) {
-            $indexed[] = [$i, $this->zIndexOf($child), $child];
+            // `z-index` takes effect on positioned boxes and on grid/flex
+            // items; for any other child it is ignored (layer 0) so the
+            // child stays wherever document order put it.
+            $z = ($isGridOrFlex || $this->isPositioned($child))
+                ? $this->zIndexOf($child)
+                : 0;
+            if ($z !== 0) {
+                $anyNonZero = true;
+            }
+            $indexed[] = [$i, $z, $child];
+        }
+        if (!$anyNonZero) {
+            return $children;
         }
         usort(
             $indexed,
             static fn(array $a, array $b): int => ($a[1] <=> $b[1]) ?: ($a[0] <=> $b[0]),
         );
         return array_map(static fn(array $e): Box => $e[2], $indexed);
+    }
+
+    /**
+     * Whether the box is CSS-positioned (`relative` / `absolute` /
+     * `fixed` / `sticky`) — the precondition for `z-index` to take
+     * effect outside grid / flex layout (CSS 2.1 §9.9.1).
+     */
+    private function isPositioned(Box $box): bool
+    {
+        $p = $box->style->get('position');
+        if (!$p instanceof Keyword) {
+            return false;
+        }
+        return match (strtolower($p->name)) {
+            'relative', 'absolute', 'fixed', 'sticky' => true,
+            default => false,
+        };
     }
 
     /** Integer `z-index`, or 0 for `auto` / missing / non-integer. */

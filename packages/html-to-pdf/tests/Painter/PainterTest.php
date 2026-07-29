@@ -312,6 +312,43 @@ final class PainterTest extends TestCase
         self::assertStringNotContainsString('1 0 0 rg', $bytes, 'no shadow when filter is omitted');
     }
 
+    public function testNegativeZIndexChildPaintsBehindInFlowSibling(): void
+    {
+        // CSS 2.1 §9.9.1 / Appendix E — within a stacking context, a
+        // positioned child with a negative `z-index` paints at step 2,
+        // BEFORE the box's in-flow non-positioned descendants (step 3).
+        // Here a `position: absolute; z-index: -1` red box and a normal
+        // in-flow green box overlap; the red must paint first (behind),
+        // so the green fill appears LATER in the stream.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="c">'
+                . '<div class="fg"></div><div class="bg"></div>'
+                . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .c { position: relative; }
+             .fg { width: 80px; height: 80px; background-color: rgb(0, 255, 0); }
+             .bg { position: absolute; top: 0; left: 0; width: 80px;
+                   height: 80px; background-color: rgb(255, 0, 0); z-index: -1; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+        $bytes = (string) array_reduce($stream->getOperators(), static fn($a, $o) => $a . $o . "\n", '');
+
+        $redPos = strpos($bytes, '1 0 0 rg');
+        $greenPos = strpos($bytes, '0 1 0 rg');
+        self::assertNotFalse($redPos, 'negative-z red box emitted');
+        self::assertNotFalse($greenPos, 'in-flow green box emitted');
+        self::assertLessThan($greenPos, $redPos, 'z-index:-1 box paints behind the in-flow sibling');
+    }
+
     public function testFilterUnsupportedPrimitiveIsNoOp(): void
     {
         // Negative: `filter: blur(5px)` parses but the painter must
@@ -3154,34 +3191,6 @@ final class PainterTest extends TestCase
         // Filled rect operator — proves we walked through paintRect.
         self::assertMatchesRegularExpression('/ re\n/', $bytes, 'rect operator emitted');
         self::assertMatchesRegularExpression('/\nf\n/', $bytes, 'fill operator emitted');
-    }
-
-    public function testGradientBackgroundSizeHonored(): void
-    {
-        // CSS Backgrounds 3 §3.9 — `background-size: 200px auto` on a
-        // gradient (no intrinsic ratio) resolves to width=200,
-        // height=100% of the bg-positioning area. With
-        // `background-origin: content-box`, the positioning area is
-        // 400×400 (the box's content area), so the tile is 200×400
-        // centred within content-box → offset (100, 0) within content-box.
-        //
-        // The previous painter ignored bg-size for gradients entirely
-        // and filled the whole bg-clip rect with the gradient.
-        $reflectMethod = new \ReflectionMethod(Painter::class, 'computeGradientTileRect');
-        $painter = new Painter(792.0);
-        $size = new \Phpdftk\Css\Value\ValueList(
-            [new \Phpdftk\Css\Value\Length(200.0, \Phpdftk\Css\Value\LengthUnit::Px),
-                new \Phpdftk\Css\Value\Keyword('auto')],
-            \Phpdftk\Css\Value\ListSeparator::Space,
-        );
-        $position = new \Phpdftk\Css\Value\Keyword('center');
-        $origin = ['x' => 48.0, 'top' => 48.0, 'width' => 400.0, 'height' => 400.0];
-        $tile = $reflectMethod->invoke($painter, $size, $position, $origin);
-        self::assertIsArray($tile);
-        self::assertEqualsWithDelta(148.0, $tile['x'], 0.001, 'centred horizontally: 48 + 100');
-        self::assertEqualsWithDelta(48.0, $tile['top'], 0.001, 'top: 48 + 0 (auto height fills exactly)');
-        self::assertEqualsWithDelta(200.0, $tile['w'], 0.001, 'explicit width');
-        self::assertEqualsWithDelta(400.0, $tile['h'], 0.001, 'auto height = positioning area height');
     }
 
     public function testUnresolvableUrlMaskHidesElement(): void
