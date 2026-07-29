@@ -1048,6 +1048,35 @@ final class RendererTest extends TestCase
         self::assertFalse($result->hasErrors());
     }
 
+    public function testBorderImageRepeatSpacePaintsSlicedEdges(): void
+    {
+        // CSS Backgrounds 3 §6.2 — `border-image-repeat: space` tiles each
+        // edge slice with even gaps around the tiles. The 9-slice paints the
+        // image several times (4 corners + the tiled edges); render the whole
+        // thing through the pipeline to a real PDF.
+        $pngBase64 = base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $writer = new PdfWriter(compressStreams: false);
+        (new Renderer())->renderInto(
+            $writer,
+            sprintf(
+                '<html><body><div style="width:100px;height:100px;border:20px solid;'
+                . 'border-image-source:url(\'data:image/png;base64,%s\');'
+                . 'border-image-slice:1;border-image-repeat:space"></div></body></html>',
+                $pngBase64,
+            ),
+        );
+        $bytes = $writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        self::assertStringContainsString('%%EOF', $bytes);
+        // The 9-slice draws the source image at least once per corner.
+        self::assertGreaterThanOrEqual(4, substr_count($bytes, ' Do'), 'border-image slices drawn');
+    }
+
     public function testBackgroundOriginBorderBoxAnchorsAtBorderEdge(): void
     {
         // `border-box` origin anchors at the outermost edge — image

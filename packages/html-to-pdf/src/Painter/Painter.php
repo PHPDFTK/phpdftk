@@ -5909,7 +5909,7 @@ final class Painter
             return false;
         }
 
-        $repeatMode = $this->parseBorderImageRepeat($box->style->get('border-image-repeat'));
+        [$repeatH, $repeatV] = $this->parseBorderImageRepeatModes($box->style->get('border-image-repeat'));
 
         // Destination border area: the box's border-box rect.
         $geo = $box->geometry;
@@ -5957,7 +5957,7 @@ final class Painter
                 $by,
                 $midDstW,
                 $bt,
-                $repeatMode,
+                $repeatH,
                 horizontal: true,
             );
         }
@@ -5975,7 +5975,7 @@ final class Painter
                 $by + $bh - $bb,
                 $midDstW,
                 $bb,
-                $repeatMode,
+                $repeatH,
                 horizontal: true,
             );
         }
@@ -5993,7 +5993,7 @@ final class Painter
                 $by + $bt,
                 $bl,
                 $midDstH,
-                $repeatMode,
+                $repeatV,
                 horizontal: false,
             );
         }
@@ -6011,7 +6011,7 @@ final class Painter
                 $by + $bt,
                 $br,
                 $midDstH,
-                $repeatMode,
+                $repeatV,
                 horizontal: false,
             );
         }
@@ -6086,37 +6086,55 @@ final class Painter
             $this->emitImageSlice($stream, $imageName, $srcW, $srcH, $sx, $sy, $sw, $sh, $dx, $dy, $dw, $dh);
             return;
         }
-        // Tile dim along the variable axis; the other dim is fixed
-        // (border thickness).
+        // Natural tile length along the variable axis (the source edge
+        // slice scaled to the border thickness); the other dim is fixed.
         $tileLen = $horizontal ? $dh * $sw / $sh : $dw * $sh / $sw;
         $axisDest = $horizontal ? $dw : $dh;
         if ($tileLen <= 0.0 || $axisDest <= 0.0) {
             return;
         }
+        // Per CSS Backgrounds 3 §6.2, compute the tile start offsets along
+        // the axis for each repeat mode:
+        //   round  — rescale so a whole number fits, butted, no gaps.
+        //   space  — as many whole tiles as fit, leftover distributed as
+        //            equal gaps BETWEEN and AROUND the tiles ((n+1) gaps),
+        //            so a single tile is centred; no whole tile → nothing.
+        //   repeat — natural size, the tiling centred and partial end
+        //            tiles clipped.
+        $offsets = [];
         if ($repeatMode === 'round') {
             $n = max(1, (int) round($axisDest / $tileLen));
             $tileLen = $axisDest / $n;
+            for ($i = 0; $i < $n; $i++) {
+                $offsets[] = $i * $tileLen;
+            }
+        } elseif ($repeatMode === 'space') {
+            $n = (int) floor($axisDest / $tileLen + 1e-6);
+            if ($n < 1) {
+                return;
+            }
+            $gap = ($axisDest - $n * $tileLen) / ($n + 1);
+            for ($i = 0; $i < $n; $i++) {
+                $offsets[] = ($i + 1) * $gap + $i * $tileLen;
+            }
+        } else {
+            $remainder = fmod($axisDest, $tileLen);
+            $start = $remainder > 1e-6 ? -($tileLen - $remainder) / 2.0 : 0.0;
+            for ($pos = $start; $pos < $axisDest - 1e-6 && count($offsets) < 4096; $pos += $tileLen) {
+                $offsets[] = $pos;
+            }
         }
-        // Iterate tiles. Clip to the destination edge so partial
-        // tiles get cropped cleanly.
+        // Clip to the destination edge so partial / spaced tiles crop cleanly.
         $pdfDy = $this->pageHeight - $dy - $dh;
         $stream->saveGraphicsState();
         $stream->rectangle($dx, $pdfDy, $dw, $dh);
         $stream->clip();
         $stream->endPath();
-        $maxTiles = 4096;
-        $count = 0;
-        if ($horizontal) {
-            $cursor = 0.0;
-            while ($cursor < $dw && $count++ < $maxTiles) {
-                $this->emitImageSlice($stream, $imageName, $srcW, $srcH, $sx, $sy, $sw, $sh, $dx + $cursor, $dy, $tileLen, $dh);
-                $cursor += $tileLen;
-            }
-        } else {
-            $cursor = 0.0;
-            while ($cursor < $dh && $count++ < $maxTiles) {
-                $this->emitImageSlice($stream, $imageName, $srcW, $srcH, $sx, $sy, $sw, $sh, $dx, $dy + $cursor, $dw, $tileLen);
-                $cursor += $tileLen;
+        foreach ($offsets as $off) {
+            if ($horizontal) {
+                $this->emitImageSlice($stream, $imageName, $srcW, $srcH, $sx, $sy, $sw, $sh, $dx + $off, $dy, $tileLen, $dh);
+            } else {
+                $this->emitImageSlice($stream, $imageName, $srcW, $srcH, $sx, $sy, $sw, $sh, $dx, $dy + $off, $dw, $tileLen);
             }
         }
         $stream->restoreGraphicsState();
@@ -6216,22 +6234,32 @@ final class Painter
         return [$sides['top'], $sides['right'], $sides['bottom'], $sides['left']];
     }
 
-    private function parseBorderImageRepeat(?\Phpdftk\Css\Value\Value $value): string
+    /**
+     * `border-image-repeat` is one or two keywords: the first applies to the
+     * horizontal edges (top / bottom), the second to the vertical edges
+     * (left / right); a single value applies to both. Returns
+     * `[horizontal, vertical]`. CSS Backgrounds 3 §6.2.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function parseBorderImageRepeatModes(?\Phpdftk\Css\Value\Value $value): array
     {
-        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
-            $kw = strtolower($value->name);
-            return match ($kw) {
-                'repeat' => 'repeat',
-                'round' => 'round',
-                'space' => 'repeat', // approximate — true space distribution is a follow-up
-                'stretch' => 'stretch',
-                default => 'stretch',
-            };
-        }
+        $map = static fn(string $kw): string => match ($kw) {
+            'repeat' => 'repeat',
+            'round' => 'round',
+            'space' => 'space',
+            default => 'stretch',
+        };
+        $kw = static fn(?\Phpdftk\Css\Value\Value $v): ?string => $v instanceof \Phpdftk\Css\Value\Keyword
+            ? $map(strtolower($v->name))
+            : null;
         if ($value instanceof \Phpdftk\Css\Value\ValueList && $value->values !== []) {
-            return $this->parseBorderImageRepeat($value->values[0]);
+            $h = $kw($value->values[0]) ?? 'stretch';
+            $v = $kw($value->values[1] ?? null) ?? $h;
+            return [$h, $v];
         }
-        return 'stretch';
+        $single = $kw($value) ?? 'stretch';
+        return [$single, $single];
     }
 
     private function svgRenderer(): \Phpdftk\SvgToPdf\SvgRenderer
