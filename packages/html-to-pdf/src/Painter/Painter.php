@@ -5911,7 +5911,9 @@ final class Painter
 
         [$repeatH, $repeatV] = $this->parseBorderImageRepeatModes($box->style->get('border-image-repeat'));
 
-        // Destination border area: the box's border-box rect.
+        // Destination border area: the box's border-box rect, grown by
+        // `border-image-outset` (CSS Backgrounds 3 §6.6 — extends the area
+        // outward past the border edge, into the margin).
         $geo = $box->geometry;
         $bx = $geo->x - $geo->paddingLeft - $geo->borderLeft;
         $by = $geo->y - $geo->paddingTop - $geo->borderTop;
@@ -5919,10 +5921,29 @@ final class Painter
             + $geo->borderLeft + $geo->borderRight;
         $bh = $geo->paddingTop + $geo->height + $geo->paddingBottom
             + $geo->borderTop + $geo->borderBottom;
-        $bt = $geo->borderTop;
-        $br = $geo->borderRight;
-        $bb = $geo->borderBottom;
-        $bl = $geo->borderLeft;
+        [$ot, $or, $ob, $ol] = $this->resolveBorderImageOutset(
+            $box->style->get('border-image-outset'),
+            $geo->borderTop,
+            $geo->borderRight,
+            $geo->borderBottom,
+            $geo->borderLeft,
+        );
+        $bx -= $ol;
+        $by -= $ot;
+        $bw += $ol + $or;
+        $bh += $ot + $ob;
+        // `border-image-width` sizes the destination border slices; it
+        // defaults to the border-widths but may be a multiple / length /
+        // percentage that extends inward past the border into the padding.
+        [$bt, $br, $bb, $bl] = $this->resolveBorderImageWidth(
+            $box->style->get('border-image-width'),
+            $geo->borderTop,
+            $geo->borderRight,
+            $geo->borderBottom,
+            $geo->borderLeft,
+            $bw,
+            $bh,
+        );
         if ($bw <= 0.0 || $bh <= 0.0) {
             return false;
         }
@@ -6232,6 +6253,128 @@ final class Painter
             }
         }
         return [$sides['top'], $sides['right'], $sides['bottom'], $sides['left']];
+    }
+
+    /**
+     * Resolve `border-image-width` to the per-side used widths `[top, right,
+     * bottom, left]` of the destination border-image area. A `<number>` is a
+     * multiple of the corresponding computed border-width; `<length>` is
+     * absolute; `<percentage>` is relative to the border-image area (its
+     * height for the top/bottom edges, its width for left/right); `auto`
+     * falls back to the border-width. Opposite pairs that overflow the area
+     * are reduced together (CSS Backgrounds 3 §6.5). Unset → the border
+     * widths (the initial `1`).
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    private function resolveBorderImageWidth(
+        ?\Phpdftk\Css\Value\Value $value,
+        float $borderTop,
+        float $borderRight,
+        float $borderBottom,
+        float $borderLeft,
+        float $areaWidth,
+        float $areaHeight,
+    ): array {
+        $borders = [$borderTop, $borderRight, $borderBottom, $borderLeft];
+        // Top/bottom offsets are vertical → resolve `%` against the area
+        // height; left/right are horizontal → against the width.
+        $areaForEdge = [$areaHeight, $areaWidth, $areaHeight, $areaWidth];
+        $components = [];
+        if ($value instanceof \Phpdftk\Css\Value\ValueList
+            && $value->separator === \Phpdftk\Css\Value\ListSeparator::Space
+        ) {
+            $components = $value->values;
+        } elseif ($value !== null) {
+            $components = [$value];
+        }
+        // TRBL fill-in.
+        $sides = [
+            $components[0] ?? null,
+            $components[1] ?? ($components[0] ?? null),
+            $components[2] ?? ($components[0] ?? null),
+            $components[3] ?? ($components[1] ?? ($components[0] ?? null)),
+        ];
+        $resolveOne = static function (?\Phpdftk\Css\Value\Value $v, int $edge) use ($borders, $areaForEdge): float {
+            if ($v instanceof \Phpdftk\Css\Value\Keyword && strtolower($v->name) === 'auto') {
+                return $borders[$edge];
+            }
+            if ($v instanceof \Phpdftk\Css\Value\Number || $v instanceof \Phpdftk\Css\Value\Integer) {
+                return max(0.0, (float) $v->value) * $borders[$edge];
+            }
+            if ($v instanceof \Phpdftk\Css\Value\Length) {
+                return max(0.0, $v->value);
+            }
+            if ($v instanceof \Phpdftk\Css\Value\Percentage) {
+                return max(0.0, $areaForEdge[$edge] * $v->value / 100.0);
+            }
+            return $borders[$edge];
+        };
+        $wt = $resolveOne($sides[0], 0);
+        $wr = $resolveOne($sides[1], 1);
+        $wb = $resolveOne($sides[2], 2);
+        $wl = $resolveOne($sides[3], 3);
+        $f = 1.0;
+        if ($wt + $wb > 0.0) {
+            $f = min($f, $areaHeight / ($wt + $wb));
+        }
+        if ($wl + $wr > 0.0) {
+            $f = min($f, $areaWidth / ($wl + $wr));
+        }
+        if ($f < 1.0) {
+            $wt *= $f;
+            $wr *= $f;
+            $wb *= $f;
+            $wl *= $f;
+        }
+        return [$wt, $wr, $wb, $wl];
+    }
+
+    /**
+     * Resolve `border-image-outset` to the per-side outward extension
+     * `[top, right, bottom, left]`. A `<number>` is a multiple of the
+     * corresponding computed border-width; `<length>` is absolute.
+     * Unset → 0. CSS Backgrounds 3 §6.6.
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    private function resolveBorderImageOutset(
+        ?\Phpdftk\Css\Value\Value $value,
+        float $borderTop,
+        float $borderRight,
+        float $borderBottom,
+        float $borderLeft,
+    ): array {
+        $borders = [$borderTop, $borderRight, $borderBottom, $borderLeft];
+        $components = [];
+        if ($value instanceof \Phpdftk\Css\Value\ValueList
+            && $value->separator === \Phpdftk\Css\Value\ListSeparator::Space
+        ) {
+            $components = $value->values;
+        } elseif ($value !== null) {
+            $components = [$value];
+        }
+        $sides = [
+            $components[0] ?? null,
+            $components[1] ?? ($components[0] ?? null),
+            $components[2] ?? ($components[0] ?? null),
+            $components[3] ?? ($components[1] ?? ($components[0] ?? null)),
+        ];
+        $resolveOne = static function (?\Phpdftk\Css\Value\Value $v, int $edge) use ($borders): float {
+            if ($v instanceof \Phpdftk\Css\Value\Number || $v instanceof \Phpdftk\Css\Value\Integer) {
+                return max(0.0, (float) $v->value) * $borders[$edge];
+            }
+            if ($v instanceof \Phpdftk\Css\Value\Length) {
+                return max(0.0, $v->value);
+            }
+            return 0.0;
+        };
+        return [
+            $resolveOne($sides[0], 0),
+            $resolveOne($sides[1], 1),
+            $resolveOne($sides[2], 2),
+            $resolveOne($sides[3], 3),
+        ];
     }
 
     /**

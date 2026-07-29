@@ -1077,6 +1077,46 @@ final class RendererTest extends TestCase
         self::assertGreaterThanOrEqual(4, substr_count($bytes, ' Do'), 'border-image slices drawn');
     }
 
+    public function testBorderImageWidthExtendsSlicesInward(): void
+    {
+        // CSS Backgrounds 3 §6.5 — a `border-image-width` larger than the
+        // border-width sizes the destination slices past the border into the
+        // padding. With a 20px border and width 4 (= 4 × 20 = 80px), the
+        // top-left corner is drawn 80px wide, not 20px, so its `cm` scale is
+        // larger than the plain-border case.
+        $pngBase64 = base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $render = function (string $widthDecl) use ($pngBase64): string {
+            $writer = new PdfWriter(compressStreams: false);
+            (new Renderer())->renderInto(
+                $writer,
+                sprintf(
+                    '<html><body><div style="width:100px;height:100px;border:20px solid;'
+                    . 'border-image-source:url(\'data:image/png;base64,%s\');'
+                    . 'border-image-slice:1;%s"></div></body></html>',
+                    $pngBase64,
+                    $widthDecl,
+                ),
+            );
+            return $writer->toBytes();
+        };
+        // Extract the top-left corner draw's X scale (`<sx> 0 0 <sy> ... cm`).
+        $cornerScale = static function (string $bytes): ?float {
+            return preg_match('~([\d.]+) 0 0 [\d.]+ [\d.]+ [\d.]+ cm\s+/Im\d+ Do~', $bytes, $m) === 1
+                ? (float) $m[1]
+                : null;
+        };
+        $plain = $cornerScale($render(''));
+        $wide = $cornerScale($render('border-image-width:4;'));
+        self::assertNotNull($plain);
+        self::assertNotNull($wide);
+        self::assertGreaterThan($plain, $wide, 'border-image-width:4 widens the corner slice');
+    }
+
     public function testBackgroundOriginBorderBoxAnchorsAtBorderEdge(): void
     {
         // `border-box` origin anchors at the outermost edge — image

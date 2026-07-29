@@ -1493,25 +1493,41 @@ final class ShorthandExpander
                     : [$g],
                 $value->values,
             );
-            // Re-scan first chunk for source / repeats so they don't
-            // pollute the slice list.
-            $reScanned = [];
-            foreach ($slashChunks[0] ?? [] as $c) {
-                if ($source === null && $this->looksLikeMaskImage($c)) {
-                    $source = $c;
-                    continue;
+            // Re-scan EVERY chunk for the source and repeat keywords so
+            // they don't pollute the slice / width / outset lists. The
+            // repeat keywords may trail the LAST slash group (e.g.
+            // `… 30 / 4 / 2 round stretch`, where `round stretch` sits in
+            // the outset chunk), so scanning chunk[0] alone would drop them.
+            $source = null;
+            $repeats = [];
+            foreach ($slashChunks as $idx => $chunk) {
+                $reScanned = [];
+                foreach ($chunk as $c) {
+                    if ($source === null && $this->looksLikeMaskImage($c)) {
+                        $source = $c;
+                        continue;
+                    }
+                    if ($c instanceof Keyword
+                        && in_array(strtolower($c->name), $repeatKw, true)
+                    ) {
+                        $repeats[] = $c;
+                        continue;
+                    }
+                    $reScanned[] = $c;
                 }
-                if ($c instanceof Keyword
-                    && in_array(strtolower($c->name), $repeatKw, true)
-                ) {
-                    $repeats[] = $c;
-                    continue;
-                }
-                $reScanned[] = $c;
+                $slashChunks[$idx] = $reScanned;
             }
-            $slashChunks[0] = $reScanned;
         }
-        $out = [];
+        // A shorthand sets ALL its longhands: any omitted sub-property is
+        // reset to its initial value, not left at a previous declaration
+        // (CSS Cascade 4 §2.1). Seed the initials, then override.
+        $out = [
+            'border-image-source' => new Keyword('none'),
+            'border-image-slice' => new Percentage(100.0),
+            'border-image-width' => new Number(1.0),
+            'border-image-outset' => new Number(0.0),
+            'border-image-repeat' => new Keyword('stretch'),
+        ];
         if ($source !== null) {
             $out['border-image-source'] = $source;
         }

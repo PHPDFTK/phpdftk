@@ -1075,4 +1075,32 @@ final class ShorthandExpanderTest extends TestCase
         self::assertInstanceOf(Keyword::class, $out['column-count']);
         self::assertSame('auto', $out['column-count']->name);
     }
+
+    public function testBorderImageExpandsSliceWidthOutsetAndTrailingRepeat(): void
+    {
+        // The repeat keywords trail the last slash group; they must be
+        // pulled out of the outset chunk, not swallowed into it.
+        $out = $this->expander->expand(
+            'border-image',
+            $this->value('url("x.png") 30 / 4 / 2 round stretch'),
+        );
+        self::assertArrayHasKey('border-image-source', $out);
+        self::assertSame('30', $out['border-image-slice']->toCss());
+        self::assertSame('4', $out['border-image-width']->toCss());
+        self::assertSame('2', $out['border-image-outset']->toCss());
+        self::assertSame('round stretch', $out['border-image-repeat']->toCss());
+    }
+
+    public function testBorderImageResetsOmittedSubPropertiesToInitial(): void
+    {
+        // A shorthand sets ALL its longhands — omitted ones reset to their
+        // initial value (CSS Cascade 4 §2.1), not a prior declaration.
+        $out = $this->expander->expand('border-image', $this->value('url("x.png") 30'));
+        self::assertInstanceOf(Number::class, $out['border-image-width']);
+        self::assertSame(1.0, $out['border-image-width']->value);
+        self::assertInstanceOf(Number::class, $out['border-image-outset']);
+        self::assertSame(0.0, $out['border-image-outset']->value);
+        self::assertInstanceOf(Keyword::class, $out['border-image-repeat']);
+        self::assertSame('stretch', $out['border-image-repeat']->name);
+    }
 }
