@@ -783,6 +783,17 @@ final class Painter
     {
         foreach ($root->children as $child) {
             if ($child->element !== null && strtolower($child->element->localName) === 'body') {
+                // CSS Backgrounds 3 §3.11.2 — the special body→canvas
+                // background propagation applies to the body's PRINCIPAL
+                // box. A `display: contents` body generates no principal
+                // box (only its children are hoisted), so it cannot
+                // propagate; the hoisted text/child boxes still carry the
+                // body element + its cascaded background, so match them
+                // here would wrongly flood the canvas. Skip it.
+                $disp = $child->style->get('display');
+                if ($disp instanceof Keyword && strtolower($disp->name) === 'contents') {
+                    continue;
+                }
                 return $child;
             }
         }
@@ -874,7 +885,7 @@ final class Painter
             && (str_contains(strtolower($display->name), 'grid')
                 || str_contains(strtolower($display->name), 'flex'));
         $indexed = [];
-        $anyNonZero = false;
+        $anyReorder = false;
         foreach ($children as $i => $child) {
             // `z-index` takes effect on positioned boxes and on grid/flex
             // items; for any other child it is ignored (layer 0) so the
@@ -882,19 +893,28 @@ final class Painter
             $z = ($isGridOrFlex || $this->isPositioned($child))
                 ? $this->zIndexOf($child)
                 : 0;
-            if ($z !== 0) {
-                $anyNonZero = true;
+            // CSS Grid 1 §4.2 / Flexbox 1 §5.4 — grid / flex items paint in
+            // "order-modified document order" within each z-index bucket:
+            // the `order` property reorders paint (a higher `order` paints
+            // later / on top), not just layout. It only applies to grid /
+            // flex items; its initial value is 0, so a non-zero `order`
+            // triggers the reorder just as a non-zero `z-index` does.
+            $order = $isGridOrFlex ? $this->orderOf($child) : 0;
+            if ($z !== 0 || $order !== 0) {
+                $anyReorder = true;
             }
-            $indexed[] = [$i, $z, $child];
+            $indexed[] = [$i, $z, $order, $child];
         }
-        if (!$anyNonZero) {
+        if (!$anyReorder) {
             return $children;
         }
         usort(
             $indexed,
-            static fn(array $a, array $b): int => ($a[1] <=> $b[1]) ?: ($a[0] <=> $b[0]),
+            static fn(array $a, array $b): int => ($a[1] <=> $b[1])
+                ?: ($a[2] <=> $b[2])
+                ?: ($a[0] <=> $b[0]),
         );
-        return array_map(static fn(array $e): Box => $e[2], $indexed);
+        return array_map(static fn(array $e): Box => $e[3], $indexed);
     }
 
     /**
@@ -912,6 +932,19 @@ final class Painter
             'relative', 'absolute', 'fixed', 'sticky' => true,
             default => false,
         };
+    }
+
+    /** Integer `order` (grid / flex item), or 0 for missing / non-numeric. */
+    private function orderOf(Box $box): int
+    {
+        $o = $box->style->get('order');
+        if ($o instanceof \Phpdftk\Css\Value\Integer) {
+            return $o->value;
+        }
+        if ($o instanceof \Phpdftk\Css\Value\Number) {
+            return (int) $o->value;
+        }
+        return 0;
     }
 
     /** Integer `z-index`, or 0 for `auto` / missing / non-integer. */

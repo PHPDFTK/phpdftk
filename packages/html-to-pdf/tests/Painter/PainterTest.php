@@ -349,6 +349,44 @@ final class PainterTest extends TestCase
         self::assertLessThan($greenPos, $redPos, 'z-index:-1 box paints behind the in-flow sibling');
     }
 
+    public function testGridItemsPaintInOrderModifiedOrder(): void
+    {
+        // CSS Grid 1 §4.2 — grid items paint in "order-modified document
+        // order": the `order` property reorders PAINT, not just layout.
+        // Two items stacked in the same cell: the red one is DOM-first but
+        // has the higher `order`, so it must paint LAST (on top) — its red
+        // fill appears AFTER the green in the stream, the reverse of raw
+        // document order.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="g">'
+                . '<div class="r"></div><div class="gr"></div>'
+                . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .g { display: flex; width: 200px; }
+             .r { order: 2; width: 80px; height: 80px;
+                  background-color: rgb(255, 0, 0); }
+             .gr { order: 1; width: 80px; height: 80px;
+                   background-color: rgb(0, 255, 0); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+        $bytes = (string) array_reduce($stream->getOperators(), static fn($a, $o) => $a . $o . "\n", '');
+
+        $redPos = strpos($bytes, '1 0 0 rg');
+        $greenPos = strpos($bytes, '0 1 0 rg');
+        self::assertNotFalse($redPos, 'order:2 red grid item emitted');
+        self::assertNotFalse($greenPos, 'order:1 green grid item emitted');
+        self::assertLessThan($redPos, $greenPos, 'higher-order item paints later (on top) despite being DOM-first');
+    }
+
     public function testFilterUnsupportedPrimitiveIsNoOp(): void
     {
         // Negative: `filter: blur(5px)` parses but the painter must
