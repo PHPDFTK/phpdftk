@@ -83,6 +83,7 @@ final class CrossBrowserRunner
      *   engineMissing: list<string>,
      *   pairs: array<string, array<string, float>>,
      *   ours: array<string, float>,
+     *   oursAll: array<string, float>,
      *   renderMicros: float,
      * }
      */
@@ -132,6 +133,7 @@ final class CrossBrowserRunner
             'engineMissing' => $engineMissing,
             'pairs' => $score['pairs'],
             'ours' => $score['ours'],
+            'oursAll' => $score['oursAll'],
             'renderMicros' => $renderMicros,
         ];
     }

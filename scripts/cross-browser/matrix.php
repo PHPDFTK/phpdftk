@@ -92,7 +92,14 @@ function engineCell(array $r, string $engine): array
     if (($r['verdict'] ?? null) === 'harness_error') {
         return ['err', null, false];
     }
-    $ours = is_array($r['ours'] ?? null) ? $r['ours'] : [];
+    // Prefer `oursAll` (our AE vs EVERY engine that rendered, consensus or
+    // not) so an engine dropped from consensus still shows its divergence
+    // rather than a misleading "unavailable". Fall back to `ours`
+    // (consensus-only) for dumps produced before oursAll existed.
+    $ours = is_array($r['oursAll'] ?? null) ? $r['oursAll'] : [];
+    if ($ours === []) {
+        $ours = is_array($r['ours'] ?? null) ? $r['ours'] : [];
+    }
     if (!array_key_exists($engine, $ours) || !is_numeric($ours[$engine])) {
         return ['–', null, false];
     }

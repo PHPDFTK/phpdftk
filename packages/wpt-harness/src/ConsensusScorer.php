@@ -69,12 +69,19 @@ final class ConsensusScorer
      *
      * @param array<string, string> $engines
      *
+     * `oursAll` records our AE against EVERY supplied engine — including
+     * engines dropped from the consensus set — so a per-engine report can
+     * tell "we diverge from this engine" apart from "this engine never
+     * ran". `ours` stays the consensus-only subset the verdict is built
+     * from.
+     *
      * @return array{
      *   verdict: ConsensusVerdict,
      *   reason: string,
      *   consensus: list<string>,
      *   pairs: array<string, array<string, float>>,
      *   ours: array<string, float>,
+     *   oursAll: array<string, float>,
      * }
      */
     public function score(
@@ -85,6 +92,14 @@ final class ConsensusScorer
         $names = array_keys($engines);
         sort($names);
 
+        // Our AE against every engine that rendered, consensus or not —
+        // the per-engine matrix reads this so a disagreeing engine shows
+        // its real divergence rather than a misleading "unavailable".
+        $oursAll = [];
+        foreach ($names as $engine) {
+            $oursAll[$engine] = $this->compareScore($oursPng, $engines[$engine]);
+        }
+
         if (count($names) < 2) {
             return [
                 'verdict' => ConsensusVerdict::InsufficientEngines,
@@ -94,6 +109,7 @@ final class ConsensusScorer
                 'consensus' => [],
                 'pairs' => [],
                 'ours' => [],
+                'oursAll' => $oursAll,
             ];
         }
 
@@ -122,15 +138,17 @@ final class ConsensusScorer
                 'consensus' => $consensus,
                 'pairs' => $pairs,
                 'ours' => [],
+                'oursAll' => $oursAll,
             ];
         }
 
-        // Ours vs each consensus engine.
+        // Ours vs each consensus engine (reuse the per-engine scores
+        // already computed above; the verdict only weighs consensus).
         $ours = [];
         $worst = 0.0;
         $worstEngine = $consensus[0];
         foreach ($consensus as $engine) {
-            $score = $this->compareScore($oursPng, $engines[$engine]);
+            $score = $oursAll[$engine];
             $ours[$engine] = $score;
             if ($score > $worst) {
                 $worst = $score;
@@ -150,6 +168,7 @@ final class ConsensusScorer
                 'consensus' => $consensus,
                 'pairs' => $pairs,
                 'ours' => $ours,
+                'oursAll' => $oursAll,
             ];
         }
 
@@ -165,6 +184,7 @@ final class ConsensusScorer
             'consensus' => $consensus,
             'pairs' => $pairs,
             'ours' => $ours,
+            'oursAll' => $oursAll,
         ];
     }
 

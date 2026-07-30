@@ -572,6 +572,7 @@ switch ($subcommand) {
                 'reason' => $result['reason'],
                 'consensus' => $result['consensus'],
                 'ours' => $result['ours'],
+                'oursAll' => $result['oursAll'],
                 'pairs' => $result['pairs'],
                 'engineMissing' => $result['engineMissing'],
                 'renderMicros' => $result['renderMicros'],
