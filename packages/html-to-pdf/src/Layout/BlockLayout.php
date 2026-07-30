@@ -962,7 +962,13 @@ final class BlockLayout
                 if (!($maxHV instanceof Keyword && strtolower($maxHV->name) === 'none')) {
                     $tMax = $this->transferredInlineSize($maxHV, $transferRatio, $context, $vInset);
                     if ($tMax !== null && $contentWidth > $tMax) {
-                        $contentWidth = $tMax;
+                        // §5.1 — min wins over max: an explicit `min-width`
+                        // re-floors the transferred max, so a max-height
+                        // transferred through the ratio can't shrink the
+                        // used width below the min-width (block-aspect-
+                        // ratio-023: transferred max 40 vs min-width 100 →
+                        // 100).
+                        $contentWidth = max($tMax, $minWidth);
                         $widthAuto = false;
                     }
                 }

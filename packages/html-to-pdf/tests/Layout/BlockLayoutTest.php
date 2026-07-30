@@ -867,6 +867,24 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $a->geometry->width, 0.001, 'ratio-derived width floored up to the 100px child min-content');
     }
 
+    public function testAspectRatioTransferredMaxDoesNotOverrideMinWidth(): void
+    {
+        // CSS Sizing 4 §5.1 — min wins over max: a `max-height` transferred
+        // through the aspect-ratio to bound the inline size must not shrink
+        // the used width below an explicit `min-width`. max-height:40 ×
+        // ratio 1/1 → a transferred max-width of 40px, but min-width:100
+        // wins → the div is 100px wide, not 40px.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="a"><div class="c"></div></div></body></html>',
+            '.a { max-height: 40px; min-width: 100px; aspect-ratio: 1 / 1; }
+             .c { width: 50px; height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $a = $this->find($box, 'div.a');
+        self::assertNotNull($a);
+        self::assertEqualsWithDelta(100.0, $a->geometry->width, 0.001, 'explicit min-width wins over the transferred max-height');
+    }
+
     public function testBorderCollapseHiddenSuppressesJointEntirely(): void
     {
         // Negative: `hidden` on either side of a joint wins — the
