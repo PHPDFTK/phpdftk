@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import mdx from '@astrojs/mdx';
 
 // https://astro.build/config
 export default defineConfig({
@@ -102,6 +103,12 @@ export default defineConfig({
 							],
 						},
 						{
+							label: 'Web Platform Tests',
+							items: [
+								{ label: 'WPT Compliance Gallery', slug: 'standards/wpt-gallery' },
+							],
+						},
+						{
 							label: 'ISO Profiles',
 							items: [
 								{ label: 'Conformance Overview', slug: 'standards/profiles/overview' },
@@ -140,5 +147,8 @@ export default defineConfig({
 				},
 			],
 		}),
+		// MDX must come after Starlight so astro-expressive-code
+		// (registered by Starlight) initialises before it.
+		mdx(),
 	],
 });

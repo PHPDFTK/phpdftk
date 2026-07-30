@@ -1,0 +1,573 @@
+---
+/**
+ * WPT compliance gallery — a filterable grid comparing our render to the
+ * WPT reference per test, with a click-through side-by-side detail view.
+ *
+ * Data comes from a manifest emitted by scripts/build-wpt-gallery.php
+ * (schema v1). The committed copy is a small demo slice; CI overwrites
+ * src/data/wpt-gallery.json (and the images under public/wpt-gallery/)
+ * from the `_wpt-gallery` orphan branch before the Starlight build, so
+ * the deployed site shows the full corpus.
+ *
+ * Everything below the frontmatter is static HTML + one inline script;
+ * filtering and the detail overlay run client-side with zero framework.
+ */
+// Vite resolves this JSON import at build time. The committed file is the
+// demo slice; CI overwrites it from the `_wpt-gallery` orphan branch before
+// the docs build. `?url`-less default import gives us the parsed object.
+import manifestData from '../data/wpt-gallery.json';
+
+/** Base URL under public/ where the gallery PNGs live. */
+const IMG_BASE = '/wpt-gallery/';
+
+interface GalleryTest {
+  testId: string;
+  source: string;
+  assert: string;
+  ours: string | null;
+  oursThumb: string | null;
+  reference: string | null;
+  referenceThumb: string | null;
+  referenceSource: string | null;
+  engines: Record<string, string>;
+  verdict: string;
+  ae: { reference: number | null };
+  flags: string[];
+}
+
+interface Manifest {
+  schema: number;
+  generatedAt: string;
+  filter: string | null;
+  count: number;
+  summary?: Record<string, number>;
+  tests: GalleryTest[];
+}
+
+/**
+ * The imported JSON is typed loosely by Vite; coerce to our schema. A
+ * malformed/empty manifest degrades to the empty-gallery placeholder
+ * rather than failing the docs build.
+ */
+const manifest = manifestData as unknown as Manifest;
+const tests = manifest.tests ?? [];
+
+/** AE band buckets for the filter chips. */
+function aeBand(ae: number | null): string {
+  if (ae === null) return 'none';
+  if (ae === 0) return 'exact';
+  if (ae <= 0.01) return 'near'; // within the WPT reftest pass tolerance
+  if (ae <= 0.05) return 'small';
+  return 'large';
+}
+
+/** Cluster = the first three path segments (e.g. css/css-backgrounds). */
+function cluster(testId: string): string {
+  const parts = testId.split('/');
+  return parts.slice(0, Math.min(2, parts.length)).join('/');
+}
+
+const clusters = [...new Set(tests.map((t) => cluster(t.testId)))].sort();
+const allFlags = [...new Set(tests.flatMap((t) => t.flags ?? []))].sort();
+const summary = manifest.summary ?? {};
+
+/** Upstream WPT source viewer, for linking the raw test HTML. */
+const WPT_UPSTREAM = 'https://github.com/web-platform-tests/wpt/blob/master/';
+---
+
+<div class="wpt-gallery" data-img-base={IMG_BASE}>
+  <div class="wg-toolbar">
+    <input
+      type="search"
+      class="wg-search"
+      placeholder="Filter by test id…"
+      aria-label="Filter tests by id"
+    />
+    <div class="wg-summary">
+      <span class="wg-badge pass">{summary.pass ?? 0} pass</span>
+      <span class="wg-badge fail">{summary.fail ?? 0} fail</span>
+      {(summary.noRef ?? 0) > 0 && <span class="wg-badge noref">{summary.noRef} no-ref</span>}
+      {(summary.renderError ?? 0) > 0 && (
+        <span class="wg-badge error">{summary.renderError} render-error</span>
+      )}
+      <span class="wg-count"></span>
+    </div>
+  </div>
+
+  <div class="wg-filters">
+    <fieldset class="wg-filterset">
+      <legend>Verdict</legend>
+      <label><input type="checkbox" class="wg-verdict" value="pass" checked /> pass</label>
+      <label><input type="checkbox" class="wg-verdict" value="fail" checked /> fail</label>
+      <label><input type="checkbox" class="wg-verdict" value="no-ref" checked /> no-ref</label>
+      <label
+        ><input type="checkbox" class="wg-verdict" value="render-error" checked /> render-error</label
+      >
+      <label><input type="checkbox" class="wg-verdict" value="unknown" checked /> unknown</label>
+    </fieldset>
+
+    <fieldset class="wg-filterset">
+      <legend>AE band</legend>
+      <label><input type="checkbox" class="wg-ae" value="exact" checked /> exact (0)</label>
+      <label><input type="checkbox" class="wg-ae" value="near" checked /> ≤0.01</label>
+      <label><input type="checkbox" class="wg-ae" value="small" checked /> ≤0.05</label>
+      <label><input type="checkbox" class="wg-ae" value="large" checked /> &gt;0.05</label>
+      <label><input type="checkbox" class="wg-ae" value="none" checked /> n/a</label>
+    </fieldset>
+
+    {clusters.length > 1 && (
+      <fieldset class="wg-filterset">
+        <legend>Cluster</legend>
+        <select class="wg-cluster">
+          <option value="">all clusters</option>
+          {clusters.map((c) => <option value={c}>{c}</option>)}
+        </select>
+      </fieldset>
+    )}
+
+    {allFlags.length > 0 && (
+      <fieldset class="wg-filterset">
+        <legend>Flags</legend>
+        {allFlags.map((f) => (
+          <label><input type="checkbox" class="wg-flag" value={f} /> {f}</label>
+        ))}
+        <span class="wg-flag-hint">(checked = require)</span>
+      </fieldset>
+    )}
+  </div>
+
+  {tests.length === 0 ? (
+    <p class="wg-empty">
+      No gallery manifest found. Run
+      <code>php scripts/build-wpt-gallery.php --filter='…'</code> and copy the output into
+      <code>docs/site/src/data/wpt-gallery.json</code> + <code>public/wpt-gallery/</code>, or wait
+      for CI to publish the <code>_wpt-gallery</code> branch.
+    </p>
+  ) : (
+    <div class="wg-grid">
+      {tests.map((t) => (
+        <button
+          type="button"
+          class="wg-cell"
+          data-testid={t.testId}
+          data-verdict={t.verdict}
+          data-cluster={cluster(t.testId)}
+          data-ae={t.ae?.reference ?? ''}
+          data-aeband={aeBand(t.ae?.reference ?? null)}
+          data-flags={(t.flags ?? []).join(',')}
+          data-source={t.source}
+          data-ours={t.ours ?? ''}
+          data-reference={t.reference ?? ''}
+          data-assert={t.assert}
+          data-refsource={t.referenceSource ?? ''}
+        >
+          <span class={`wg-verdict-badge ${t.verdict}`}>{t.verdict}</span>
+          <span class="wg-thumb">
+            {t.oursThumb ? (
+              <img loading="lazy" src={IMG_BASE + t.oursThumb} alt={`our render of ${t.testId}`} />
+            ) : (
+              <span class="wg-missing">render failed</span>
+            )}
+          </span>
+          <span class="wg-id">{t.testId.replace(/^css\//, '')}</span>
+          {t.ae?.reference !== null && t.ae?.reference !== undefined && (
+            <span class="wg-ae-val">AE {t.ae.reference.toFixed(4)}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  )}
+
+  <!-- Detail overlay: side-by-side ours | reference (| engine columns later) -->
+  <div class="wg-detail" hidden>
+    <div class="wg-detail-inner">
+      <div class="wg-detail-head">
+        <code class="wg-detail-id"></code>
+        <button type="button" class="wg-close" aria-label="Close detail">✕</button>
+      </div>
+      <p class="wg-detail-assert"></p>
+      <div class="wg-detail-meta">
+        <span class="wg-detail-verdict"></span>
+        <span class="wg-detail-ae"></span>
+        <a class="wg-detail-srclink" target="_blank" rel="noopener">test source ↗</a>
+      </div>
+      <div class="wg-detail-cols">
+        <figure><figcaption>ours</figcaption><img class="wg-detail-ours" alt="our render" /></figure>
+        <figure>
+          <figcaption>reference</figcaption><img class="wg-detail-ref" alt="reference render" />
+        </figure>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .wpt-gallery {
+    --wg-border: var(--sl-color-gray-5);
+    --wg-bg: var(--sl-color-gray-6);
+    margin-block: 1.5rem;
+  }
+  .wg-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+  .wg-search {
+    flex: 1 1 16rem;
+    min-width: 12rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--wg-border);
+    border-radius: 0.4rem;
+    background: var(--sl-color-black);
+    color: var(--sl-color-white);
+    font: inherit;
+  }
+  .wg-summary {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+  }
+  .wg-badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .wg-badge.pass {
+    background: color-mix(in srgb, #22c55e 25%, transparent);
+    color: #16a34a;
+  }
+  .wg-badge.fail {
+    background: color-mix(in srgb, #ef4444 25%, transparent);
+    color: #dc2626;
+  }
+  .wg-badge.noref,
+  .wg-badge.error {
+    background: color-mix(in srgb, #f59e0b 25%, transparent);
+    color: #d97706;
+  }
+  .wg-count {
+    color: var(--sl-color-gray-3);
+  }
+  .wg-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    margin-bottom: 1rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--wg-border);
+    border-radius: 0.5rem;
+    background: var(--wg-bg);
+    font-size: 0.82rem;
+  }
+  .wg-filterset {
+    border: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.7rem;
+  }
+  .wg-filterset legend {
+    font-weight: 700;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--sl-color-gray-3);
+    padding: 0;
+    margin-right: 0.4rem;
+    float: left;
+  }
+  .wg-filterset label {
+    display: inline-flex;
+    gap: 0.25rem;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .wg-flag-hint {
+    color: var(--sl-color-gray-3);
+    font-size: 0.72rem;
+  }
+  .wg-cluster {
+    padding: 0.2rem 0.4rem;
+    border-radius: 0.3rem;
+    background: var(--sl-color-black);
+    color: var(--sl-color-white);
+    border: 1px solid var(--wg-border);
+  }
+  .wg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.75rem;
+  }
+  .wg-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0;
+    border: 1px solid var(--wg-border);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: var(--wg-bg);
+    cursor: pointer;
+    text-align: left;
+    position: relative;
+    transition: border-color 0.12s, transform 0.12s;
+  }
+  .wg-cell:hover {
+    border-color: var(--sl-color-accent);
+    transform: translateY(-2px);
+  }
+  .wg-verdict-badge {
+    position: absolute;
+    top: 0.35rem;
+    left: 0.35rem;
+    z-index: 1;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #fff;
+  }
+  .wg-verdict-badge.pass {
+    background: #16a34a;
+  }
+  .wg-verdict-badge.fail {
+    background: #dc2626;
+  }
+  .wg-verdict-badge.no-ref {
+    background: #d97706;
+  }
+  .wg-verdict-badge.render-error {
+    background: #7c3aed;
+  }
+  .wg-verdict-badge.unknown {
+    background: #6b7280;
+  }
+  .wg-thumb {
+    display: block;
+    background: #fff;
+    min-height: 90px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .wg-thumb img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+  .wg-missing {
+    color: #b04;
+    font-size: 0.72rem;
+    padding: 2rem 0.5rem;
+  }
+  .wg-id {
+    font-size: 0.7rem;
+    padding: 0 0.5rem;
+    word-break: break-all;
+    color: var(--sl-color-white);
+    line-height: 1.3;
+  }
+  .wg-ae-val {
+    font-size: 0.65rem;
+    padding: 0 0.5rem 0.4rem;
+    color: var(--sl-color-gray-3);
+  }
+  .wg-empty {
+    padding: 1rem;
+    border: 1px dashed var(--wg-border);
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .wg-empty code {
+    font-size: 0.8rem;
+  }
+
+  /* detail overlay */
+  .wg-detail {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 2rem 1rem;
+    overflow: auto;
+  }
+  .wg-detail[hidden] {
+    display: none;
+  }
+  .wg-detail-inner {
+    background: var(--sl-color-black);
+    border: 1px solid var(--wg-border);
+    border-radius: 0.6rem;
+    max-width: 1100px;
+    width: 100%;
+    padding: 1rem 1.2rem 1.4rem;
+  }
+  .wg-detail-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.4rem;
+  }
+  .wg-detail-id {
+    font-size: 0.9rem;
+    word-break: break-all;
+  }
+  .wg-close {
+    background: none;
+    border: none;
+    color: var(--sl-color-white);
+    font-size: 1.2rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .wg-detail-assert {
+    color: var(--sl-color-gray-2);
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem;
+  }
+  .wg-detail-meta {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    margin-bottom: 0.8rem;
+  }
+  .wg-detail-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+  }
+  .wg-detail-cols figure {
+    margin: 0;
+    background: #fff;
+    border-radius: 0.4rem;
+    overflow: hidden;
+  }
+  .wg-detail-cols figcaption {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #666;
+    padding: 0.3rem 0.5rem;
+    background: #f4f4f5;
+  }
+  .wg-detail-cols img {
+    max-width: 100%;
+    display: block;
+    margin: 0 auto;
+  }
+  @media (max-width: 640px) {
+    .wg-detail-cols {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<script>
+  // Client-side filtering + detail overlay. No framework — the grid is
+  // static HTML with data-* attributes; this just toggles visibility and
+  // wires the overlay.
+  function initWptGallery() {
+    const root = document.querySelector<HTMLElement>('.wpt-gallery');
+    if (!root) return;
+    const imgBase = root.dataset.imgBase ?? '/wpt-gallery/';
+    const cells = Array.from(root.querySelectorAll<HTMLElement>('.wg-cell'));
+    const search = root.querySelector<HTMLInputElement>('.wg-search');
+    const countEl = root.querySelector<HTMLElement>('.wg-count');
+    const clusterSel = root.querySelector<HTMLSelectElement>('.wg-cluster');
+
+    const checked = (sel: string): string[] =>
+      Array.from(root.querySelectorAll<HTMLInputElement>(sel))
+        .filter((c) => c.checked)
+        .map((c) => c.value);
+
+    function apply() {
+      const q = (search?.value ?? '').trim().toLowerCase();
+      const verdicts = new Set(checked('.wg-verdict'));
+      const aeBands = new Set(checked('.wg-ae'));
+      const requiredFlags = checked('.wg-flag'); // checked = must have
+      const cluster = clusterSel?.value ?? '';
+      let shown = 0;
+      for (const cell of cells) {
+        const id = cell.dataset.testid ?? '';
+        const flags = (cell.dataset.flags ?? '').split(',').filter(Boolean);
+        const ok =
+          (q === '' || id.toLowerCase().includes(q)) &&
+          verdicts.has(cell.dataset.verdict ?? '') &&
+          aeBands.has(cell.dataset.aeband ?? '') &&
+          (cluster === '' || cell.dataset.cluster === cluster) &&
+          requiredFlags.every((f) => flags.includes(f));
+        cell.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+      }
+      if (countEl) countEl.textContent = `${shown} / ${cells.length} shown`;
+    }
+
+    root.querySelectorAll<HTMLInputElement>('.wg-verdict, .wg-ae, .wg-flag').forEach((c) =>
+      c.addEventListener('change', apply),
+    );
+    clusterSel?.addEventListener('change', apply);
+    search?.addEventListener('input', apply);
+
+    // --- detail overlay ---
+    const detail = root.querySelector<HTMLElement>('.wg-detail');
+    const dId = root.querySelector<HTMLElement>('.wg-detail-id');
+    const dAssert = root.querySelector<HTMLElement>('.wg-detail-assert');
+    const dVerdict = root.querySelector<HTMLElement>('.wg-detail-verdict');
+    const dAe = root.querySelector<HTMLElement>('.wg-detail-ae');
+    const dSrc = root.querySelector<HTMLAnchorElement>('.wg-detail-srclink');
+    const dOurs = root.querySelector<HTMLImageElement>('.wg-detail-ours');
+    const dRef = root.querySelector<HTMLImageElement>('.wg-detail-ref');
+
+    function openDetail(cell: HTMLElement) {
+      if (!detail) return;
+      const ae = cell.dataset.ae ?? '';
+      if (dId) dId.textContent = cell.dataset.testid ?? '';
+      if (dAssert) dAssert.textContent = cell.dataset.assert ?? '';
+      if (dVerdict) dVerdict.textContent = `verdict: ${cell.dataset.verdict ?? ''}`;
+      if (dAe) dAe.textContent = ae !== '' ? `AE vs reference: ${Number(ae).toFixed(4)}` : 'AE: n/a';
+      if (dSrc) {
+        dSrc.href =
+          'https://github.com/web-platform-tests/wpt/blob/master/' + (cell.dataset.source ?? '');
+      }
+      const ours = cell.dataset.ours ?? '';
+      const ref = cell.dataset.reference ?? '';
+      if (dOurs) dOurs.src = ours ? imgBase + ours : '';
+      if (dRef) dRef.src = ref ? imgBase + ref : '';
+      if (dRef) dRef.style.display = ref ? '' : 'none';
+      detail.hidden = false;
+    }
+    function closeDetail() {
+      if (detail) detail.hidden = true;
+    }
+    cells.forEach((cell) => cell.addEventListener('click', () => openDetail(cell)));
+    root.querySelector('.wg-close')?.addEventListener('click', closeDetail);
+    detail?.addEventListener('click', (e) => {
+      if (e.target === detail) closeDetail();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDetail();
+    });
+
+    apply();
+  }
+
+  if (document.readyState !== 'loading') initWptGallery();
+  else document.addEventListener('DOMContentLoaded', initWptGallery);
+  // Starlight uses view transitions; re-init after navigation.
+  document.addEventListener('astro:page-load', initWptGallery);
+</script>

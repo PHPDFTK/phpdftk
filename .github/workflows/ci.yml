@@ -529,6 +529,133 @@ jobs:
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: git worktree remove benchmarks-branch --force 2>/dev/null || true
 
+  # ---------------------------------------------------------------------
+  # WPT compliance gallery: render our output + the WPT reference per
+  # test, score them, and publish the manifest + thumbnails to the
+  # `_wpt-gallery` orphan branch. The docs job embeds `latest/` from that
+  # branch, overwriting the small committed demo slice with the full
+  # corpus. See docs/plans/wpt-gallery.md + scripts/build-wpt-gallery.php.
+  #
+  # Scope is a curated CSS slice by default (the interesting comparisons)
+  # rather than all ~22k tests — hosting the full corpus is GBs. Widen via
+  # the WPT_GALLERY_FILTER env below or a workflow dispatch input.
+  wpt-gallery:
+    runs-on: ubuntu-latest
+    # Only on main pushes — the render sweep is slow and the artifacts are
+    # large; PRs get the committed demo slice.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      WPT_GALLERY_FILTER: 'css/css-backgrounds/**'
+      WPT_GALLERY_SHARDS: 4
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize WPT corpus submodule
+        run: git submodule update --init --depth 1 vendor-data/wpt
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: zlib, openssl, simplexml, intl
+          coverage: none
+
+      - name: Install system fonts, Ghostscript and ImageMagick
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            fonts-liberation fonts-dejavu-core fonts-stix fonts-noto-core \
+            fonts-noto-color-emoji icc-profiles-free imagemagick ghostscript
+
+      - name: Install Composer dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Generate gallery shard ${{ matrix.shard }}/${{ env.WPT_GALLERY_SHARDS }}
+        run: |
+          php scripts/build-wpt-gallery.php \
+            --filter="$WPT_GALLERY_FILTER" \
+            --only-reftests \
+            --shard=${{ matrix.shard }}/${{ env.WPT_GALLERY_SHARDS }} \
+            --out=docs/generated/wpt-gallery
+
+      - name: Upload gallery shard
+        uses: actions/upload-artifact@v7
+        with:
+          name: wpt-gallery-shard-${{ matrix.shard }}
+          path: docs/generated/wpt-gallery/
+
+  # Merge the shard artifacts into one manifest + image set and publish to
+  # `_wpt-gallery`. Serialized so concurrent refs don't race on the push.
+  publish-wpt-gallery:
+    runs-on: ubuntu-latest
+    needs: [wpt-gallery]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: publish-wpt-gallery
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: simplexml
+
+      - name: Download gallery shards
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wpt-gallery-shard-*
+          path: shards
+
+      - name: Merge shards
+        run: |
+          mkdir -p merged/img
+          # Concatenate every shard's `tests` array into one manifest and
+          # collect all images. Shards never collide (disjoint test ids).
+          php scripts/merge-wpt-gallery-shards.php shards merged
+
+      - name: Publish to _wpt-gallery branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin _wpt-gallery:refs/remotes/origin/_wpt-gallery 2>/dev/null || true
+
+          if git rev-parse --verify origin/_wpt-gallery >/dev/null 2>&1; then
+            git worktree add wpt-gallery-branch origin/_wpt-gallery
+            cd wpt-gallery-branch
+            git checkout -B _wpt-gallery origin/_wpt-gallery
+          else
+            git worktree add --detach wpt-gallery-branch
+            cd wpt-gallery-branch
+            git checkout --orphan _wpt-gallery
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          DIR="${GITHUB_REF#refs/heads/}/${GITHUB_SHA}"
+          rm -rf "$DIR"
+          mkdir -p "$DIR"
+          cp -r ../merged/. "$DIR/"
+
+          # `latest/` always points at the most recent main run so the docs
+          # build has a stable path to embed.
+          rm -rf latest
+          mkdir -p latest
+          cp -r ../merged/. latest/
+
+          git add .
+          git commit -m "wpt-gallery: $DIR" --allow-empty
+          git push origin _wpt-gallery
+
+      - name: Cleanup worktree
+        if: always()
+        run: git worktree remove wpt-gallery-branch --force 2>/dev/null || true
+
   pr-report:
     runs-on: ubuntu-latest
     needs: [publish-coverage, compliance, benchmarks]
@@ -715,6 +842,26 @@ jobs:
             echo "Embedded benchmarks ($(wc -l < /tmp/benchmarks.md) lines)"
           else
             echo "No _benchmarks branch yet — skipping benchmarks embed"
+          fi
+
+      - name: Embed latest WPT compliance gallery
+        run: |
+          # Pull latest/{manifest.json,img/} from the _wpt-gallery branch
+          # (populated by the wpt-gallery job on every main push) into the
+          # importable manifest + served image dir, overwriting the small
+          # committed demo slice with the full corpus. Skip silently on the
+          # first run (branch not created yet) so the demo slice stands in.
+          if git fetch origin _wpt-gallery:refs/remotes/origin/_wpt-gallery 2>/dev/null \
+             && git cat-file -e "origin/_wpt-gallery:latest/manifest.json" 2>/dev/null; then
+            git show "origin/_wpt-gallery:latest/manifest.json" \
+              > docs/site/src/data/wpt-gallery.json
+            rm -rf docs/site/public/wpt-gallery/img
+            mkdir -p docs/site/public/wpt-gallery/img
+            git archive origin/_wpt-gallery latest/img \
+              | tar -x --strip-components=1 -C docs/site/public/wpt-gallery
+            echo "Embedded WPT gallery ($(ls docs/site/public/wpt-gallery/img | wc -l) images)"
+          else
+            echo "No _wpt-gallery branch yet — keeping the committed demo slice"
           fi
 
       - name: Setup PHP for example scripts

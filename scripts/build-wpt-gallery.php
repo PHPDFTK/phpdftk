@@ -3,60 +3,75 @@
 declare(strict_types=1);
 
 /**
- * WPT compliance gallery generator (v0 — self-contained static page).
+ * WPT compliance gallery generator.
  *
- * For each test id, renders our output (test HTML → PDF → PNG through the
- * real harness pipeline) and, when the test is a reftest, its WPT
- * reference the same way, then writes an index.html placing them
- * side-by-side so anyone can compare "test → ours → reference".
+ * Walks a `--filter` slice of the WPT corpus and, per test, renders our
+ * output (test HTML/SVG -> PDF -> PNG through the real harness pipeline),
+ * renders the WPT reference the same way (self-consistency oracle),
+ * scores the pair with ImageMagick, downscales thumbnails, and emits a
+ * `manifest.json` the Astro gallery page consumes at build time.
  *
- * This is Phase 1-2 of docs/plans/wpt-gallery.md, kept deliberately
- * simple (a standalone HTML file, no Astro yet) so there is a page to
- * open TODAY. Scaling to the full corpus + Starlight embedding + the
- * cross-browser oracle columns is the later phases.
+ * This is Phases 1 + 4 of docs/plans/wpt-gallery.md: the reusable data
+ * layer (manifest + kept PNGs) plus sharding so the full ~22k corpus is
+ * tractable in CI.
+ *
+ * Reference location mirrors HarnessRunner::locateReference — sibling
+ * `-ref.{png,html,xht,svg}` first, then `<link rel="match">` — rather
+ * than the v0 single-regex, and fuzzy-meta parsing mirrors the harness
+ * so verdicts line up with the pass-rate scoreboard.
  *
  * Usage:
  *   php scripts/build-wpt-gallery.php \
- *       [--root=vendor-data/wpt] [--out=docs/generated/wpt-gallery] \
- *       [id ...]                          # explicit test ids, else a default set
+ *       [--root=vendor-data/wpt] \
+ *       [--out=docs/generated/wpt-gallery] \
+ *       [--filter='css/css-flexbox/**'] \   # glob slice of the corpus
+ *       [--shard=K/N] \                      # process shard K of N (1-based)
+ *       [--limit=N] \                        # cap tests (smoke runs)
+ *       [--thumb=300] \                      # thumbnail max width in px
+ *       [--only-reftests] \                  # skip tests with no reference
+ *       [id ...]                             # explicit ids (overrides filter)
  *
- * Needs Ghostscript (via Rasteriser). Open the emitted index.html in a
- * browser, or `cd <out> && python3 -m http.server`.
+ * Needs Ghostscript (Rasteriser) + ImageMagick (`compare` + `convert`).
+ * Emits: <out>/manifest.json, <out>/img/<slug>.{ours,ref}.png (full) and
+ * <out>/img/<slug>.{ours,ref}.thumb.png (downscaled).
  */
 
 use Phpdftk\Filesystem\LocalFilesystem;
 use Phpdftk\HtmlToPdf\Renderer;
 use Phpdftk\HtmlToPdf\RendererOptions;
 use Phpdftk\WptHarness\Rasteriser;
+use Phpdftk\WptHarness\Scorer;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-$root = 'vendor-data/wpt';
-$out = 'docs/generated/wpt-gallery';
+$opts = [
+    'root' => 'vendor-data/wpt',
+    'out' => 'docs/generated/wpt-gallery',
+    'filter' => null,
+    'shard' => null,
+    'limit' => null,
+    'thumb' => 300,
+    'only-reftests' => false,
+];
 $ids = [];
 foreach (array_slice($argv, 1) as $arg) {
     if (str_starts_with($arg, '--root=')) {
-        $root = substr($arg, 7);
+        $opts['root'] = substr($arg, 7);
     } elseif (str_starts_with($arg, '--out=')) {
-        $out = substr($arg, 6);
+        $opts['out'] = substr($arg, 6);
+    } elseif (str_starts_with($arg, '--filter=')) {
+        $opts['filter'] = substr($arg, 9);
+    } elseif (str_starts_with($arg, '--shard=')) {
+        $opts['shard'] = substr($arg, 8);
+    } elseif (str_starts_with($arg, '--limit=')) {
+        $opts['limit'] = (int) substr($arg, 8);
+    } elseif (str_starts_with($arg, '--thumb=')) {
+        $opts['thumb'] = max(48, (int) substr($arg, 8));
+    } elseif ($arg === '--only-reftests') {
+        $opts['only-reftests'] = true;
     } elseif (!str_starts_with($arg, '--')) {
         $ids[] = $arg;
     }
-}
-
-// A default curated set: tests fixed in the current CSS push (wins) plus a
-// couple still-failing near-misses (gaps), so the gallery shows both.
-if ($ids === []) {
-    $ids = [
-        'css/css-grid/grid-items/grid-order-property-painting-001',
-        'css/css-backgrounds/background-color-body-propagation-007',
-        'css/css-sizing/aspect-ratio/grid-aspect-ratio-010',
-        'css/css-sizing/aspect-ratio/block-aspect-ratio-015',
-        'css/css-backgrounds/border-left-width-thick',
-        'css/css-backgrounds/box-shadow-005',
-        'css/css-flexbox/percentage-heights-006',
-        'css/css-writing-modes/abs-pos-non-replaced-vrl-002',
-    ];
 }
 
 $rasteriser = new Rasteriser();
@@ -64,15 +79,259 @@ if (!$rasteriser->isAvailable()) {
     fwrite(STDERR, "build-wpt-gallery: Ghostscript (`gs`) unavailable.\n");
     exit(1);
 }
+$scorer = new Scorer();
+$hasCompare = $scorer->isAvailable();
+$hasConvert = imagemagickConvert() !== null;
+if (!$hasCompare) {
+    fwrite(STDERR, "build-wpt-gallery: ImageMagick `compare` unavailable — verdicts will be 'unknown'.\n");
+}
+if (!$hasConvert) {
+    fwrite(STDERR, "build-wpt-gallery: ImageMagick `convert`/`magick` unavailable — thumbnails fall back to full images.\n");
+}
 
+$wptRoot = realpath($opts['root']) ?: $opts['root'];
+if (!is_dir($wptRoot)) {
+    fwrite(STDERR, "build-wpt-gallery: WPT root not found: {$opts['root']}\n");
+    exit(1);
+}
+
+$out = $opts['out'];
 $imgDir = $out . '/img';
-@mkdir($imgDir, 0o777, true);
-$wptRoot = realpath($root) ?: $root;
+if (!is_dir($imgDir)) {
+    @mkdir($imgDir, 0o777, true);
+}
+
+// ----- resolve the working set of test ids -----
+if ($ids !== []) {
+    $testIds = $ids;
+} else {
+    fwrite(STDERR, "discovering tests" . ($opts['filter'] !== null ? " under filter '{$opts['filter']}'" : '') . " ...\n");
+    $testIds = discoverTestIds($wptRoot, $opts['filter']);
+    sort($testIds); // stable order so shards are deterministic
+    fwrite(STDERR, "discovered " . count($testIds) . " tests\n");
+}
+
+// ----- sharding: keep shard K of N (1-based) via modulo on a stable index -----
+if ($opts['shard'] !== null) {
+    [$k, $n] = array_map('intval', explode('/', $opts['shard'], 2) + [1, 1]);
+    if ($n < 1 || $k < 1 || $k > $n) {
+        fwrite(STDERR, "build-wpt-gallery: invalid --shard '{$opts['shard']}' (want K/N, 1<=K<=N)\n");
+        exit(1);
+    }
+    $testIds = array_values(array_filter(
+        $testIds,
+        static fn(int $idx): bool => ($idx % $n) === ($k - 1),
+        ARRAY_FILTER_USE_KEY,
+    ));
+    fwrite(STDERR, "shard {$k}/{$n}: " . count($testIds) . " tests\n");
+}
+
+if ($opts['limit'] !== null && $opts['limit'] > 0) {
+    $testIds = array_slice($testIds, 0, $opts['limit']);
+}
+
+// ----- render + score each test -----
+$records = [];
+$total = count($testIds);
+$i = 0;
+foreach ($testIds as $id) {
+    $i++;
+    $testPath = resolveFixture($wptRoot, $id);
+    if ($testPath === null) {
+        fwrite(STDERR, "[{$i}/{$total}] skip (not found): {$id}\n");
+        continue;
+    }
+    $rec = renderOne($id, $testPath, $wptRoot, $rasteriser, $scorer, $out, $opts, $hasCompare, $hasConvert);
+    if ($opts['only-reftests'] && $rec['reference'] === null) {
+        continue;
+    }
+    if ($rec['ours'] === null && $rec['reference'] === null) {
+        fwrite(STDERR, "[{$i}/{$total}] {$id}: nothing rendered\n");
+        continue;
+    }
+    $records[] = $rec;
+    fwrite(
+        STDERR,
+        "[{$i}/{$total}] {$id}: {$rec['verdict']}" .
+        ($rec['ae']['reference'] !== null ? sprintf(' (AE %.4f)', $rec['ae']['reference']) : '') .
+        "\n",
+    );
+}
+
+// ----- emit manifest.json -----
+$manifest = [
+    'schema' => 1,
+    'generatedAt' => gmdate('c'),
+    'filter' => $opts['filter'],
+    'shard' => $opts['shard'],
+    'count' => count($records),
+    'summary' => summarise($records),
+    'tests' => $records,
+];
+LocalFilesystem::writeFile(
+    $out . '/manifest.json',
+    json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n",
+);
+fwrite(STDERR, "\nwrote {$out}/manifest.json (" . count($records) . " tests)\n");
+
+// =====================================================================
+// helpers
+// =====================================================================
+
+/**
+ * Render one test + its reference, score, thumbnail, and build the
+ * manifest record.
+ *
+ * @param array{root:string,out:string,filter:?string,shard:?string,limit:?int,thumb:int,only-reftests:bool} $opts
+ * @return array{testId:string,source:string,assert:string,ours:?string,oursThumb:?string,reference:?string,referenceThumb:?string,referenceSource:?string,engines:array<string,string>,verdict:string,ae:array{reference:?float},flags:list<string>}
+ */
+function renderOne(
+    string $id,
+    string $testPath,
+    string $wptRoot,
+    Rasteriser $ras,
+    Scorer $scorer,
+    string $out,
+    array $opts,
+    bool $hasCompare,
+    bool $hasConvert,
+): array {
+    $slug = slugify($id);
+    $html = LocalFilesystem::readFile($testPath, 'gallery fixture');
+    $assert = extractAssert($html);
+    $flags = detectFlags($testPath, $html);
+
+    // Our render.
+    $oursFull = "img/{$slug}.ours.png";
+    $oursThumbRel = "img/{$slug}.ours.thumb.png";
+    $okOurs = renderTo($testPath, $wptRoot, $ras, $out . '/' . $oursFull);
+    $oursThumb = null;
+    if ($okOurs) {
+        $oursThumb = thumbnail($out . '/' . $oursFull, $out . '/' . $oursThumbRel, $opts['thumb'], $hasConvert)
+            ? $oursThumbRel : $oursFull;
+    }
+
+    // Reference render.
+    $refFull = null;
+    $refThumb = null;
+    $refSourceRel = null;
+    $refPath = locateReference($testPath, $html, $wptRoot);
+    if ($refPath !== null) {
+        $refSourceRel = relPath($wptRoot, $refPath);
+        $refFull = "img/{$slug}.ref.png";
+        $isPng = str_ends_with(strtolower($refPath), '.png');
+        $ok = $isPng
+            ? copyPng($refPath, $out . '/' . $refFull)
+            : renderTo($refPath, $wptRoot, $ras, $out . '/' . $refFull);
+        if ($ok) {
+            $refThumbRel = "img/{$slug}.ref.thumb.png";
+            $refThumb = thumbnail($out . '/' . $refFull, $out . '/' . $refThumbRel, $opts['thumb'], $hasConvert)
+                ? $refThumbRel : $refFull;
+        } else {
+            $refFull = null;
+        }
+    }
+
+    // Score ours vs reference (self-consistency AE).
+    $ae = null;
+    $verdict = 'unknown';
+    if ($okOurs && $refFull !== null && $hasCompare) {
+        $maxPixels = parseFuzzyMaxPixels($testPath);
+        $diff = $scorer->diff($out . '/' . $oursFull, $out . '/' . $refFull, $maxPixels);
+        if ($diff['diffImage'] !== null) {
+            @unlink($diff['diffImage']);
+        }
+        $ae = $diff['score'];
+        $verdict = $diff['passed'] ? 'pass' : 'fail';
+    } elseif ($okOurs && $refFull === null) {
+        $verdict = 'no-ref';
+    } elseif (!$okOurs) {
+        $verdict = 'render-error';
+    }
+
+    return [
+        'testId' => $id,
+        'source' => relPath($wptRoot, $testPath),
+        'assert' => $assert,
+        'ours' => $okOurs ? $oursFull : null,
+        'oursThumb' => $oursThumb,
+        'reference' => $refFull,
+        'referenceThumb' => $refThumb,
+        'referenceSource' => $refSourceRel,
+        'engines' => [], // populated by the cross-browser oracle in a later phase
+        'verdict' => $verdict,
+        'ae' => ['reference' => $ae],
+        'flags' => $flags,
+    ];
+}
+
+/**
+ * Recursively discover WPT test ids under $root, optionally filtered by
+ * a glob (same `*`/`**` semantics as the manifest rule files). Skips
+ * `-ref` / `-notref` siblings.
+ *
+ * @return list<string>
+ */
+function discoverTestIds(string $root, ?string $filter): array
+{
+    $exts = ['html', 'xht', 'xhtml', 'htm', 'svg'];
+    $ids = [];
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+    );
+    foreach ($it as $info) {
+        assert($info instanceof SplFileInfo);
+        if (!$info->isFile()) {
+            continue;
+        }
+        $ext = strtolower($info->getExtension());
+        if (!in_array($ext, $exts, true)) {
+            continue;
+        }
+        $stem = $info->getBasename('.' . $info->getExtension());
+        if (str_ends_with($stem, '-ref') || str_ends_with($stem, '-notref')) {
+            continue;
+        }
+        $rel = ltrim(str_replace('\\', '/', substr($info->getPathname(), strlen($root))), '/');
+        $dot = strrpos($rel, '.');
+        $id = $dot !== false ? substr($rel, 0, $dot) : $rel;
+        if ($filter !== null && !globMatches($filter, $id)) {
+            continue;
+        }
+        $ids[] = $id;
+    }
+    return $ids;
+}
+
+/** Glob match with `*` (within-segment) and `**` (across-segment) — a
+ * standalone port of Manifest::matches so the generator has no private
+ * coupling to the harness package. */
+function globMatches(string $glob, string $testId): bool
+{
+    $regex = '';
+    $len = strlen($glob);
+    for ($i = 0; $i < $len; $i++) {
+        $c = $glob[$i];
+        if ($c === '*') {
+            if ($i + 1 < $len && $glob[$i + 1] === '*') {
+                $regex .= '.*';
+                $i++;
+            } else {
+                $regex .= '[^/]*';
+            }
+        } elseif ($c === '?') {
+            $regex .= '[^/]';
+        } else {
+            $regex .= preg_quote($c, '~');
+        }
+    }
+    return preg_match('~^' . $regex . '$~', $testId) === 1;
+}
 
 /** Resolve a test id to an on-disk file, trying the WPT extensions. */
 function resolveFixture(string $root, string $id): ?string
 {
-    foreach (['', '.html', '.htm', '.xht'] as $ext) {
+    foreach (['', '.html', '.htm', '.xht', '.xhtml', '.svg'] as $ext) {
         $p = $root . '/' . $id . $ext;
         if (is_file($p)) {
             return $p;
@@ -81,41 +340,118 @@ function resolveFixture(string $root, string $id): ?string
     return null;
 }
 
-/** The `<link rel="match">` reference of a reftest, resolved to a path. */
-function matchReference(string $testPath, string $html): ?string
+/**
+ * Locate the reference for a reftest — sibling `-ref.{png,html,xht,svg}`
+ * first (PNG wins, it short-circuits a re-render), then
+ * `<link rel="match">`. Ports HarnessRunner::locateReference.
+ */
+function locateReference(string $testPath, string $html, string $wptRoot): ?string
 {
-    if (!preg_match('/<link\b[^>]*\brel\s*=\s*["\']match["\'][^>]*>/i', $html, $tag)
-        && !preg_match('/<link\b[^>]*\bhref[^>]*\brel\s*=\s*["\']match["\'][^>]*>/i', $html, $tag)) {
+    $info = pathinfo($testPath);
+    $dir = $info['dirname'] ?? '.';
+    $stem = $info['filename'] ?? '';
+    foreach (['png', 'html', 'xht', 'svg'] as $ext) {
+        $cand = $dir . '/' . $stem . '-ref.' . $ext;
+        if (is_file($cand)) {
+            return $cand;
+        }
+    }
+    // <link rel="match"> — either attribute order.
+    $relFirst = '~<link\s+[^>]*?rel\s*=\s*["\']match["\']\s+[^>]*?href\s*=\s*["\']([^"\']+)["\']~i';
+    $hrefFirst = '~<link\s+[^>]*?href\s*=\s*["\']([^"\']+)["\']\s+[^>]*?rel\s*=\s*["\']match["\']~i';
+    $href = null;
+    if (preg_match($relFirst, $html, $m) === 1) {
+        $href = $m[1];
+    } elseif (preg_match($hrefFirst, $html, $m) === 1) {
+        $href = $m[1];
+    }
+    if ($href === null) {
         return null;
     }
-    if (!preg_match('/\bhref\s*=\s*["\']([^"\']+)["\']/i', $tag[0], $href)) {
-        return null;
-    }
-    $ref = $href[1];
-    // Resolve relative to the test's directory.
-    $base = dirname($testPath);
-    $path = str_starts_with($ref, '/') ? $ref : $base . '/' . $ref;
-    $real = realpath($path);
-    return $real !== false ? $real : null;
+    $resolved = str_starts_with($href, '/') ? $wptRoot . $href : $dir . '/' . $href;
+    $real = realpath($resolved);
+    return ($real !== false && is_file($real)) ? $real : null;
 }
 
-/** Render an HTML file to a PNG at $destPng through the harness pipeline. */
+/** Parse the WPT `<meta name="fuzzy">` upper pixel bound (or null). */
+function parseFuzzyMaxPixels(string $testPath): ?int
+{
+    $head = @file_get_contents($testPath, false, null, 0, 64 * 1024);
+    if ($head === false || $head === '') {
+        return null;
+    }
+    if (preg_match(
+        '~<meta\s+[^>]*?name\s*=\s*["\']fuzzy["\']\s+[^>]*?content\s*=\s*["\']([^"\']+)["\']~i',
+        $head,
+        $m,
+    ) !== 1) {
+        return null;
+    }
+    $content = trim($m[1]);
+    if (preg_match('~totalPixels\s*=\s*\d+\s*-\s*(\d+)~i', $content, $m2) === 1) {
+        return (int) $m2[1];
+    }
+    $parts = array_map('trim', explode(';', $content));
+    if (count($parts) >= 2 && preg_match('~^\d+\s*-\s*(\d+)$~', $parts[1], $m3) === 1) {
+        return (int) $m3[1];
+    }
+    return null;
+}
+
+/** Extract the `<meta name="assert">` text, if any. */
+function extractAssert(string $html): string
+{
+    return preg_match('/name\s*=\s*["\']assert["\']\s+content\s*=\s*["\']([^"\']+)/i', $html, $m)
+        ? trim(html_entity_decode($m[1])) : '';
+}
+
+/**
+ * Classify a test's WPT harness flags (`ahem`, `image`, `script`) so
+ * the gallery can filter font/asset/JS-dependent tests. Best-effort
+ * heuristics from the test source.
+ *
+ * @return list<string>
+ */
+function detectFlags(string $testPath, string $html): array
+{
+    $flags = [];
+    if (stripos($html, 'ahem') !== false) {
+        $flags[] = 'ahem';
+    }
+    if (preg_match('/<img\b|background(-image)?\s*:\s*url\(|<image\b/i', $html) === 1) {
+        $flags[] = 'image';
+    }
+    if (preg_match('/<script\b|reftest-wait/i', $html) === 1) {
+        $flags[] = 'script';
+    }
+    if (str_ends_with(strtolower($testPath), '.svg')) {
+        $flags[] = 'svg';
+    }
+    return array_values(array_unique($flags));
+}
+
+/** Render an HTML/SVG file to a PNG at $destPng through the pipeline. */
 function renderTo(string $htmlPath, string $wptRoot, Rasteriser $ras, string $destPng): bool
 {
     try {
-        $html = LocalFilesystem::readFile($htmlPath, 'gallery fixture');
-        $renderer = new Renderer(
-            (new RendererOptions())
-                ->withBaseDir(dirname($htmlPath))
-                ->withSandboxRoot($wptRoot)
-                ->withMatchingMediaTypes(['print', 'screen']),
-        );
-        $pdf = $renderer->render($html)->writer->toBytes();
+        $ext = strtolower(pathinfo($htmlPath, PATHINFO_EXTENSION));
+        if ($ext === 'svg') {
+            $pdf = renderSvg($htmlPath);
+        } else {
+            $html = LocalFilesystem::readFile($htmlPath, 'gallery fixture');
+            $renderer = new Renderer(
+                (new RendererOptions())
+                    ->withBaseDir(dirname($htmlPath))
+                    ->withSandboxRoot($wptRoot)
+                    ->withMatchingMediaTypes(['print', 'screen']),
+            );
+            $pdf = $renderer->render($html)->writer->toBytes();
+        }
         $pdfPath = tempnam(sys_get_temp_dir(), 'gal_') . '.pdf';
         LocalFilesystem::writeFile($pdfPath, $pdf);
         $png = $ras->rasterise($pdfPath, 0);
         @unlink($pdfPath);
-        copy($png, $destPng);
+        copyPng($png, $destPng);
         @unlink($png);
         return true;
     } catch (\Throwable $e) {
@@ -124,90 +460,114 @@ function renderTo(string $htmlPath, string $wptRoot, Rasteriser $ras, string $de
     }
 }
 
-$cards = [];
-foreach ($ids as $id) {
-    $testPath = resolveFixture($wptRoot, $id);
-    if ($testPath === null) {
-        fwrite(STDERR, "skip (not found): {$id}\n");
-        continue;
+/** Render an SVG test through the svg-to-pdf stack (mirrors HarnessRunner). */
+function renderSvg(string $path): string
+{
+    if (!class_exists('Phpdftk\\SvgToPdf\\SvgRenderer')
+        || !class_exists('Phpdftk\\Svg\\Parser')
+        || !class_exists('Phpdftk\\Pdf\\Writer\\PdfWriter')
+    ) {
+        throw new \RuntimeException('svg-to-pdf renderer stack not installed');
     }
-    $slug = str_replace(['/', '\\'], '__', $id);
-    $html = LocalFilesystem::readFile($testPath, 'gallery fixture');
-    $assert = preg_match('/name\s*=\s*["\']assert["\']\s+content\s*=\s*["\']([^"\']+)/i', $html, $m)
-        ? trim($m[1]) : '';
+    $svg = LocalFilesystem::readFile($path, 'gallery fixture');
+    $writer = new \Phpdftk\Pdf\Writer\PdfWriter();
+    $page = $writer->addPage();
+    $doc = (new \Phpdftk\Svg\Parser())->parse($svg);
+    (new \Phpdftk\SvgToPdf\SvgRenderer($page, $writer))->draw($doc, x: 0, y: 0);
+    return $writer->toBytes();
+}
 
-    $oursPng = "img/{$slug}.ours.png";
-    $okOurs = renderTo($testPath, $wptRoot, $rasteriser, $out . '/' . $oursPng);
+/** Copy a PNG through LocalFilesystem so all disk writes are policy-checked. */
+function copyPng(string $src, string $dest): bool
+{
+    try {
+        LocalFilesystem::writeFile($dest, LocalFilesystem::readFile($src, 'gallery image'), true);
+        return true;
+    } catch (\Throwable $e) {
+        fwrite(STDERR, "  copy failed: {$src} -> {$dest}: {$e->getMessage()}\n");
+        return false;
+    }
+}
 
-    $refPng = null;
-    $refPath = matchReference($testPath, $html);
-    if ($refPath !== null) {
-        $refPng = "img/{$slug}.ref.png";
-        if (!renderTo($refPath, $wptRoot, $rasteriser, $out . '/' . $refPng)) {
-            $refPng = null;
+/**
+ * Downscale $srcPng to $destThumb at max width $maxW. Returns true on
+ * success; false (caller falls back to the full image) when ImageMagick
+ * is unavailable or the resize fails.
+ */
+function thumbnail(string $srcPng, string $destThumb, int $maxW, bool $hasConvert): bool
+{
+    if (!$hasConvert || !is_file($srcPng)) {
+        return false;
+    }
+    $bin = imagemagickConvert();
+    if ($bin === null) {
+        return false;
+    }
+    // `>` only shrinks (never upscales small refs); flatten onto white so
+    // transparent PDFs read as they would on screen.
+    $cmd = sprintf(
+        '%s %s -background white -flatten -resize %dx%d\> %s 2>/dev/null',
+        $bin,
+        escapeshellarg($srcPng),
+        $maxW,
+        $maxW * 4,
+        escapeshellarg($destThumb),
+    );
+    exec($cmd, $_, $status);
+    return $status === 0 && is_file($destThumb);
+}
+
+/** Locate an ImageMagick resize binary (`magick` preferred, then `convert`). */
+function imagemagickConvert(): ?string
+{
+    static $cached = false;
+    static $bin = null;
+    if ($cached) {
+        return $bin;
+    }
+    $cached = true;
+    foreach (['magick', 'convert'] as $candidate) {
+        exec(escapeshellcmd($candidate) . ' -version 2>/dev/null', $_, $status);
+        if ($status === 0) {
+            $bin = $candidate;
+            return $bin;
         }
     }
-
-    $cards[] = [
-        'id' => $id,
-        'assert' => $assert,
-        'ours' => $okOurs ? $oursPng : null,
-        'ref' => $refPng,
-    ];
-    fwrite(STDERR, "rendered {$id}" . ($refPng ? ' (+ref)' : '') . "\n");
+    return null;
 }
 
-// ---- emit a self-contained index.html ----
-$rows = '';
-foreach ($cards as $c) {
-    $id = htmlspecialchars($c['id']);
-    $assert = htmlspecialchars($c['assert']);
-    $ours = $c['ours'] !== null
-        ? '<img loading="lazy" src="' . htmlspecialchars($c['ours']) . '" alt="ours">'
-        : '<div class="missing">render failed</div>';
-    $ref = $c['ref'] !== null
-        ? '<img loading="lazy" src="' . htmlspecialchars($c['ref']) . '" alt="reference">'
-        : '<div class="missing">no reference</div>';
-    $rows .= <<<HTML
-    <div class="card">
-      <div class="hd"><code>{$id}</code></div>
-      <div class="assert">{$assert}</div>
-      <div class="pair">
-        <figure><figcaption>ours</figcaption>{$ours}</figure>
-        <figure><figcaption>reference</figcaption>{$ref}</figure>
-      </div>
-    </div>
-
-    HTML;
+/** Test-id -> filesystem-safe slug (path separators to `__`). */
+function slugify(string $id): string
+{
+    return str_replace(['/', '\\'], '__', $id);
 }
 
-$count = count($cards);
-$page = <<<HTML
-<!DOCTYPE html>
-<meta charset="utf-8">
-<title>phpdftk — WPT compliance gallery</title>
-<style>
-  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; }
-  header { padding: 20px 24px; border-bottom: 1px solid #2a2e37; }
-  header h1 { margin: 0 0 4px; font-size: 18px; }
-  header p { margin: 0; color: #9aa0aa; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; padding: 24px; }
-  .card { background: #171a21; border: 1px solid #2a2e37; border-radius: 8px; overflow: hidden; }
-  .hd { padding: 10px 12px; border-bottom: 1px solid #2a2e37; font-size: 12px; word-break: break-all; }
-  .assert { padding: 8px 12px; color: #9aa0aa; font-size: 12px; min-height: 2.2em; }
-  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #2a2e37; }
-  figure { margin: 0; background: #fff; padding: 8px; text-align: center; }
-  figure img { max-width: 100%; height: auto; image-rendering: pixelated; }
-  figcaption { font-size: 11px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
-  .missing { color: #b04; padding: 40px 8px; background: #fff; }
-</style>
-<header>
-  <h1>phpdftk — WPT compliance gallery</h1>
-  <p>{$count} tests · our render vs the WPT reference, side by side. Generated by scripts/build-wpt-gallery.php — see docs/plans/wpt-gallery.md.</p>
-</header>
-<div class="grid">
-{$rows}</div>
-HTML;
+/** Path of $abs relative to $root (POSIX separators). */
+function relPath(string $root, string $abs): string
+{
+    $rootReal = realpath($root) ?: $root;
+    $absReal = realpath($abs) ?: $abs;
+    if (str_starts_with($absReal, $rootReal)) {
+        return ltrim(str_replace('\\', '/', substr($absReal, strlen($rootReal))), '/');
+    }
+    return str_replace('\\', '/', basename($abs));
+}
 
-LocalFilesystem::writeFile($out . '/index.html', $page);
-fwrite(STDERR, "\nwrote {$out}/index.html ({$count} tests)\n");
+/**
+ * @param list<array{verdict:string,ae:array{reference:?float},flags:list<string>}> $records
+ * @return array{pass:int,fail:int,noRef:int,renderError:int,unknown:int}
+ */
+function summarise(array $records): array
+{
+    $s = ['pass' => 0, 'fail' => 0, 'noRef' => 0, 'renderError' => 0, 'unknown' => 0];
+    foreach ($records as $r) {
+        $s[match ($r['verdict']) {
+            'pass' => 'pass',
+            'fail' => 'fail',
+            'no-ref' => 'noRef',
+            'render-error' => 'renderError',
+            default => 'unknown',
+        }]++;
+    }
+    return $s;
+}

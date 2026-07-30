@@ -1,0 +1,87 @@
+---
+title: WPT Compliance Gallery
+description: Browse the Web Platform Tests corpus alongside phpdftk's rendered output and the WPT reference, side by side.
+---
+
+import WptGallery from '../../../components/WptGallery.astro';
+
+phpdftk renders HTML and SVG to PDF, and we verify it against the
+[Web Platform Tests](https://web-platform-tests.org/) reftest corpus — the
+same suite the browser engines are held to. This gallery puts the raw test,
+**our render**, and the **WPT reference** next to each other so you can judge
+compliance visually, not just from a pass-rate number.
+
+Each cell is one test: our render as a thumbnail, a pass/fail badge, and the
+pixel absolute-error (AE) against the reference. Click a cell to open the
+side-by-side detail view with the full renders and a link to the upstream
+test source. Filter by verdict, AE band, cluster, or test flag
+(`ahem` font, `image`, `script`).
+
+:::note[Demo slice]
+The gallery below is a small committed slice so this page renders in review.
+In production, CI regenerates the full corpus each run and publishes it to the
+`_wpt-gallery` orphan branch, which the docs build pulls in before compiling —
+the same mechanism used for the
+[compliance report](/standards/validation/report/) and
+[benchmarks](/standards/performance/benchmarks/). See
+`docs/plans/wpt-gallery.md` and `scripts/build-wpt-gallery.php`.
+:::
+
+<WptGallery />
+
+## How the gallery is generated
+
+`scripts/build-wpt-gallery.php` walks a `--filter` glob slice of the corpus
+and, per test:
+
+1. renders our output (test → PDF → PNG) through the real harness pipeline,
+2. locates and renders the WPT reference (sibling `-ref.*` or
+   `<link rel="match">`), the same way the pass-rate harness does,
+3. scores the pair with ImageMagick (`compare -metric AE`, honoring the
+   test's `<meta name="fuzzy">` tolerance),
+4. downscales thumbnails and records a manifest row.
+
+```sh
+# one cluster, reftests only, 30-test cap
+php scripts/build-wpt-gallery.php --filter='css/css-backgrounds/background-*' \
+    --only-reftests --limit=30
+
+# the full corpus, sharded across CI runners
+php scripts/build-wpt-gallery.php --filter='css/**' --shard=3/16
+```
+
+Output lands in `docs/generated/wpt-gallery/` (gitignored): a `manifest.json`
+plus `img/<slug>.{ours,ref}.png` full renders and `.thumb.png` thumbnails.
+
+## Manifest schema (v1)
+
+```json
+{
+  "schema": 1,
+  "generatedAt": "2026-07-30T12:00:00+00:00",
+  "filter": "css/css-backgrounds/background-*",
+  "shard": "3/16",
+  "count": 30,
+  "summary": { "pass": 23, "fail": 7, "noRef": 0, "renderError": 0, "unknown": 0 },
+  "tests": [
+    {
+      "testId": "css/css-backgrounds/background-clip-content-box-001",
+      "source": "css/css-backgrounds/background-clip-content-box-001.html",
+      "assert": "…the <meta name=assert> text…",
+      "ours": "img/…ours.png",
+      "oursThumb": "img/…ours.thumb.png",
+      "reference": "img/…ref.png",
+      "referenceThumb": "img/…ref.thumb.png",
+      "referenceSource": "css/css-backgrounds/…-ref.html",
+      "engines": {},
+      "verdict": "pass",
+      "ae": { "reference": 0.0011 },
+      "flags": ["image"]
+    }
+  ]
+}
+```
+
+The `engines` map is reserved for the cross-browser oracle (Blink / Gecko /
+WebKit print-to-PDF), which the detail view will surface as extra columns in a
+later phase.

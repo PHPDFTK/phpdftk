@@ -1,0 +1,520 @@
+{
+    "schema": 1,
+    "generatedAt": "2026-07-30T12:43:28+00:00",
+    "filter": "css/css-backgrounds/background-*",
+    "shard": null,
+    "count": 30,
+    "summary": {
+        "pass": 23,
+        "fail": 7,
+        "noRef": 0,
+        "renderError": 0,
+        "unknown": 0
+    },
+    "tests": [
+        {
+            "testId": "css/css-backgrounds/background-334",
+            "source": "css/css-backgrounds/background-334.html",
+            "assert": "Background-size with",
+            "ours": "img/css__css-backgrounds__background-334.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-334.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-334.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-334.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-334-ref.xht",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0033399249851455734
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-350",
+            "source": "css/css-backgrounds/background-attachment-350.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-350.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-350.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-350.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-350.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/ref-if-there-is-no-red.xht",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.020837975341651813
+            },
+            "flags": [
+                "image"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-353",
+            "source": "css/css-backgrounds/background-attachment-353.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-353.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-353.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-353.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-353.ref.thumb.png",
+            "referenceSource": "css/reference/ref-filled-green-100px-square.xht",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.04251615418894831
+            },
+            "flags": [
+                "ahem",
+                "image",
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-fixed-block-002",
+            "source": "css/css-backgrounds/background-attachment-fixed-block-002.html",
+            "assert": "This test checks the interaction between a block element with a",
+            "ours": "img/css__css-backgrounds__background-attachment-fixed-block-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-fixed-block-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-fixed-block-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-fixed-block-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-attachment-fixed-block-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": [
+                "ahem",
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-fixed-border-radius-offset",
+            "source": "css/css-backgrounds/background-attachment-fixed-border-radius-offset.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-fixed-border-radius-offset.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-fixed-border-radius-offset.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-fixed-border-radius-offset.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-fixed-border-radius-offset.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-attachment-fixed-border-radius-offset-ref.html",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.047407670454545456
+            },
+            "flags": [
+                "image"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-fixed-inline-002",
+            "source": "css/css-backgrounds/background-attachment-fixed-inline-002.html",
+            "assert": "This test checks the interaction between an inline with a",
+            "ours": "img/css__css-backgrounds__background-attachment-fixed-inline-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-fixed-inline-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-fixed-inline-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-fixed-inline-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-attachment-fixed-inline-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": [
+                "ahem",
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-fixed-inline-scrolled",
+            "source": "css/css-backgrounds/background-attachment-fixed-inline-scrolled.html",
+            "assert": "Background with background-attachment-fixed on an inline element should be fixed to the viewport",
+            "ours": "img/css__css-backgrounds__background-attachment-fixed-inline-scrolled.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-fixed-inline-scrolled.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-fixed-inline-scrolled.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-fixed-inline-scrolled.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-attachment-fixed-inline-scrolled-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": [
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-fixed-inside-transform-1",
+            "source": "css/css-backgrounds/background-attachment-fixed-inside-transform-1.html",
+            "assert": "Test checks whether background-attachment:",
+            "ours": "img/css__css-backgrounds__background-attachment-fixed-inside-transform-1.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-fixed-inside-transform-1.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-fixed-inside-transform-1.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-fixed-inside-transform-1.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-attachment-fixed-inside-transform-1-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-local-block-002",
+            "source": "css/css-backgrounds/background-attachment-local-block-002.html",
+            "assert": "This test checks the interaction between a block element with a",
+            "ours": "img/css__css-backgrounds__background-attachment-local-block-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-local-block-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-local-block-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-local-block-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-attachment-local-block-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": [
+                "ahem",
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-local-hidden",
+            "source": "css/css-backgrounds/background-attachment-local-hidden.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-local-hidden.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-local-hidden.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-local-hidden.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-local-hidden.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-attachment-local-hidden-ref.html",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.0019368779708853238
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-local-inline-002",
+            "source": "css/css-backgrounds/background-attachment-local-inline-002.html",
+            "assert": "This test checks the interaction between an inline with a",
+            "ours": "img/css__css-backgrounds__background-attachment-local-inline-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-local-inline-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-local-inline-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-local-inline-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-attachment-local-inline-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": [
+                "ahem",
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-margin-root-001",
+            "source": "css/css-backgrounds/background-attachment-margin-root-001.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-margin-root-001.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-margin-root-001.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-margin-root-001.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-margin-root-001.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-attachment-margin-root-001-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-attachment-margin-root-002",
+            "source": "css/css-backgrounds/background-attachment-margin-root-002.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-attachment-margin-root-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-attachment-margin-root-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-attachment-margin-root-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-attachment-margin-root-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-attachment-margin-root-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-002",
+            "source": "css/css-backgrounds/background-clip-002.html",
+            "assert": "Background-clip with initial value implies to paint the background within (clipped to) the border box.",
+            "ours": "img/css__css-backgrounds__background-clip-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-003",
+            "source": "css/css-backgrounds/background-clip-003.html",
+            "assert": "Background-clip with",
+            "ours": "img/css__css-backgrounds__background-clip-003.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-003.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-003.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-003.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-002-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-004",
+            "source": "css/css-backgrounds/background-clip-004.html",
+            "assert": "Background-clip with",
+            "ours": "img/css__css-backgrounds__background-clip-004.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-004.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-004.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-004.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-004-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-005",
+            "source": "css/css-backgrounds/background-clip-005.html",
+            "assert": "Background-clip with",
+            "ours": "img/css__css-backgrounds__background-clip-005.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-005.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-005.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-005.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-005-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-006",
+            "source": "css/css-backgrounds/background-clip-006.html",
+            "assert": "Background-clip with",
+            "ours": "img/css__css-backgrounds__background-clip-006.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-006.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-006.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-006.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-005-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-007",
+            "source": "css/css-backgrounds/background-clip-007.html",
+            "assert": "When",
+            "ours": "img/css__css-backgrounds__background-clip-007.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-007.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-007.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-007.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/ref-if-there-is-no-red.xht",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0007937834224598931
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-008",
+            "source": "css/css-backgrounds/background-clip-008.html",
+            "assert": "When",
+            "ours": "img/css__css-backgrounds__background-clip-008.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-008.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-008.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-008.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/ref-if-there-is-no-red.xht",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0007937834224598931
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-009",
+            "source": "css/css-backgrounds/background-clip-009.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-009.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-009.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-009.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-009.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/ref-filled-black-96px-square.xht",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.00014854426619132502
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-010",
+            "source": "css/css-backgrounds/background-clip-010.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-010.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-010.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-010.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-010.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/ref-if-there-is-no-red.xht",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0007937834224598931
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-color",
+            "source": "css/css-backgrounds/background-clip-color.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-color.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-color.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-color.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-color.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-clip-color-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0001392602495543672
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-color-repaint",
+            "source": "css/css-backgrounds/background-clip-color-repaint.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-color-repaint.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-color-repaint.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-color-repaint.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-color-repaint.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/background-clip-color-repaint-ref.html",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.022135416666666668
+            },
+            "flags": [
+                "script"
+            ]
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-content-box-001",
+            "source": "css/css-backgrounds/background-clip-content-box-001.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-content-box-001.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-content-box-001.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-content-box-001.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-content-box-001.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-content-box-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.0011140819964349377
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-content-box-002",
+            "source": "css/css-backgrounds/background-clip-content-box-002.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-content-box-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-content-box-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-content-box-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-content-box-002.ref.thumb.png",
+            "referenceSource": "css/reference/ref-filled-green-100px-square-only.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-content-box-with-border-radius-002",
+            "source": "css/css-backgrounds/background-clip-content-box-with-border-radius-002.html",
+            "assert": "Backgrounds clipped to the content box should follow the content box curve, which should be equal to the outer border radius minus the corresponding border+padding thickness.",
+            "ours": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-002.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-002.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-002.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-002.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-content-box-with-border-radius-002-ref.html",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.004303141711229946
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-content-box-with-border-radius-003",
+            "source": "css/css-backgrounds/background-clip-content-box-with-border-radius-003.html",
+            "assert": "Backgrounds clipped to the content box should follow the content box curve, which should be equal to the outer border radius minus the corresponding border+padding thickness.",
+            "ours": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-003.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-003.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-003.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-content-box-with-border-radius-003.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-content-box-with-border-radius-003-ref.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0.000309854055258467
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-padding-box-001",
+            "source": "css/css-backgrounds/background-clip-padding-box-001.html",
+            "assert": "",
+            "ours": "img/css__css-backgrounds__background-clip-padding-box-001.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-padding-box-001.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-padding-box-001.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-padding-box-001.ref.thumb.png",
+            "referenceSource": "css/reference/ref-filled-green-100px-square-only.html",
+            "engines": [],
+            "verdict": "pass",
+            "ae": {
+                "reference": 0
+            },
+            "flags": []
+        },
+        {
+            "testId": "css/css-backgrounds/background-clip-padding-box-with-border-radius",
+            "source": "css/css-backgrounds/background-clip-padding-box-with-border-radius.html",
+            "assert": "Backgrounds clipped to the padding box should follow the padding box curve, which should be equal to the outer border radius minus the corresponding border thickness.",
+            "ours": "img/css__css-backgrounds__background-clip-padding-box-with-border-radius.ours.png",
+            "oursThumb": "img/css__css-backgrounds__background-clip-padding-box-with-border-radius.ours.thumb.png",
+            "reference": "img/css__css-backgrounds__background-clip-padding-box-with-border-radius.ref.png",
+            "referenceThumb": "img/css__css-backgrounds__background-clip-padding-box-with-border-radius.ref.thumb.png",
+            "referenceSource": "css/css-backgrounds/reference/background-clip-padding-box-with-border-radius-ref.html",
+            "engines": [],
+            "verdict": "fail",
+            "ae": {
+                "reference": 0.0012069221628045158
+            },
+            "flags": []
+        }
+    ]
+}
