@@ -416,7 +416,13 @@ final class BlockLayout
             }
         }
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableRowBox) {
-            return $this->layoutTableRow($box, $context);
+            // `layoutTableRow` returns early, bypassing the shared
+            // `layoutBlock` tail that applies `position: relative` /
+            // `sticky` offsets — so a relatively-positioned `<tr>` (and
+            // its cells + abspos descendants) would never shift. Apply
+            // the offset here (CSS 2.1 §9.4.3 / Position 3 §3).
+            $rowHeight = $this->layoutTableRow($box, $context);
+            return $this->applyRelativePositionShift($box, $context, $rowHeight);
         }
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox) {
             // CSS Tables 3 §4 — `table-column` / `table-column-group`
@@ -446,6 +452,29 @@ final class BlockLayout
         $box->geometry->y = $context->originY;
         $box->geometry->width = $context->containingBlockWidth;
         return 0.0;
+    }
+
+    /**
+     * CSS 2.1 §9.4.3 — apply a `position: relative` / `sticky` offset to
+     * a box that was laid out through a specialised path (e.g. table
+     * rows) which doesn't run the shared `layoutBlock` relative tail.
+     * The box and its whole subtree shift by the resolved (dx, dy);
+     * siblings keep flowing against the pre-shift position, so the
+     * returned height is the caller's original outer height unchanged.
+     */
+    private function applyRelativePositionShift(Box $box, LayoutContext $context, float $fallbackHeight): float
+    {
+        $positionValue = $box->style->get('position');
+        if ($positionValue instanceof Keyword) {
+            $posName = strtolower($positionValue->name);
+            if ($posName === 'relative' || $posName === 'sticky') {
+                [$dx, $dy] = $this->resolveRelativeOffsets($box->style, $context);
+                if ($dx !== 0.0 || $dy !== 0.0) {
+                    $this->shiftSubtree($box, $dy, $dx);
+                }
+            }
+        }
+        return $fallbackHeight;
     }
 
     /**

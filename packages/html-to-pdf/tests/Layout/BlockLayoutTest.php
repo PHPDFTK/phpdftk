@@ -744,6 +744,39 @@ final class BlockLayoutTest extends TestCase
         self::assertGreaterThanOrEqual(0.0, $height);
     }
 
+    public function testRelativeTableRowShiftsByOffset(): void
+    {
+        // CSS 2.1 §9.4.3 / Position 3 §3 — `position: relative; top: 40px`
+        // on a `<tr>` shifts the row (and its cells) down 40px from its
+        // static position, while the following row keeps flowing against
+        // the static position. Table rows go through the specialised
+        // `layoutTableRow` path, which historically skipped the relative
+        // offset entirely.
+        $box = $this->buildTree(
+            '<html><body><div id="t">'
+                . '<div id="rel"><div id="ca"></div></div>'
+                . '<div id="static"><div id="cb"></div></div>'
+                . '</div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #rel, #static { display: table-row; }
+             #ca, #cb { display: table-cell; height: 50px; width: 50px; }
+             #rel { position: relative; top: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $relRow = $this->findById($box, 'rel');
+        $staticRow = $this->findById($box, 'static');
+        self::assertNotNull($relRow, 'relative row found');
+        self::assertNotNull($staticRow, 'static row found');
+        self::assertInstanceOf(\Phpdftk\HtmlToPdf\Box\TableRowBox::class, $relRow);
+        // The static (second) row sits one row-height (50px) below the
+        // first row's STATIC position (y=0), i.e. at y=50 — unaffected by
+        // the relative offset on its sibling.
+        self::assertEqualsWithDelta(50.0, $staticRow->geometry->y, 0.001, 'sibling flows against static position');
+        // The relative row is shifted down 40px from its static y=0.
+        self::assertEqualsWithDelta(40.0, $relRow->geometry->y, 0.001, 'relative row shifted by top:40px');
+    }
+
     public function testBorderCollapseSingleCellKeepsAllFourSides(): void
     {
         // Negative: a 1×1 table has no joints to resolve. The single
