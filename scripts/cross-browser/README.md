@@ -82,3 +82,33 @@ not patch options at the call site — change the constants in
 
 - the Swift WebKit wrapper (`webkit-render.swift` constants);
 - `packages/wpt-harness/src/BrowserOracle.php` once Phase B lands.
+
+## Per-engine matrix reporting
+
+`aggregate.php` folds shard JSON into a consensus pass/fail summary.
+`matrix.php` instead emits the **per-engine sheet** — one row per test,
+one column per engine, each cell answering "does our PDF match that
+engine's print render within budget?" plus per-engine match totals. Feed
+it one or more `--json` dumps:
+
+```
+# run a slice (any test list) against the real WPT corpus
+php packages/wpt-harness/bin/wpt cross-browser \
+    --manifest=my-slice.json --root=vendor-data/wpt \
+    --engines=chromium,firefox,webkit --json=out.json
+
+# render the sheet (markdown to stdout, optional CSV)
+php scripts/cross-browser/matrix.php out.json --csv=matrix.csv
+php scripts/cross-browser/matrix.php shard-*.json --fails-only
+```
+
+`--manifest=<path>` runs an arbitrary `{ "tests": [ { "id", "fuzz"? } ] }`
+list instead of the shipped `curated/manifest.json`, so the oracle can
+sweep a real WPT slice per-test (the granularity the matrix needs — where
+`cb-sweep` reports mean AE per directory).
+
+Caveat: browser renders load fixtures over `file://`, so tests that pull
+`/fonts/ahem.css` or `/resources/*` render with fallback in the browser
+while our renderer resolves them via its sandbox root — those tests
+false-fail until the render harness serves fixtures over HTTP. Use
+self-contained fixtures for now.

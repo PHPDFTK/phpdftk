@@ -392,9 +392,14 @@ switch ($subcommand) {
         $root = isset($parsed['opts']['root']) && is_string($parsed['opts']['root'])
             ? $parsed['opts']['root']
             : __DIR__ . '/../curated/smoke';
-        $manifestFile = __DIR__ . '/../curated/manifest.json';
+        // `--manifest=path` runs an arbitrary test list against `--root`
+        // (e.g. a real WPT slice) instead of the shipped curated smoke
+        // manifest. Same schema: `{ "tests": [ { "id", "fuzz"? } ] }`.
+        $manifestFile = isset($parsed['opts']['manifest']) && is_string($parsed['opts']['manifest'])
+            ? $parsed['opts']['manifest']
+            : __DIR__ . '/../curated/manifest.json';
         if (!is_file($manifestFile)) {
-            fwrite(STDERR, "wpt cross-browser: curated manifest missing at $manifestFile\n");
+            fwrite(STDERR, "wpt cross-browser: manifest missing at $manifestFile\n");
             exit(2);
         }
         $manifest = json_decode((string) file_get_contents($manifestFile), associative: true);
