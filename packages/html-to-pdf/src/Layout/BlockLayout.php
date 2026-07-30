@@ -5400,22 +5400,45 @@ final class BlockLayout
         $gapTotal = $gap * max(0, count($indices) - 1);
         $available = $containerMain - $gapTotal;
 
-        // Pick sign of flex (grow vs shrink) based on hypothetical
-        // sum: if items overflow → shrink; if underflow → grow.
+        // CSS Flexbox 1 §9.2 step 4 — the hypothetical main size is the
+        // flex base size clamped to the item's used min / max main size.
+        // A flex item whose §4.5 automatic minimum (e.g. a content-based
+        // min-content height) exceeds its flex base size has a
+        // hypothetical size ABOVE its base; the sign decision and the
+        // inflexible-item freeze must use this clamped value, not the raw
+        // base, or the item collapses below its minimum. For the common
+        // case (min 0, max none) hypothetical == base, so this is a no-op.
+        $hyp = [];
+        foreach ($indices as $i) {
+            $h = $baseOuter[$i];
+            if ($h < $minOuter[$i]) {
+                $h = $minOuter[$i];
+            }
+            if ($h > $maxOuter[$i]) {
+                $h = $maxOuter[$i];
+            }
+            $hyp[$i] = $h;
+        }
+
+        // Pick sign of flex (grow vs shrink) based on the outer
+        // hypothetical sum (§9.7 step 1): overflow → shrink; underflow →
+        // grow.
         $hypothetical = 0.0;
         foreach ($indices as $i) {
-            $hypothetical += $baseOuter[$i];
+            $hypothetical += $hyp[$i];
         }
         $isGrow = $hypothetical < $available;
 
-        // Initial freeze pass: zero grow/shrink, or already past
-        // the relevant clamp boundary.
+        // Initial freeze pass (§9.7 step 3): items with a zero flex factor
+        // freeze at their hypothetical (clamped) size; items whose base is
+        // already past the active clamp boundary freeze at that boundary
+        // (== hypothetical there too).
         $frozen = [];
         foreach ($indices as $i) {
             if ($isGrow && $grows[$i] <= 0.0) {
-                $frozen[$i] = $baseOuter[$i];
+                $frozen[$i] = $hyp[$i];
             } elseif (!$isGrow && $shrinks[$i] <= 0.0) {
-                $frozen[$i] = $baseOuter[$i];
+                $frozen[$i] = $hyp[$i];
             } elseif ($isGrow && $baseOuter[$i] >= $maxOuter[$i]) {
                 $frozen[$i] = $maxOuter[$i];
             } elseif (!$isGrow && $baseOuter[$i] <= $minOuter[$i]) {
@@ -5520,10 +5543,11 @@ final class BlockLayout
         }
 
         // Any item still unfrozen at this point (defensive — should
-        // not happen if the iteration cap is right) keeps its base.
+        // not happen if the iteration cap is right) keeps its
+        // hypothetical (clamped) size.
         $result = [];
         foreach ($indices as $i) {
-            $result[$i] = $frozen[$i] ?? $baseOuter[$i];
+            $result[$i] = $frozen[$i] ?? $hyp[$i];
         }
         return $result;
     }

@@ -5756,6 +5756,37 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(130.0, $flex->children[1]->geometry->x);
     }
 
+    public function testFlexItemAutomaticMinimumOverridesZeroBasis(): void
+    {
+        // CSS Flexbox 1 §4.5 + §9.2/§9.7 — a column flex item with
+        // `flex-basis: 0` (flex base size 0) and the initial
+        // `min-height: auto` has a content-based automatic minimum equal
+        // to its min-content height (here 100px from the fixed child).
+        // The item's HYPOTHETICAL main size is its base clamped up to that
+        // minimum, so even inside a `height: 10px` container with no flex
+        // growth it must be laid out 100px tall — the sign decision and
+        // the inflexible-item freeze must use the clamped hypothetical
+        // size, not the raw base 0 (which would collapse the item).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="flex">'
+                . '<div class="item"><div class="content"></div></div>'
+                . '</div></body></html>',
+            '.flex { display: flex; flex-direction: column; width: 100px; height: 10px; }
+             .flex > .item { flex-basis: 0; }
+             .content { width: 100px; height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'div');
+        self::assertNotNull($flex);
+        self::assertCount(1, $flex->children);
+        self::assertEqualsWithDelta(
+            100.0,
+            $flex->children[0]->geometry->height,
+            0.001,
+            'flex item respects its §4.5 automatic minimum height despite flex-basis:0',
+        );
+    }
+
     public function testFlexRowLaysOutItemsHorizontally(): void
     {
         // Three 100-wide items in a 600-wide flex container with
