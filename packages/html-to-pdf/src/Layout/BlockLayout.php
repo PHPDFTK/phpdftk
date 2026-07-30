@@ -1404,7 +1404,20 @@ final class BlockLayout
                     $box,
                 );
             } elseif ($widthAuto && !$heightIsAuto && $geo->height > 0.0) {
-                $geo->width = \Phpdftk\Css\Cascade\LengthResolver::clampPx($geo->height * $ratio);
+                // CSS Sizing 4 §5.1 — the inline size derived from the
+                // ratio is a PREFERRED size, symmetric with the block-axis
+                // {@see aspectRatioBlockSize}: clamp to explicit min/max-
+                // width then floor by the content-based automatic minimum.
+                $geo->width = $this->applyInlineRatioMinMax(
+                    \Phpdftk\Css\Cascade\LengthResolver::clampPx($geo->height * $ratio),
+                    $box,
+                    $style,
+                    $context,
+                    $wm,
+                    $minWidth,
+                    $resolvedMaxWidth,
+                    $clampMm,
+                );
             } elseif ($heightIsAuto && $geo->width > 0.0) {
                 // Both auto path retained for the historic case
                 // where height defaults to width / ratio.
@@ -1472,7 +1485,16 @@ final class BlockLayout
         // inside an indefinite-height parent gets width=0 (from
         // height=0 × 1) instead of width=100 (the post-clamp height).
         if ($ratio !== null && $ratio > 0.0 && $widthAuto && !$heightIsAuto) {
-            $geo->width = \Phpdftk\Css\Cascade\LengthResolver::clampPx($geo->height * $ratio);
+            $geo->width = $this->applyInlineRatioMinMax(
+                \Phpdftk\Css\Cascade\LengthResolver::clampPx($geo->height * $ratio),
+                $box,
+                $style,
+                $context,
+                $wm,
+                $minWidth,
+                $resolvedMaxWidth,
+                $clampMm,
+            );
         }
 
         if ($heightIsAuto
@@ -3690,7 +3712,27 @@ final class BlockLayout
             // length declarations.
             $childWidthAuto = $this->isAuto($p['box']->style->get('width'));
             $childHeightAuto = $this->isHeightAutoLike($p['box']->style->get('height'));
-            if ($isStretchX && $childWidthAuto) {
+            // CSS Box Alignment 3 §4.1 + CSS Sizing 4 §4.2 — the `normal`
+            // (default) self-alignment does NOT stretch a box that has a
+            // preferred `aspect-ratio` and a definite size in the OTHER
+            // axis; it keeps the ratio-derived size. Only an EXPLICIT
+            // `stretch` keyword overrides the ratio. `gridSelfKeyword`
+            // collapses `normal` / `auto` → `stretch`, so read the raw
+            // value to tell explicit-stretch from the default.
+            $ratio = $this->resolveAspectRatio($p['box']->style);
+            $hasRatio = $ratio !== null && $ratio > 0.0;
+            $jsRaw = $p['box']->style->get('justify-self');
+            $asRaw = $p['box']->style->get('align-self');
+            $justifyExplicitStretch = $jsRaw instanceof Keyword && strtolower($jsRaw->name) === 'stretch';
+            $alignExplicitStretch = $asRaw instanceof Keyword && strtolower($asRaw->name) === 'stretch';
+            $widthDefinite = !$this->isAuto($p['box']->style->get('width'));
+            $heightDefinite = !$this->isHeightAutoLike($p['box']->style->get('height'));
+            // When the OTHER axis is definite, the ratio drives this axis:
+            // suppress the default (non-explicit) stretch so the
+            // ratio-derived size survives.
+            $ratioKeepsX = $hasRatio && $heightDefinite && !$justifyExplicitStretch;
+            $ratioKeepsY = $hasRatio && $widthDefinite && !$alignExplicitStretch;
+            if ($isStretchX && $childWidthAuto && !$ratioKeepsX) {
                 // Stretch fills the cell minus the child's own
                 // surroundings — matches Phase-2 default behaviour.
                 $childGeo->width = $cellWidth
@@ -3699,7 +3741,7 @@ final class BlockLayout
                     - $childGeo->paddingLeft - $childGeo->paddingRight;
                 $childOuterWidth = $childGeo->outerWidth();
             }
-            if ($isStretchY && $childHeightAuto && $childOuterHeight < $cellHeight) {
+            if ($isStretchY && $childHeightAuto && $childOuterHeight < $cellHeight && !$ratioKeepsY) {
                 $childGeo->height = $cellHeight
                     - $childGeo->marginTop - $childGeo->marginBottom
                     - $childGeo->borderTop - $childGeo->borderBottom
@@ -6257,6 +6299,64 @@ final class BlockLayout
             return true;
         }
         return $this->isAuto($style->get('min-height'));
+    }
+
+    /**
+     * Inline-axis analog of {@see blockSizeMinIsAuto}: `true` when
+     * `min-width` resolves to the automatic content-based minimum
+     * (unset — stored as `0` but semantically `auto` — or explicit
+     * `auto`). An authored length, including `min-width: 0`, replaces it.
+     */
+    private function inlineSizeMinIsAuto(CascadedValues $style): bool
+    {
+        if (!$style->has('min-width')) {
+            return true;
+        }
+        return $this->isAuto($style->get('min-width'));
+    }
+
+    /**
+     * CSS Sizing 4 §5.1 — clamp an `aspect-ratio`-derived INLINE size the
+     * same way {@see aspectRatioBlockSize} clamps the block size: it is a
+     * *preferred* size, so bound it by the explicit min/max-width, then
+     * floor it by the box's content-based automatic minimum inline size
+     * (when `min-width` is `auto` and the box is not a scroll container).
+     * The content floor is applied AFTER the max clamp so `max-width`
+     * never cuts below the content minimum. Skipped in vertical writing
+     * modes, where the inline axis is vertical and derived upstream.
+     *
+     * @param array{min: float, max: float}|null $clampMm  cached
+     *        content-size measurement; populated lazily on first use.
+     */
+    private function applyInlineRatioMinMax(
+        float $ratioWidth,
+        Box $box,
+        CascadedValues $style,
+        LayoutContext $context,
+        WritingMode $wm,
+        float $minWidth,
+        ?float $maxWidth,
+        ?array &$clampMm,
+    ): float {
+        $w = $ratioWidth;
+        if ($maxWidth !== null && $w > $maxWidth) {
+            $w = $maxWidth;
+        }
+        if ($minWidth > 0.0 && $w < $minWidth) {
+            $w = $minWidth;
+        }
+        if (!$wm->isVertical()
+            && $this->inlineSizeMinIsAuto($style)
+            && !$this->isScrollContainer($style)
+        ) {
+            if ($clampMm === null) {
+                $clampMm = $this->measureContentMinMax($box, $context);
+            }
+            if ($clampMm['min'] > $w) {
+                $w = $clampMm['min'];
+            }
+        }
+        return $w;
     }
 
     /**

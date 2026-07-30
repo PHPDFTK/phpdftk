@@ -830,6 +830,43 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(30.0, $g->geometry->x, 0.001, 'relative grid container shifted by left:30px');
     }
 
+    public function testGridItemKeepsAspectRatioSizeUnderDefaultAlignment(): void
+    {
+        // CSS Box Alignment 3 §4.1 — the default (`normal`) self-alignment
+        // does NOT stretch a grid item that has a preferred aspect-ratio
+        // and a definite size in the other axis; only an explicit
+        // `stretch` keyword does. Item has aspect-ratio 1/1 and height 40px
+        // in a 200px-wide track → width stays the ratio-derived 40px, not
+        // stretched to the 200px cell.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="g"><div class="i"></div></div></body></html>',
+            '.g { display: grid; grid-template-columns: 200px; width: 200px; }
+             .i { aspect-ratio: 1 / 1; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $i = $this->find($box, 'div.i');
+        self::assertNotNull($i);
+        self::assertEqualsWithDelta(40.0, $i->geometry->width, 0.001, 'ratio-derived width survives default (normal) grid alignment');
+    }
+
+    public function testBlockAspectRatioWidthFlooredByContentMinimum(): void
+    {
+        // CSS Sizing 4 §5.1 — an aspect-ratio-derived inline size is a
+        // PREFERRED size floored by the box's content-based automatic
+        // minimum (min-width:auto). Outer div: height 100px, aspect-ratio
+        // 1/2 → ratio width 50px, but a 100px-wide child forces min-content
+        // 100px, so the used width is floored to 100px (not 50px).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="a"><div class="c"></div></div></body></html>',
+            '.a { height: 100px; aspect-ratio: 1 / 2; }
+             .c { width: 100px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $a = $this->find($box, 'div.a');
+        self::assertNotNull($a);
+        self::assertEqualsWithDelta(100.0, $a->geometry->width, 0.001, 'ratio-derived width floored up to the 100px child min-content');
+    }
+
     public function testBorderCollapseHiddenSuppressesJointEntirely(): void
     {
         // Negative: `hidden` on either side of a joint wins — the
