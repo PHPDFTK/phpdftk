@@ -434,10 +434,16 @@ final class BlockLayout
             return 0.0;
         }
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\FlexBox) {
-            return $this->layoutFlexBox($box, $context);
+            // Like table rows, flex / grid containers return from a
+            // specialised path that skips the `layoutBlock` relative /
+            // sticky tail — so a positioned flex / grid CONTAINER would
+            // never shift by its own `top` / `left`. Apply it here.
+            $flexHeight = $this->layoutFlexBox($box, $context);
+            return $this->applyRelativePositionShift($box, $context, $flexHeight);
         }
         if ($box instanceof \Phpdftk\HtmlToPdf\Box\GridBox) {
-            return $this->layoutGridBox($box, $context);
+            $gridHeight = $this->layoutGridBox($box, $context);
+            return $this->applyRelativePositionShift($box, $context, $gridHeight);
         }
         if ($box instanceof BlockBox
             || $box instanceof AnonymousBlockBox

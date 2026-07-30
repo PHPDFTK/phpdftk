@@ -797,6 +797,39 @@ final class BlockLayoutTest extends TestCase
         self::assertGreaterThan(0.0, $cells['only']->geometry->borderLeft);
     }
 
+    public function testRelativeFlexContainerShiftsByOffset(): void
+    {
+        // CSS 2.1 §9.4.3 — `position: relative; top: 40px` on a flex
+        // CONTAINER shifts the whole container by 40px. Flex containers
+        // go through the specialised `layoutFlexBox` path, which skips
+        // the shared relative tail (same class of bug as table rows).
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="i"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; position: relative; top: 40px; width: 50px; height: 50px; }
+             #i { width: 50px; height: 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(40.0, $f->geometry->y, 0.001, 'relative flex container shifted by top:40px');
+    }
+
+    public function testRelativeGridContainerShiftsByOffset(): void
+    {
+        // CSS 2.1 §9.4.3 — same as the flex case for a grid CONTAINER.
+        $box = $this->buildTree(
+            '<html><body><div id="g"><div id="i"></div></div></body></html>',
+            'html, body { display: block; }
+             #g { display: grid; position: relative; left: 30px; width: 50px; height: 50px; }
+             #i { width: 50px; height: 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $g = $this->findById($box, 'g');
+        self::assertNotNull($g);
+        self::assertEqualsWithDelta(30.0, $g->geometry->x, 0.001, 'relative grid container shifted by left:30px');
+    }
+
     public function testBorderCollapseHiddenSuppressesJointEntirely(): void
     {
         // Negative: `hidden` on either side of a joint wins — the
