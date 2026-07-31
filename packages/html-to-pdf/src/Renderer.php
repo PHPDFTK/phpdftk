@@ -466,6 +466,37 @@ final class Renderer
      * own style is mutated; descendants keep inheriting from the
      * original cascade chain.
      */
+    /**
+     * CSS Contain §2 — does this box's `contain` establish any of the
+     * containment types that make it an independent layout root (layout /
+     * paint / size / style, plus the `content` / `strict` shorthands and
+     * the size sub-keywords)? Used to gate the body-to-root writing-mode
+     * propagation quirk.
+     */
+    private function hasContainment(\Phpdftk\HtmlToPdf\Box\Box $box): bool
+    {
+        $value = $box->style->get('contain');
+        $names = [];
+        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
+            $names[] = strtolower($value->name);
+        } elseif ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($value->values as $v) {
+                if ($v instanceof \Phpdftk\Css\Value\Keyword) {
+                    $names[] = strtolower($v->name);
+                }
+            }
+        }
+        foreach ($names as $n) {
+            if (in_array($n, [
+                'layout', 'paint', 'size', 'style', 'content', 'strict',
+                'inline-size', 'block-size',
+            ], true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function propagateBodyWritingModeToRoot(\Phpdftk\HtmlToPdf\Box\Box $root): void
     {
         $body = null;
@@ -476,6 +507,13 @@ final class Renderer
             }
         }
         if ($body === null) {
+            return;
+        }
+        // CSS Contain §3.1 — layout / paint / size / style containment on
+        // the root or the propagating body suppresses the body-to-root
+        // writing-mode / direction quirk (the contained element no longer
+        // propagates its used values to the initial containing block).
+        if ($this->hasContainment($root) || $this->hasContainment($body)) {
             return;
         }
         $rootWm = $root->style->get('writing-mode');
