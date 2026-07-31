@@ -92,6 +92,40 @@ final class PainterTest extends TestCase
         }
     }
 
+    public function testOverflowClipMarginExpandsClipRect(): void
+    {
+        // CSS Overflow 3 §4.2 — `overflow-clip-margin: 10px` on an
+        // `overflow: clip` box expands the clip region 10px outward from
+        // the padding box on every edge, so a 100px box clips at 120px
+        // (x = -10, width = 120), not at the padding box (x = 0, w = 100).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; overflow: clip;
+                   overflow-clip-margin: 10px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $clip = null;
+        foreach ($stream->getOperators() as $op) {
+            if (preg_match('/^(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?) re$/', trim($op), $m)
+                && abs((float) $m[3] - 120.0) < 0.5
+            ) {
+                $clip = $m;
+            }
+        }
+        self::assertNotNull($clip, 'clip rectangle expanded to 120px wide');
+        self::assertEqualsWithDelta(-10.0, (float) $clip[1], 0.5, 'clip x shifted out by the 10px margin');
+        self::assertEqualsWithDelta(120.0, (float) $clip[4], 0.5, 'clip height also expanded to 120px');
+    }
+
     public function testClipPathWithGeometryBoxEmitsClip(): void
     {
         // CSS Masking 1 §6 — `clip-path: <basic-shape> <geometry-box>`

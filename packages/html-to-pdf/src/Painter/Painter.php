@@ -922,11 +922,11 @@ final class Painter
                     $layer = 2;
                 }
             }
-            // Only a float (sub-layer 1) actually needs the sub-layer
-            // reorder; block (0) and inline (2) never coexist as direct
-            // siblings (mixed content is anonymous-block-wrapped), so
-            // sub-layer alone must not trip the reorder and disturb the
-            // byte-identical fast path for float-free boxes.
+            // Only a float (sub-layer 1) genuinely reorders against
+            // document order; block (0) and inline (2) never coexist as
+            // direct siblings (mixed content is anonymous-block-wrapped),
+            // so those alone must not trip the reorder and disturb the
+            // byte-identical fast path.
             if ($z !== 0 || $order !== 0 || $layer === 1) {
                 $anyReorder = true;
             }
@@ -1854,6 +1854,65 @@ final class Painter
         return $this->originalAxisClips($box, $axis);
     }
 
+    /** True when the box's `overflow` (or per-axis) uses the `clip` keyword. */
+    private function hasOverflowClip(Box $box): bool
+    {
+        foreach (['overflow', 'overflow-x', 'overflow-y'] as $prop) {
+            $v = $box->style->get($prop);
+            if ($v instanceof Keyword && strtolower($v->name) === 'clip') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * CSS Overflow 3 §4.2 — resolve `overflow-clip-margin` to a per-edge
+     * OUTWARD expansion (left, top, right, bottom) from the padding box.
+     * The value is `[ <visual-box> || <length [0,∞]> ]`: the reference box
+     * (content-box / padding-box[default] / border-box) sets the base
+     * edge, the length pushes further out. Only applies to `overflow:
+     * clip`; returns zeros otherwise.
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}
+     */
+    private function overflowClipMargin(Box $box): array
+    {
+        if (!$this->hasOverflowClip($box)) {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        $value = $box->style->get('overflow-clip-margin');
+        $items = $value instanceof \Phpdftk\Css\Value\ValueList
+            ? $value->values
+            : ($value !== null ? [$value] : []);
+        $refBox = 'padding-box';
+        $margin = 0.0;
+        foreach ($items as $item) {
+            if ($item instanceof Keyword) {
+                $n = strtolower($item->name);
+                if (in_array($n, ['content-box', 'padding-box', 'border-box'], true)) {
+                    $refBox = $n;
+                }
+            } elseif ($item instanceof \Phpdftk\Css\Value\Length) {
+                $margin = max(0.0, $item->value);
+            }
+        }
+        $g = $box->geometry;
+        $baseL = $baseT = $baseR = $baseB = 0.0;
+        if ($refBox === 'border-box') {
+            $baseL = $g->borderLeft;
+            $baseT = $g->borderTop;
+            $baseR = $g->borderRight;
+            $baseB = $g->borderBottom;
+        } elseif ($refBox === 'content-box') {
+            $baseL = -$g->paddingLeft;
+            $baseT = -$g->paddingTop;
+            $baseR = -$g->paddingRight;
+            $baseB = -$g->paddingBottom;
+        }
+        return [$baseL + $margin, $baseT + $margin, $baseR + $margin, $baseB + $margin];
+    }
+
     private function originalAxisClips(Box $box, string $axis): bool
     {
         foreach (["overflow-$axis", 'overflow'] as $prop) {
@@ -1891,10 +1950,14 @@ final class Painter
         }
         $clipsX = $this->axisClips($box, 'x');
         $clipsY = $this->axisClips($box, 'y');
-        $rectX = $clipsX ? $padX : 0.0;
-        $rectWidth = $clipsX ? $padWidth : $this->pageWidth;
-        $rectTop = $clipsY ? $padTop : 0.0;
-        $rectHeight = $clipsY ? $padHeight : $this->pageHeight;
+        // CSS Overflow 3 §4.2 — `overflow-clip-margin` expands the clip
+        // region outward from a visual reference box (only for the `clip`
+        // keyword; hidden/scroll/auto always clip at the padding box).
+        [$expandL, $expandT, $expandR, $expandB] = $this->overflowClipMargin($box);
+        $rectX = $clipsX ? $padX - $expandL : 0.0;
+        $rectWidth = $clipsX ? $padWidth + $expandL + $expandR : $this->pageWidth;
+        $rectTop = $clipsY ? $padTop - $expandT : 0.0;
+        $rectHeight = $clipsY ? $padHeight + $expandT + $expandB : $this->pageHeight;
         $pdfY = $this->pageHeight - $rectTop - $rectHeight;
         $stream->rectangle($rectX, $pdfY, $rectWidth, $rectHeight);
         $stream->clip();
