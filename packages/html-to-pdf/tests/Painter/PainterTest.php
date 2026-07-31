@@ -349,6 +349,43 @@ final class PainterTest extends TestCase
         self::assertLessThan($greenPos, $redPos, 'z-index:-1 box paints behind the in-flow sibling');
     }
 
+    public function testFloatPaintsOnTopOfInFlowBlockSibling(): void
+    {
+        // CSS 2.1 Appendix E — a non-positioned float (step 4) paints ON
+        // TOP of in-flow non-positioned block-level boxes (step 3). The
+        // float is DOM-first and overlaps the following in-flow block; its
+        // fill must appear LATER in the stream (on top), not behind. Guards
+        // the `float-005` / `clear-004` reftests where a float overlaps a
+        // following full-size block.
+        $doc = $this->html->parseDocument(
+            '<html><body>'
+                . '<div class="f"></div><div class="b"></div>'
+                . '</body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .f { float: left; width: 80px; height: 80px;
+                  background-color: rgb(0, 255, 0); }
+             .b { width: 160px; height: 160px;
+                  background-color: rgb(255, 0, 0); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+        $bytes = (string) array_reduce($stream->getOperators(), static fn($a, $o) => $a . $o . "\n", '');
+
+        $greenPos = strpos($bytes, '0 1 0 rg');
+        $redPos = strpos($bytes, '1 0 0 rg');
+        self::assertNotFalse($greenPos, 'float green box emitted');
+        self::assertNotFalse($redPos, 'in-flow red block emitted');
+        self::assertLessThan($greenPos, $redPos, 'float paints on top of (after) the in-flow block');
+    }
+
     public function testGridItemsPaintInOrderModifiedOrder(): void
     {
         // CSS Grid 1 §4.2 — grid items paint in "order-modified document

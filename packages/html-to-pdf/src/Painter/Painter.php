@@ -900,10 +900,37 @@ final class Painter
             // flex items; its initial value is 0, so a non-zero `order`
             // triggers the reorder just as a non-zero `z-index` does.
             $order = $isGridOrFlex ? $this->orderOf($child) : 0;
-            if ($z !== 0 || $order !== 0) {
+            // CSS 2.1 Appendix E — within one z-index bucket the paint
+            // sub-order is: in-flow non-positioned block-level boxes
+            // (step 3), then non-positioned floats (step 4), then in-flow
+            // non-positioned inline-level boxes (step 5). Document order
+            // alone paints a float behind any later in-flow block that
+            // overlaps it (a left float under a following full-page block);
+            // lifting floats to sub-layer 1 fixes that, while inline-level
+            // siblings go to sub-layer 2 so they still paint over the float.
+            // Positioned boxes keep their existing ordering (their z-index
+            // bucket already governs them).
+            $layer = 0;
+            if (!$this->isPositioned($child)) {
+                if ($this->isFloat($child)) {
+                    $layer = 1;
+                } elseif ($child instanceof \Phpdftk\HtmlToPdf\Box\InlineBox
+                    || $child instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox
+                    || $child instanceof \Phpdftk\HtmlToPdf\Box\TextBox
+                    || $child instanceof \Phpdftk\HtmlToPdf\Box\LineBreakBox
+                ) {
+                    $layer = 2;
+                }
+            }
+            // Only a float (sub-layer 1) actually needs the sub-layer
+            // reorder; block (0) and inline (2) never coexist as direct
+            // siblings (mixed content is anonymous-block-wrapped), so
+            // sub-layer alone must not trip the reorder and disturb the
+            // byte-identical fast path for float-free boxes.
+            if ($z !== 0 || $order !== 0 || $layer === 1) {
                 $anyReorder = true;
             }
-            $indexed[] = [$i, $z, $order, $child];
+            $indexed[] = [$i, $z, $layer, $order, $child];
         }
         if (!$anyReorder) {
             return $children;
@@ -912,9 +939,10 @@ final class Painter
             $indexed,
             static fn(array $a, array $b): int => ($a[1] <=> $b[1])
                 ?: ($a[2] <=> $b[2])
+                ?: ($a[3] <=> $b[3])
                 ?: ($a[0] <=> $b[0]),
         );
-        return array_map(static fn(array $e): Box => $e[3], $indexed);
+        return array_map(static fn(array $e): Box => $e[4], $indexed);
     }
 
     /**
@@ -930,6 +958,23 @@ final class Painter
         }
         return match (strtolower($p->name)) {
             'relative', 'absolute', 'fixed', 'sticky' => true,
+            default => false,
+        };
+    }
+
+    /**
+     * Whether the box is a CSS float (`float: left | right` and the
+     * flow-relative aliases). Drives the Appendix E paint sub-layer so a
+     * float paints over in-flow block siblings.
+     */
+    private function isFloat(Box $box): bool
+    {
+        $f = $box->style->get('float');
+        if (!$f instanceof Keyword) {
+            return false;
+        }
+        return match (strtolower($f->name)) {
+            'left', 'right', 'inline-start', 'inline-end' => true,
             default => false,
         };
     }
