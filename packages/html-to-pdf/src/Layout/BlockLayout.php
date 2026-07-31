@@ -7593,10 +7593,16 @@ final class BlockLayout
             $parent->geometry->width,
             $childContext,
         );
+        // Pagination breaks lines at real PAGE boundaries, not at the
+        // parent's own (possibly small, fixed) block size — passing
+        // containingBlockHeight made a short fixed-height block behave like
+        // a page fragmentainer and shoved overflowing lines down by the box
+        // height. For full-page bodies pageHeight == containingBlockHeight,
+        // so the paginated case is unchanged.
         $height = $this->avoidLineSplitsAcrossPages(
             $lines,
             $parent,
-            $childContext->containingBlockHeight,
+            $childContext->pageHeight,
             $height,
         );
         $parent->lineBoxes = $lines;

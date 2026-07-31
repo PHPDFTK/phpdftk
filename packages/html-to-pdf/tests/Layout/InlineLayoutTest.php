@@ -60,6 +60,11 @@ final class InlineLayoutTest extends TestCase
             originY: 0.0,
             lengthContext: new LengthContext(),
             defaultFont: $this->font,
+            // Pagination now breaks at the real page height (not the
+            // parent's block size); these full-page tests want an 800-tall
+            // page, so set it explicitly rather than relying on the old
+            // containingBlockHeight-as-page conflation.
+            pageHeight: 800.0,
         );
     }
 
@@ -1547,6 +1552,40 @@ final class InlineLayoutTest extends TestCase
         $expectedY = 0.0;
         foreach ($p->lineBoxes as $line) {
             self::assertEqualsWithDelta($expectedY, $line->y, 0.001);
+            $expectedY += $line->height;
+        }
+    }
+
+    public function testPaginationUsesPageHeightNotContainingBlockHeight(): void
+    {
+        // A paragraph must not be fragmented at its parent's (small)
+        // containing-block height — pagination breaks at the real PAGE
+        // height. Regression guard: avoidLineSplitsAcrossPages was fed
+        // containingBlockHeight, so a short fixed-height block behaved
+        // like a page fragmentainer and shoved lines down by the box size.
+        $this->skipIfNoFont();
+        $body = str_repeat("\u{1820} ", 30);
+        $box = $this->buildTree(
+            '<html><body><p>' . $body . '</p></body></html>',
+            'html, body, p { display: block; } p { line-height: 20px; }',
+        );
+        // Small CB height (100) but a full 800-tall page: lines stay
+        // contiguous — no break at y=100.
+        $ctx = new LayoutContext(
+            containingBlockWidth: 80.0,
+            containingBlockHeight: 100.0,
+            originX: 0.0,
+            originY: 0.0,
+            lengthContext: new LengthContext(),
+            defaultFont: $this->font,
+            pageHeight: 800.0,
+        );
+        $this->layout->layout($box, $ctx);
+        $p = $this->find($box, 'p');
+        self::assertNotNull($p);
+        $expectedY = 0.0;
+        foreach ($p->lineBoxes as $line) {
+            self::assertEqualsWithDelta($expectedY, $line->y, 0.001, 'no fragmentation at CB height 100');
             $expectedY += $line->height;
         }
     }
