@@ -888,13 +888,19 @@ final class BlockLayout
                     max($clampMm['min'], $this->resolveLength($maxFitArg, $cbWidth)),
                 );
             } else {
-                $maxWidth = max(0.0, $this->resolveLength($maxWidthValue, $cbWidth) - $horizontalInset);
+                // CSS 2.1 §10.4 — a negative `max-width` is invalid and
+                // must be ignored (leave the bound off, same as `none`).
+                // `max-width: 0` is a valid zero ceiling and still clamps.
+                $rawMaxWidth = $this->resolveLength($maxWidthValue, $cbWidth);
+                $maxWidth = $rawMaxWidth < 0.0
+                    ? null
+                    : max(0.0, $rawMaxWidth - $horizontalInset);
             }
             // Spec: `max-width: 0` (or `max-width: 0%`) is a real
             // constraint — clamp the content-box width to zero.
             // Only `none` removes the upper bound.
             $resolvedMaxWidth = $maxWidth;
-            if ($contentWidth > $maxWidth) {
+            if ($maxWidth !== null && $contentWidth > $maxWidth) {
                 $contentWidth = $maxWidth;
                 // Width fell out of `auto` territory — treat it like an
                 // explicit length from here on so auto-margin slack
@@ -1463,7 +1469,15 @@ final class BlockLayout
                 // at the resolved width ($childTotal, content-box).
                 $maxHeight = $childTotal;
             } else {
-                $maxHeight = max(0.0, $this->resolveLength($maxHeightValue, $context->containingBlockHeight) - $verticalInset);
+                // CSS 2.1 §10.7 — a negative `max-height` is invalid and
+                // must be ignored (declaration dropped), leaving the box
+                // at its `height`. Leave the ceiling off (null) so the
+                // clamp is skipped, exactly like `none`. `max-height: 0`
+                // is a valid zero ceiling and still clamps.
+                $rawMaxHeight = $this->resolveLength($maxHeightValue, $context->containingBlockHeight);
+                $maxHeight = $rawMaxHeight < 0.0
+                    ? null
+                    : max(0.0, $rawMaxHeight - $verticalInset);
             }
             if ($maxHeight !== null && $geo->height > $maxHeight) {
                 $geo->height = $maxHeight;

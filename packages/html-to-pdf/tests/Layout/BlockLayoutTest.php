@@ -476,6 +476,34 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(0.0, $c->geometry->y, 0.5);
     }
 
+    public function testNegativeMaxSizeIsIgnoredButZeroStillClamps(): void
+    {
+        // CSS 2.1 §10.4/§10.7 — a NEGATIVE max-width / max-height is
+        // invalid and must be ignored (the box keeps its width/height),
+        // whereas max-*: 0 is a valid zero ceiling that still clamps.
+        // Regression guard: the clamp folded a negative resolved length
+        // through max(0.0, ...) and collapsed the box to 0.
+        $box = $this->buildTree(
+            '<html><body>'
+                . '<div id="neg"></div><div id="zero"></div>'
+                . '</body></html>',
+            'html, body, div { display: block; }
+             #neg  { width: 100px; height: 100px; max-width: -50px; max-height: -50px; }
+             #zero { width: 100px; height: 100px; max-width: 0; max-height: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $neg = $this->findById($box, 'neg');
+        $zero = $this->findById($box, 'zero');
+        self::assertNotNull($neg);
+        self::assertNotNull($zero);
+        // Negative max-* ignored -> box keeps 100x100.
+        self::assertEqualsWithDelta(100.0, $neg->geometry->width, 0.5);
+        self::assertEqualsWithDelta(100.0, $neg->geometry->height, 0.5);
+        // max-*: 0 is valid -> clamps to 0.
+        self::assertEqualsWithDelta(0.0, $zero->geometry->width, 0.5);
+        self::assertEqualsWithDelta(0.0, $zero->geometry->height, 0.5);
+    }
+
     public function testFlexContainerTopMarginCollapsesWithParent(): void
     {
         // CSS 2.1 §8.3.1 + Flexbox 1 §3 — a flex container establishes a
