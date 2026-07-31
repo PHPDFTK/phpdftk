@@ -1130,7 +1130,7 @@ final class BlockLayout
         // current containing-block height (= the viewport for the
         // root chain) — auto height isn't known until after children
         // lay out, and a multi-pass would be needed for full accuracy.
-        if ($this->isPositioned($style)) {
+        if ($this->isPositioned($style) || $this->establishesAbsPosContainingBlock($style)) {
             $paWidth = $geo->paddingLeft + $geo->width + $geo->paddingRight;
             $heightValueForPA = $style->get('height');
             $paContentHeight = $this->isHeightAutoLike($heightValueForPA)
@@ -6607,6 +6607,36 @@ final class BlockLayout
      *
      * @param 'block'|'inline' $axis
      */
+    /**
+     * CSS Contain §3.1 — does `contain` make this box a containing block
+     * for `position: absolute` / `fixed` descendants? Layout and paint
+     * containment (and the `content` / `strict` shorthands that include
+     * them) establish the box as an abspos containing block even without
+     * a `position` other than `static`.
+     */
+    private function establishesAbsPosContainingBlock(CascadedValues $style): bool
+    {
+        $value = $style->get('contain');
+        if (!$value instanceof Keyword && !($value instanceof \Phpdftk\Css\Value\ValueList)) {
+            return false;
+        }
+        $keywords = $value instanceof Keyword
+            ? [strtolower($value->name)]
+            : array_filter(
+                array_map(
+                    static fn($v) => $v instanceof Keyword ? strtolower($v->name) : null,
+                    $value->values,
+                ),
+                static fn($v) => $v !== null,
+            );
+        foreach ($keywords as $kw) {
+            if (in_array($kw, ['layout', 'paint', 'content', 'strict'], true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function containsSize(CascadedValues $style, string $axis): bool
     {
         $value = $style->get('contain');

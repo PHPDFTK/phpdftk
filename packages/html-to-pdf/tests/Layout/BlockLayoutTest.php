@@ -504,6 +504,29 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(0.0, $zero->geometry->height, 0.5);
     }
 
+    public function testContainLayoutEstablishesAbsPosContainingBlock(): void
+    {
+        // CSS Contain §3.1 — layout (or paint / content / strict)
+        // containment makes an otherwise-static box a containing block for
+        // its abspos descendants. An `inset: 0` child fills the contained
+        // box's padding box, not the viewport.
+        $box = $this->buildTree(
+            '<html><body><div id="c"><div id="ap"></div></div></body></html>',
+            'html, body { display: block; }
+             #c { display: block; contain: layout; width: 100px; height: 100px;
+                  margin-left: 50px; }
+             #ap { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        // Fills #c's padding box (x = its 50px margin-left), 100x100 —
+        // not the 600-wide viewport.
+        self::assertEqualsWithDelta(50.0, $ap->geometry->x, 0.5);
+        self::assertEqualsWithDelta(100.0, $ap->geometry->width, 0.5);
+        self::assertEqualsWithDelta(100.0, $ap->geometry->height, 0.5);
+    }
+
     public function testFlexContainerTopMarginCollapsesWithParent(): void
     {
         // CSS 2.1 §8.3.1 + Flexbox 1 §3 — a flex container establishes a
