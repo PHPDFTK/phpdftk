@@ -504,6 +504,27 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(0.0, $zero->geometry->height, 0.5);
     }
 
+    public function testInlineChildOfFlexContainerIsBlockified(): void
+    {
+        // CSS Display 3 §2.7 — an in-flow inline-level child of a flex
+        // container is blockified into a flex item (a BlockBox), so it
+        // honours width/height and fills its line instead of laying out as
+        // inline text. Regression guard: a `<span>` flex item stayed an
+        // InlineBox and ignored its sizing.
+        $box = $this->buildTree(
+            '<html><body><div id="f"><span id="item">x</span></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; }
+             #item { display: inline; width: 50px; height: 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $item = $this->findById($box, 'item');
+        self::assertNotNull($item);
+        self::assertInstanceOf(BlockBox::class, $item);
+        self::assertEqualsWithDelta(50.0, $item->geometry->width, 0.5);
+        self::assertEqualsWithDelta(50.0, $item->geometry->height, 0.5);
+    }
+
     public function testContainLayoutEstablishesAbsPosContainingBlock(): void
     {
         // CSS Contain §3.1 — layout (or paint / content / strict)

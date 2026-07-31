@@ -230,6 +230,30 @@ final class BoxGenerator
             $values->set('display', new Keyword('inline-block'));
             $display = 'inline-block';
         }
+        // CSS Display 3 §2.7 — a flex ITEM is BLOCKIFIED: an in-flow
+        // inline-level child of a flex container computes to its block-level
+        // equivalent so it participates as a flex item (fills its line,
+        // honours width / height) instead of laying out as inline text.
+        // Out-of-flow children were already blockified above; foreign-content
+        // roots keep their atomic-inline box (excluded).
+        // NOTE: scoped to FLEX only — blockifying GRID items is equally
+        // spec-correct but our grid track sizing mishandles the resulting
+        // block items (measured net −47 on css-grid vs +26 on flex), so it
+        // is deferred until the grid item path is fixed.
+        $parentDisplay = $parentValues !== null ? $this->displayKeyword($parentValues) : null;
+        if (($parentDisplay === 'flex' || $parentDisplay === 'inline-flex')
+            && !$this->isForeignContentRoot($element)
+            && in_array($display, ['inline', 'inline-block', 'inline-flex', 'inline-grid', 'inline-table'], true)
+        ) {
+            $blockified = match ($display) {
+                'inline-flex' => 'flex',
+                'inline-grid' => 'grid',
+                'inline-table' => 'table',
+                default => 'block',
+            };
+            $values->set('display', new Keyword($blockified));
+            $display = $blockified;
+        }
         // CSS Containment 2 §4 — `content-visibility: hidden`
         // suppresses box generation just like `display: none` for
         // static print. (`auto` is a runtime-visibility optimisation
