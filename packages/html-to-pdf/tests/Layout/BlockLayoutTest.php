@@ -476,6 +476,46 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(0.0, $c->geometry->y, 0.5);
     }
 
+    public function testFlexContainerTopMarginCollapsesWithParent(): void
+    {
+        // CSS 2.1 §8.3.1 + Flexbox 1 §3 — a flex container establishes a
+        // new formatting context for its CONTENTS only; its own outer
+        // margins still collapse with its parent exactly like a plain
+        // block. A flex first-child with `margin-top` therefore collapses
+        // through a border/padding-free parent (and, here, on through the
+        // root) instead of opening a 40px gap. Regression guard for the
+        // `flexbox_*` Opera reftests (flex-div designed to match a
+        // float-based normal-div): before the fix the parent-child
+        // collapse skipped non-BlockBox children and #f landed at y=40.
+        $box = $this->buildTree(
+            '<html><body><div id="outer"><div id="f"></div></div></body></html>',
+            'html, body { display: block; margin: 0; }
+             #outer { height: 200px; }
+             #f { display: flex; margin-top: 40px; height: 50px; width: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(0.0, $f->geometry->y, 0.5);
+    }
+
+    public function testGridContainerTopMarginCollapsesWithParent(): void
+    {
+        // Same rule for grid containers (CSS Grid 1 §2.1 mirrors the
+        // flex exemption — container↔contents only). Shares the
+        // `collapsesOuterMargin()` codepath with flex/table.
+        $box = $this->buildTree(
+            '<html><body><div id="outer"><div id="g"></div></div></body></html>',
+            'html, body { display: block; margin: 0; }
+             #outer { height: 200px; }
+             #g { display: grid; margin-top: 40px; height: 50px; width: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $g = $this->findById($box, 'g');
+        self::assertNotNull($g);
+        self::assertEqualsWithDelta(0.0, $g->geometry->y, 0.5);
+    }
+
     public function testAbsposChildOfInlineBlockLaysOutAgainstIt(): void
     {
         // CSS 2.1 §10.1 — a `position: relative` inline-block is the

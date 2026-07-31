@@ -1266,7 +1266,7 @@ final class BlockLayout
             // pushes the whole subtree off-page (the `top-*` positioning
             // reftests), so don't collapse through it.
             $first = $box->children[0];
-            if ($first instanceof BlockBox
+            if ($this->collapsesOuterMargin($first)
                 && !$this->isOutOfFlow($first)
                 && $this->floatSide($first) === null
                 && $first->geometry->marginTop > 0.0
@@ -1512,7 +1512,7 @@ final class BlockLayout
             // child's margin never collapses through the parent (and must
             // not shrink the parent's auto height).
             $last = $box->children[count($box->children) - 1];
-            if ($last instanceof BlockBox
+            if ($this->collapsesOuterMargin($last)
                 && !$this->isOutOfFlow($last)
                 && $this->floatSide($last) === null
                 && $last->geometry->marginBottom > 0.0
@@ -2209,6 +2209,29 @@ final class BlockLayout
         }
         $lower = strtolower($value->name);
         return $lower === 'absolute' || $lower === 'fixed';
+    }
+
+    /**
+     * CSS 2.1 §8.3.1 — is this a block-level, in-flow box whose OWN
+     * top/bottom margin collapses with an adjacent block (its parent or
+     * a sibling)?
+     *
+     * The block containers `flex` / `grid` / `table` establish a new
+     * formatting context for their CONTENTS, but that FC only exempts
+     * the container from collapsing with its *own children* (Flexbox 1
+     * §3, Grid 1 §2.1); the container's outer margins still collapse
+     * with its parent and siblings exactly like a plain block. So they
+     * must be treated the same as `BlockBox` at the parent-child
+     * collapse-through sites — which the sibling-collapse loop already
+     * does (it never type-checks). Excludes inline-level atomics
+     * (inline-block / inline-flex): their margins never collapse.
+     */
+    private function collapsesOuterMargin(Box $box): bool
+    {
+        return $box instanceof BlockBox
+            || $box instanceof \Phpdftk\HtmlToPdf\Box\FlexBox
+            || $box instanceof \Phpdftk\HtmlToPdf\Box\GridBox
+            || $box instanceof \Phpdftk\HtmlToPdf\Box\TableBox;
     }
 
     /**
