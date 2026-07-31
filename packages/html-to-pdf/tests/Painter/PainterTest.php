@@ -234,6 +234,29 @@ final class PainterTest extends TestCase
         self::assertSame([], $stream->getOperators(), 'border-style:hidden paints nothing');
     }
 
+    public function testBorderColorInitialIsCurrentColor(): void
+    {
+        // CSS Backgrounds & Borders 3 §4.2 — the initial value of
+        // border-*-color is `currentColor`, so `border: solid; color:
+        // green` (no explicit border-color) paints a GREEN border, not the
+        // old hard-coded black.
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { border: 10px solid; color: rgb(0, 255, 0); height: 30px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+        $bytes = (string) array_reduce($stream->getOperators(), static fn($a, $o) => $a . $o . "\n", '');
+        self::assertStringContainsString('0 1 0', $bytes, 'border paints in currentColor (green)');
+        self::assertStringNotContainsString('0 0 0 rg', $bytes, 'border is not black');
+    }
+
     public function testVisibilityHiddenSuppressesBoxPaint(): void
     {
         // visibility: hidden on the div skips its background; visibility:

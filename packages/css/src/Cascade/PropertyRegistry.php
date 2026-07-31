@@ -229,10 +229,16 @@ final class PropertyRegistry
         $r->register($initial('border-right-style', new Keyword('none')));
         $r->register($initial('border-bottom-style', new Keyword('none')));
         $r->register($initial('border-left-style', new Keyword('none')));
-        $r->register($initial('border-top-color', $black));
-        $r->register($initial('border-right-color', $black));
-        $r->register($initial('border-bottom-color', $black));
-        $r->register($initial('border-left-color', $black));
+        // CSS Backgrounds & Borders 3 §4.2 — the initial value of
+        // border-*-color is `currentColor` (resolves to the element's
+        // `color`), NOT a concrete black. Painter::borderColor() falls
+        // back to the cascaded `color` when border-*-color isn't a Color,
+        // so `border: solid; color: green` paints a green border.
+        $currentColor = new Keyword('currentcolor');
+        $r->register($initial('border-top-color', $currentColor));
+        $r->register($initial('border-right-color', $currentColor));
+        $r->register($initial('border-bottom-color', $currentColor));
+        $r->register($initial('border-left-color', $currentColor));
         // Border-radius (CSS Backgrounds 3 §6) — Phase 1 reads a uniform
         // radius from the shorthand and the four corner longhands.
         $zero = new Length(0.0, LengthUnit::Px);
