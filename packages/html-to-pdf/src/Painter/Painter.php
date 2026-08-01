@@ -3608,7 +3608,10 @@ final class Painter
             $descent = (abs($font->descent) / max(1, $font->unitsPerEm)) * $shapedRun->fontSizePt;
             $halfLeading = max(0.0, ($line->height - ($ascent + $descent)) / 2.0);
             $columnX = $box->geometry->x + $fragment->x + $offsetX + $halfLeading + $descent;
-            $columnTopLayoutY = $box->geometry->y + $line->y + $offsetY;
+            // Increment 2: `blockOffset` places each fragment DOWN the column
+            // by its original inline advance, so multiple fragments in one
+            // source line stack vertically instead of sharing the column top.
+            $columnTopLayoutY = $box->geometry->y + $line->y + $offsetY + $fragment->blockOffset;
             $columnTopPdfY = $this->pageHeight - $columnTopLayoutY;
             $stream->setTextMatrix(0.0, -1.0, 1.0, 0.0, $columnX, $columnTopPdfY);
         } else {

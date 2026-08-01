@@ -2867,8 +2867,10 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($div);
         self::assertNotEmpty($div->lineBoxes);
         $line = $div->lineBoxes[0];
-        // Inline offset (>= the 40px text-indent) transposed onto the vertical axis.
-        self::assertGreaterThanOrEqual(40.0, $line->y);
+        // Inline offset (>= the 40px text-indent) transposed onto the vertical
+        // axis — now carried per-fragment as `blockOffset` (increment 2), with
+        // LineBox.y = 0 as the column top.
+        self::assertGreaterThanOrEqual(40.0, $line->fragments[0]->blockOffset);
         // The single-glyph column sits at the block-start (left) edge for vertical-lr.
         self::assertSame(0.0, $line->fragments[0]->x);
     }
@@ -2901,7 +2903,44 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($div);
         self::assertNotEmpty($div->lineBoxes);
         // Centred against height (300) → > 100; a width-based centre (100) is ~43.
-        self::assertGreaterThan(100.0, $div->lineBoxes[0]->y);
+        // The inline centre offset is carried per-fragment as `blockOffset`
+        // (increment 2), not on LineBox.y.
+        self::assertGreaterThan(100.0, $div->lineBoxes[0]->fragments[0]->blockOffset);
+    }
+
+    public function testVerticalAbsposRecoversStaticInlinePositionFromPrecedingText(): void
+    {
+        // CSS 2.1 §9.4.2 static position, swapped to the vertical axes
+        // (CSS WM 4 §7.1): a static-position abspos in a vertical writing
+        // mode takes its INLINE-axis (physical-Y) position from the END of
+        // the preceding inline content's column — i.e. BELOW the text — not
+        // the container's top. Regression guard for the wm-abspos cluster:
+        // the vertical stacker previously ignored inline flow and pinned the
+        // abspos at the block cursor (y≈0).
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><div class="v" style="writing-mode: vertical-rl; '
+                . 'position: relative; font-family: noto; font-size: 20px; '
+                . 'width: 200px; height: 200px">AAAA'
+                . '<span class="ap" style="position: absolute; width: 10px; '
+                . 'height: 10px"></span></div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $ap = $this->find($box, 'span.ap');
+        self::assertNotNull($ap);
+        // "AAAA" (4×20px ≈ 80px) flows down the column, so the abspos static
+        // inline position lands well below the top, not at y≈0.
+        self::assertGreaterThan(40.0, $ap->geometry->y);
     }
 
     public function testInlineAbsposStaticXFollowsPrecedingContent(): void

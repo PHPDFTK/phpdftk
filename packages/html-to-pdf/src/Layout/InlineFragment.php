@@ -120,5 +120,16 @@ final readonly class InlineFragment
          * `baselineShift` for these fragments.
          */
         public string $verticalAlign = 'baseline',
+        /**
+         * Vertical writing-mode transpose (CSS Writing Modes 4 §7.1): the
+         * fragment's offset DOWN the column (physical +Y = inline axis)
+         * from the line box's `y`. `applyVerticalLineShift` moves each
+         * fragment's original inline advance (its horizontal `x`) here and
+         * repurposes `x` as the column's block-axis (physical-X) position,
+         * so multiple fragments in one source line stack down a single
+         * column. The painter adds it to the column top. Zero (the default)
+         * for horizontal-tb, so every non-vertical path is byte-identical.
+         */
+        public float $blockOffset = 0.0,
     ) {}
 }

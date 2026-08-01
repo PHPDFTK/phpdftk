@@ -7291,6 +7291,53 @@ final class BlockLayout
     }
 
     /**
+     * Vertical-mode analogue of {@see inlineStaticPositionX} — the static
+     * INLINE-axis position (physical Y in vertical modes) where the next
+     * inline box begins: the inline END of the preceding content's last
+     * transposed column. After `applyVerticalLineShift`, each fragment's
+     * position down the column is `line.y + fragment.blockOffset` and its
+     * inline extent is `fragment.width`, so the inline-end is the max of
+     * those over the last line's fragments. Returns null when there's no
+     * preceding inline content (caller falls back to the content origin).
+     */
+    private function inlineStaticInlineEndVertical(?Box $prevInFlowChild): ?float
+    {
+        if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
+            return null;
+        }
+        $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
+        $end = null;
+        foreach ($lastLine->fragments as $frag) {
+            $bottom = $lastLine->y + $frag->blockOffset + $frag->width;
+            if ($end === null || $bottom > $end) {
+                $end = $bottom;
+            }
+        }
+        return $end === null ? null : $prevInFlowChild->geometry->y + $end;
+    }
+
+    /**
+     * Vertical-mode analogue of {@see inlineStaticPositionY} — the static
+     * BLOCK-axis position (physical X in vertical modes) of the preceding
+     * content's last column, where a static-position abspos continues the
+     * vertical inline flow. All fragments of one transposed line share the
+     * column's block-axis `fragment.x`, so any of them gives the column
+     * position.
+     */
+    private function inlineStaticBlockPositionVertical(?Box $prevInFlowChild): ?float
+    {
+        if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
+            return null;
+        }
+        $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
+        if ($lastLine->fragments === []) {
+            return null;
+        }
+        $lastFrag = $lastLine->fragments[count($lastLine->fragments) - 1];
+        return $prevInFlowChild->geometry->x + $lastFrag->x;
+    }
+
+    /**
      * Vertical-mode counterpart to {@see stackChildrenList} — CSS
      * Writing Modes 4 §3 (block axis is physical x in vertical-rl /
      * vertical-lr / sideways-rl / sideways-lr).
@@ -7351,6 +7398,7 @@ final class BlockLayout
         $total = 0.0;
         $prevBlockEndMargin = 0.0;
         $hasPrev = false;
+        $prevInFlowChild = null;
         foreach ($children as $child) {
             $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $childContext));
             // CSS 2.1 §9.6 — out-of-flow children are positioned
@@ -7370,8 +7418,21 @@ final class BlockLayout
                     || !$this->isAuto($absStyle->get('bottom'));
                 $hasLeftAnchor = !$this->isAuto($absStyle->get('left'))
                     || !$this->isAuto($absStyle->get('right'));
-                $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $cursorX;
-                $absOriginY = ($pa !== null && $hasTopAnchor) ? $pa->originY : $originY;
+                // CSS 2.1 §9.4.2 / §10.3.7 (swapped axes, CSS WM 4 §7.1) —
+                // when an axis is unanchored, recover the STATIC position
+                // from the preceding inline content's last transposed column
+                // instead of the raw block cursor: physical-X (block axis)
+                // from the column position, physical-Y (inline axis) from the
+                // column's inline-end. This is the vertical analogue of the
+                // horizontal stacker's inlineStaticPositionX/Y recovery — the
+                // fix that lands a static `<span style=position:absolute>`
+                // after the vertical text rather than at the container corner.
+                $absOriginX = ($pa !== null && $hasLeftAnchor)
+                    ? $pa->originX
+                    : ($this->inlineStaticBlockPositionVertical($prevInFlowChild) ?? $cursorX);
+                $absOriginY = ($pa !== null && $hasTopAnchor)
+                    ? $pa->originY
+                    : ($this->inlineStaticInlineEndVertical($prevInFlowChild) ?? $originY);
                 $this->applyAbsoluteCornerAnchorSize($child, $absCb);
                 $absLayoutCtx = $absCb->withOrigin($absOriginX, $absOriginY);
                 $this->layoutBox($child, $absLayoutCtx);
@@ -7432,6 +7493,7 @@ final class BlockLayout
                 ? $child->geometry->marginRight
                 : $child->geometry->marginLeft;
             $hasPrev = true;
+            $prevInFlowChild = $child;
         }
         // Inline-extent extent isn't consumed here — vertical
         // containers use it for sizing decisions outside this

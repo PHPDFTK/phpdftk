@@ -410,57 +410,53 @@ final class InlineLayout
         // vertical branch (paintFragment) rotates glyphs 90° CW, reads
         // `fragment.x` as the column's left edge and `line.y` as its top.
         //
-        // Phase B increment 1: single-fragment lines (single glyph / single
-        // atomic — the text-indent / text-align near-miss cluster) transpose
-        // exactly. Multi-fragment vertical advance is increment 2; those lines
-        // keep the legacy `vrl` right-shift (or pass through for `vlr`).
+        // Increment 2: EVERY line (single- or multi-fragment) transposes
+        // into one vertical column. All fragments of a source line share the
+        // column's block-axis position (`fragment.x = $blockLeft`); each
+        // keeps its inline advance as a `blockOffset` DOWN the column so the
+        // painter stacks them. `LineBox.y` becomes 0 (the column top; the
+        // per-fragment offset now carries the inline position). The former
+        // single-fragment special case is the degenerate blockOffset=x case
+        // of this loop.
         $rtl = $wm->blockDirection() === -1;
         $out = [];
         $cumBlock = 0.0;
         foreach ($lines as $line) {
             // Transpose needs a real cross-size to place the column along the
-            // block axis; a degenerate line box (`line-height: 0`) has none, so
-            // fall back to the legacy path rather than divide the block axis by
-            // zero-height columns.
-            if (count($line->fragments) === 1 && $line->height > 0.0) {
-                $f = $line->fragments[0];
-                $blockLeft = $rtl
-                    ? max(0.0, $availableWidth - $cumBlock - $line->height)
-                    : $cumBlock;
-                $out[] = new LineBox($f->x, $line->height, [
-                    new InlineFragment(
-                        $blockLeft,
-                        $f->width,
-                        $f->shapedRun,
-                        $f->baselineShift,
-                        $f->href,
-                        $f->isBold,
-                        $f->isItalic,
-                        $f->decorationLines,
-                        $f->textColor,
-                        $f->backgroundColor,
-                        $f->linkTitle,
-                        $f->decorationColor,
-                        $f->isWhitespace,
-                        $f->lineHeight,
-                        $f->verticalAlign,
-                    ),
-                ], $line->baseline);
-                $cumBlock += $line->height;
+            // block axis; a degenerate line box (`line-height: 0`) has none,
+            // so pass it through rather than seed a zero-width column.
+            if ($line->height <= 0.0) {
+                $out[] = $line;
                 continue;
             }
-            if ($rtl) {
-                $lineWidth = $line->totalWidth();
-                $shift = $availableWidth - $lineWidth - $cumBlock;
-                $out[] = new LineBox(
-                    0.0,
-                    $line->height,
-                    $shift > 0.0 ? $this->shiftFragments($line->fragments, $shift) : $line->fragments,
-                    $line->baseline,
+            // `vlr` / `sideways-lr`: columns grow rightward from the left
+            // content edge. `vrl` / `sideways-rl`: block-start = right, so
+            // grow leftward (place the column `$cumBlock` in from the right).
+            $blockLeft = $rtl
+                ? max(0.0, $availableWidth - $cumBlock - $line->height)
+                : $cumBlock;
+            $newFrags = [];
+            foreach ($line->fragments as $f) {
+                $newFrags[] = new InlineFragment(
+                    $blockLeft,
+                    $f->width,
+                    $f->shapedRun,
+                    $f->baselineShift,
+                    $f->href,
+                    $f->isBold,
+                    $f->isItalic,
+                    $f->decorationLines,
+                    $f->textColor,
+                    $f->backgroundColor,
+                    $f->linkTitle,
+                    $f->decorationColor,
+                    $f->isWhitespace,
+                    $f->lineHeight,
+                    $f->verticalAlign,
+                    blockOffset: $f->x,
                 );
-            } else {
-                $out[] = $line;
             }
+            $out[] = new LineBox(0.0, $line->height, $newFrags, $line->baseline);
             $cumBlock += $line->height;
         }
         return $out;
