@@ -850,6 +850,43 @@ final class Painter
     }
 
     /**
+     * CSS Contain §2.3 — does `contain` force PAINT containment, which
+     * clips descendants to the box's overflow-clip-edge (the padding
+     * box) on BOTH axes, overriding an explicit `overflow: visible`?
+     * Only `paint`, `content` (= layout+paint+style), and `strict`
+     * (= layout+paint+style+size) include paint containment.
+     *
+     * Deliberately NARROWER than {@see containKeywordImpliesPaint},
+     * whose keyword test also returns true for `layout` / `size` /
+     * `style` (for the background-propagation use case). Clipping a
+     * `contain: layout` box would be a spec error, so this predicate
+     * excludes those keywords.
+     */
+    private function containImpliesPaintClip(Box $box): bool
+    {
+        $contain = $box->style->get('contain');
+        if ($contain instanceof \Phpdftk\Css\Value\Keyword) {
+            return $this->containKeywordClips($contain->name);
+        }
+        if ($contain instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($contain->values as $v) {
+                if ($v instanceof \Phpdftk\Css\Value\Keyword
+                    && $this->containKeywordClips($v->name)
+                ) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private function containKeywordClips(string $keyword): bool
+    {
+        $k = strtolower($keyword);
+        return $k === 'paint' || $k === 'strict' || $k === 'content';
+    }
+
+    /**
      * Paint order for a box's children, following the CSS 2.1 §9.9.1 /
      * Appendix E stacking order for the common flat case:
      *
@@ -1915,6 +1952,12 @@ final class Painter
 
     private function originalAxisClips(Box $box, string $axis): bool
     {
+        // CSS Contain §2.3 — paint containment (`contain: paint |
+        // content | strict`) clips descendants to the padding box on
+        // BOTH axes, independent of and overriding `overflow: visible`.
+        if ($this->containImpliesPaintClip($box)) {
+            return true;
+        }
         foreach (["overflow-$axis", 'overflow'] as $prop) {
             $value = $box->style->get($prop);
             if (!($value instanceof Keyword)) {

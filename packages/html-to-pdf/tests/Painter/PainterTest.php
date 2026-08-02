@@ -162,6 +162,39 @@ final class PainterTest extends TestCase
         }
     }
 
+    public function testPaintContainmentClipsDescendantsButLayoutContainmentDoesNot(): void
+    {
+        // CSS Contain §2.3 — paint containment (`contain: paint | content
+        // | strict`) clips descendants to the padding box even under the
+        // default `overflow: visible`, so an oversized child is cut off.
+        // `contain: layout` alone does NOT clip (only layout is contained).
+        $emitsClip = function (string $contain): bool {
+            $doc = $this->html->parseDocument(
+                '<html><body><div class="c"><div class="child"></div></div></body></html>',
+            );
+            $sheet = $this->css->parseStylesheet(
+                'html, body, div { display: block; }
+                 .c { width: 100px; height: 100px; contain: ' . $contain . '; }
+                 .child { width: 300px; height: 300px; background-color: red; }',
+                Origin::UserAgent,
+            );
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+            $writer = new PdfWriter(compressStreams: false);
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            (new Painter(792.0))->paint($root, $stream);
+
+            return in_array('W', $this->operatorTokens($stream->getOperators()), true);
+        };
+
+        self::assertTrue($emitsClip('paint'), '`contain: paint` clips descendants');
+        self::assertTrue($emitsClip('content'), '`contain: content` clips descendants');
+        self::assertTrue($emitsClip('strict'), '`contain: strict` clips descendants');
+        self::assertFalse($emitsClip('layout'), '`contain: layout` alone does not clip');
+    }
+
     public function testNoOperatorsWhenNoBackgroundOrBorder(): void
     {
         $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
@@ -3986,11 +4019,16 @@ final class PainterTest extends TestCase
             $ops,
             static fn($op) => str_ends_with(rtrim($op), ' re'),
         ));
-        // Exactly one rect — the body's own background paint at body
-        // geometry. No second canvas-sized rect (the propagation is
-        // suppressed by contain: paint).
-        self::assertCount(1, $rects, 'no canvas-sized rect — propagation suppressed');
-        self::assertStringNotContainsString(' 792 re', $rects[0], 'rect is body-sized, not canvas-sized');
+        // The body → canvas background propagation is suppressed by
+        // contain: paint, so NO rect is canvas-sized (full-page). Assert
+        // on the absence of a full-page rect rather than an exact count:
+        // paint containment also clips the body's descendants to its
+        // padding box (CSS Contain §2.3), which legitimately emits a
+        // body-sized clip rect that is NOT canvas-sized.
+        self::assertNotEmpty($rects);
+        foreach ($rects as $rect) {
+            self::assertStringNotContainsString(' 792 re', $rect, 'no canvas-sized propagation rect');
+        }
     }
 
     public function testContainLayoutOnHtmlSuppressesBodyPropagation(): void
