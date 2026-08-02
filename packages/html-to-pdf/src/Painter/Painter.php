@@ -1497,16 +1497,17 @@ final class Painter
         // right rect. Accept every such BlockBox replaced element.
         //
         // Two geometry paths are still wrong, so gate them out:
-        //  - a GRID / FLEX ITEM replaced BlockBox reaches paint with
-        //    grid/flex-track geometry not wired for direct raster
-        //    placement (painting it regressed css-grid −6); detect via the
-        //    parent box type;
+        //  - a GRID ITEM replaced BlockBox reaches paint with grid-track
+        //    geometry not wired for direct raster placement (painting it
+        //    regressed css-grid −6); detect via the parent box type. A FLEX
+        //    ITEM, by contrast, is blockified (CSS Display §2.7) and its
+        //    main/cross size + §4.5 auto-minimum are resolved by the normal
+        //    block-flow measure, so its geometry IS correct — paint it;
         //  - a VERTICAL-writing-mode replaced BlockBox (float/block WM
         //    positioning is still wrong — see css-writing-modes follow-up).
-        $parentIsGridOrFlex = $parent instanceof \Phpdftk\HtmlToPdf\Box\GridBox
-            || $parent instanceof \Phpdftk\HtmlToPdf\Box\FlexBox;
+        $parentIsGrid = $parent instanceof \Phpdftk\HtmlToPdf\Box\GridBox;
         $isBlockReplaced = $box instanceof \Phpdftk\HtmlToPdf\Box\BlockBox
-            && !$parentIsGridOrFlex
+            && !$parentIsGrid
             && !WritingMode::fromStyle($box->style)->isVertical();
         if (!($box instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox)
             && !$isBlockReplaced
@@ -4061,9 +4062,22 @@ final class Painter
      */
     private function selectImageSetOption(\Phpdftk\Css\Value\ImageSet $set): ?\Phpdftk\Css\Value\Value
     {
+        // CSS Images 4 §6: before choosing, remove every option that names an
+        // unknown/unsupported MIME type in its `type()` hint or carries a
+        // non-positive resolution. If none survive, the image-set() resolves
+        // to no image (paints nothing) — the function stays valid, so it still
+        // wins the cascade over an earlier `background-image`.
         $best = null;
         $bestDelta = null;
         foreach ($set->options as $option) {
+            if ($option->mimeType !== null
+                && !self::isSupportedImageSetMimeType($option->mimeType)
+            ) {
+                continue;
+            }
+            if ($option->resolutionDppx !== null && $option->resolutionDppx <= 0.0) {
+                continue;
+            }
             $delta = abs(($option->resolutionDppx ?? 1.0) - 1.0);
             if ($bestDelta === null || $delta < $bestDelta) {
                 $best = $option;
@@ -4071,6 +4085,23 @@ final class Painter
             }
         }
         return $best?->image;
+    }
+
+    /**
+     * Whether an `image-set()` `type()` MIME hint names an image format the
+     * renderer can plausibly decode (CSS Images 4 §6 — options with an
+     * unknown/unsupported type are removed from the set). The allowlist mirrors
+     * the formats {@see \Phpdftk\ImageMetadata} recognises plus common raster
+     * aliases; any non-image or invented subtype (e.g. `image/unsupported`) is
+     * treated as unsupported.
+     */
+    private static function isSupportedImageSetMimeType(string $mime): bool
+    {
+        return in_array(strtolower(trim($mime)), [
+            'image/png', 'image/apng', 'image/jpeg', 'image/jpg', 'image/pjpeg',
+            'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff',
+            'image/x-icon', 'image/vnd.microsoft.icon', 'image/avif', 'image/jp2',
+        ], true);
     }
 
     private function imageFunctionColorArg(mixed $value): ?\Phpdftk\Css\Value\Value
@@ -6143,7 +6174,12 @@ final class Painter
         $sb = min($sb, (float) $srcH / 2.0);
         $sl = min($sl, (float) $srcW / 2.0);
         $sr = min($sr, (float) $srcW / 2.0);
-        if ($st <= 0.0 && $sr <= 0.0 && $sb <= 0.0 && $sl <= 0.0) {
+        // `border-image-slice ... fill` keeps the middle image region and
+        // paints it into the content box (CSS Backgrounds 3 §6.2). With
+        // `slice: 0 fill` every edge slice is zero yet the middle must still
+        // paint, so don't bail on all-zero slices when `fill` is present.
+        $hasFill = $this->borderImageSliceHasFill($sliceValue);
+        if (!$hasFill && $st <= 0.0 && $sr <= 0.0 && $sb <= 0.0 && $sl <= 0.0) {
             return false;
         }
 
@@ -6201,8 +6237,12 @@ final class Painter
         $this->emitImageSlice($stream, $name, $srcW, $srcH, 0.0, (float) $srcH - $sb, $sl, $sb, $bx, $by + $bh - $bb, $bl, $bb);
         $this->emitImageSlice($stream, $name, $srcW, $srcH, (float) $srcW - $sr, (float) $srcH - $sb, $sr, $sb, $bx + $bw - $br, $by + $bh - $bb, $br, $bb);
 
-        // Edges — apply repeat mode to the tile axis only.
-        if ($midSrcW > 0.0 && $midDstW > 0.0 && $bt > 0.0) {
+        // Edges — apply repeat mode to the tile axis only. Each edge also
+        // needs a non-zero SOURCE slice thickness ($st/$sb for the
+        // horizontal edges, $sl/$sr for the vertical ones); a zero-thickness
+        // slice (e.g. `slice: 0 fill`) has no edge image to sample and would
+        // divide by zero in emitImageEdge.
+        if ($midSrcW > 0.0 && $midDstW > 0.0 && $bt > 0.0 && $st > 0.0) {
             $this->emitImageEdge(
                 $stream,
                 $name,
@@ -6220,7 +6260,7 @@ final class Painter
                 horizontal: true,
             );
         }
-        if ($midSrcW > 0.0 && $midDstW > 0.0 && $bb > 0.0) {
+        if ($midSrcW > 0.0 && $midDstW > 0.0 && $bb > 0.0 && $sb > 0.0) {
             $this->emitImageEdge(
                 $stream,
                 $name,
@@ -6238,7 +6278,7 @@ final class Painter
                 horizontal: true,
             );
         }
-        if ($midSrcH > 0.0 && $midDstH > 0.0 && $bl > 0.0) {
+        if ($midSrcH > 0.0 && $midDstH > 0.0 && $bl > 0.0 && $sl > 0.0) {
             $this->emitImageEdge(
                 $stream,
                 $name,
@@ -6256,7 +6296,7 @@ final class Painter
                 horizontal: false,
             );
         }
-        if ($midSrcH > 0.0 && $midDstH > 0.0 && $br > 0.0) {
+        if ($midSrcH > 0.0 && $midDstH > 0.0 && $br > 0.0 && $sr > 0.0) {
             $this->emitImageEdge(
                 $stream,
                 $name,
@@ -6274,7 +6314,159 @@ final class Painter
                 horizontal: false,
             );
         }
+
+        // Middle fill (region 5) — CSS Backgrounds 3 §6.2 `fill`. The middle
+        // image is drawn into the box's content area governed by the same
+        // repeat modes as the edges: `stretch` scales it to fill; `repeat` /
+        // `round` / `space` tile it at its natural (intrinsic) size, centred,
+        // and clip to the content area — so an over-large middle shows only
+        // its centre.
+        if ($hasFill
+            && $midSrcW > 0.0 && $midSrcH > 0.0
+            && $midDstW > 0.0 && $midDstH > 0.0
+        ) {
+            $this->emitImageMiddleFill(
+                $stream,
+                $name,
+                $srcW,
+                $srcH,
+                $sl,
+                $st,
+                $midSrcW,
+                $midSrcH,
+                $bx + $bl,
+                $by + $bt,
+                $midDstW,
+                $midDstH,
+                $repeatH,
+                $repeatV,
+            );
+        }
         return true;
+    }
+
+    /**
+     * Paint the `border-image` middle region (the `fill` keyword) into the
+     * content area, tiling per axis. `stretch` scales the middle to fill that
+     * axis; `repeat`/`round`/`space` tile it at its intrinsic size (the layout
+     * geometry is in CSS px, so 1 source px = 1 unit), centred and clipped to
+     * the content area.
+     */
+    private function emitImageMiddleFill(
+        ContentStream $stream,
+        string $imageName,
+        int $srcW,
+        int $srcH,
+        float $sx,
+        float $sy,
+        float $sw,
+        float $sh,
+        float $dx,
+        float $dy,
+        float $dw,
+        float $dh,
+        string $repeatH,
+        string $repeatV,
+    ): void {
+        if ($sw <= 0.0 || $sh <= 0.0 || $dw <= 0.0 || $dh <= 0.0) {
+            return;
+        }
+        [$tileW, $offX] = $this->borderImageFillAxis($repeatH, $dw, $sw);
+        [$tileH, $offY] = $this->borderImageFillAxis($repeatV, $dh, $sh);
+        if ($tileW <= 0.0 || $tileH <= 0.0 || $offX === [] || $offY === []) {
+            return;
+        }
+        $pdfDy = $this->pageHeight - $dy - $dh;
+        $stream->saveGraphicsState();
+        $stream->rectangle($dx, $pdfDy, $dw, $dh);
+        $stream->clip();
+        $stream->endPath();
+        foreach ($offY as $oy) {
+            foreach ($offX as $ox) {
+                $this->emitImageSlice(
+                    $stream,
+                    $imageName,
+                    $srcW,
+                    $srcH,
+                    $sx,
+                    $sy,
+                    $sw,
+                    $sh,
+                    $dx + $ox,
+                    $dy + $oy,
+                    $tileW,
+                    $tileH,
+                );
+            }
+        }
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Tile-placement for one axis of the border-image middle fill. Returns
+     * `[tileLength, [offsets…]]` in the destination axis. Mirrors the edge
+     * repeat rules (CSS Backgrounds 3 §6.2): `stretch` → one dest-spanning
+     * tile; `round` → rescaled to a whole count; `space` → whole tiles with
+     * distributed gaps; `repeat` → natural size, centred, partial tiles clipped.
+     *
+     * @return array{0: float, 1: list<float>}
+     */
+    private function borderImageFillAxis(string $mode, float $axisDest, float $natLen): array
+    {
+        if ($mode === 'stretch' || $natLen <= 0.0) {
+            return [$axisDest, [0.0]];
+        }
+        if ($mode === 'round') {
+            $n = max(1, (int) round($axisDest / $natLen));
+            $tile = $axisDest / $n;
+            $offsets = [];
+            for ($i = 0; $i < $n; $i++) {
+                $offsets[] = $i * $tile;
+            }
+            return [$tile, $offsets];
+        }
+        if ($mode === 'space') {
+            $n = (int) floor($axisDest / $natLen + 1e-6);
+            if ($n < 1) {
+                return [$natLen, []];
+            }
+            $gap = ($axisDest - $n * $natLen) / ($n + 1);
+            $offsets = [];
+            for ($i = 0; $i < $n; $i++) {
+                $offsets[] = ($i + 1) * $gap + $i * $natLen;
+            }
+            return [$natLen, $offsets];
+        }
+        // repeat — natural tile, centred, partial end tiles clipped.
+        $remainder = fmod($axisDest, $natLen);
+        $start = $remainder > 1e-6 ? -($natLen - $remainder) / 2.0 : 0.0;
+        $offsets = [];
+        for ($pos = $start; $pos < $axisDest - 1e-6 && count($offsets) < 4096; $pos += $natLen) {
+            $offsets[] = $pos;
+        }
+        return [$natLen, $offsets];
+    }
+
+    /**
+     * Whether a `border-image-slice` value carries the `fill` keyword, which
+     * preserves and paints the middle image region into the content box
+     * (CSS Backgrounds 3 §6.2).
+     */
+    private function borderImageSliceHasFill(?\Phpdftk\Css\Value\Value $value): bool
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Keyword) {
+            return strtolower($value->name) === 'fill';
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($value->values as $v) {
+                if ($v instanceof \Phpdftk\Css\Value\Keyword
+                    && strtolower($v->name) === 'fill'
+                ) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

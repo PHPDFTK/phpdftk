@@ -4288,6 +4288,80 @@ final class PainterTest extends TestCase
     }
 
     /**
+     * A replaced `<img>` blockified as a FLEX item must paint its image
+     * XObject (`Do`) — its main/cross size is resolved by the normal
+     * block-flow measure, so its geometry is correct. The same `<img>` as a
+     * GRID item stays gated out (grid-track geometry is not wired for direct
+     * raster placement — painting it regressed css-grid).
+     */
+    public function testImgFlexItemPaintsImageButGridItemDoesNot(): void
+    {
+        // Minimal 1×1 PNG.
+        $png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1'
+            . 'HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+        foreach (['flex' => true, 'grid' => false] as $display => $expectPaint) {
+            $doc = $this->html->parseDocument(
+                '<html><body><div class="c"><img src="' . $png . '"></div></body></html>',
+            );
+            $sheet = $this->css->parseStylesheet(
+                'html, body { display: block; }
+                 .c { display: ' . $display . '; }
+                 img { width: 50px; height: 50px; }',
+                Origin::UserAgent,
+            );
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+            $writer = new PdfWriter(compressStreams: false);
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+            $opcodes = $this->operatorTokens($stream->getOperators());
+            if ($expectPaint) {
+                self::assertContains('Do', $opcodes, "$display item <img> paints an image XObject");
+            } else {
+                self::assertNotContains('Do', $opcodes, "$display item <img> stays gated out");
+            }
+        }
+    }
+
+    /**
+     * `border-image-slice: 0 fill` paints the middle image region into the
+     * content box (CSS Backgrounds 3 §6.2). With a zero slice every edge is
+     * empty, so the only image draw (`Do`) is the middle fill — proving the
+     * fill path runs instead of bailing on all-zero slices.
+     */
+    public function testBorderImageSliceFillPaintsMiddleImage(): void
+    {
+        $png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1'
+            . 'HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+        $doc = $this->html->parseDocument('<html><body><div class="b"></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .b { width: 50px; height: 50px; border: 10px solid red;
+                  border-image-source: url(' . $png . ');
+                  border-image-slice: 0 fill; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        self::assertContains(
+            'Do',
+            $this->operatorTokens($stream->getOperators()),
+            'border-image-slice fill paints the middle image XObject',
+        );
+    }
+
+    /**
      * Pull the last whitespace-separated token out of each operator line —
      * that's the PDF operator code (e.g. `re`, `f`, `rg`).
      *

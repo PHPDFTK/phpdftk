@@ -4003,6 +4003,14 @@ final class ValueParser
                 if ($dppx === null) {
                     return null;
                 }
+                // CSS Images 4 §6: a negative <resolution> is a parse error.
+                // It invalidates the whole image-set(), so the declaration is
+                // dropped and any earlier background-image cascades back in.
+                // (A zero resolution parses fine but is discarded at use time
+                // in Painter::selectImageSetOption.)
+                if ($dppx < 0.0) {
+                    return null;
+                }
                 $resolution = $dppx;
                 $i++;
                 continue;

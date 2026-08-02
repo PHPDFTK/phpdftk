@@ -137,4 +137,21 @@ final class ImageSetTest extends TestCase
         $value = $this->parser->parseFromString('image-set("foo.png" 2px)');
         self::assertNotInstanceOf(ImageSet::class, $value);
     }
+
+    public function testNegativeResolutionInvalidatesImageSet(): void
+    {
+        // CSS Images 4 §6 — a negative <resolution> is a parse error, so the
+        // whole image-set() is invalid (does not become a valid ImageSet).
+        $value = $this->parser->parseFromString('image-set("foo.png" -1x)');
+        self::assertNotInstanceOf(ImageSet::class, $value);
+    }
+
+    public function testZeroResolutionParsesAsValidImageSet(): void
+    {
+        // A zero <resolution> is NOT a parse error — the option is discarded
+        // later, at use time (Painter::selectImageSetOption), not here.
+        $set = $this->parseSet('image-set("foo.png" 0x)');
+        self::assertCount(1, $set->options);
+        self::assertSame(0.0, $set->options[0]->resolutionDppx);
+    }
 }
