@@ -25,5 +25,18 @@ final readonly class MultiColumnLayout
         public float $ruleWidth,
         public string $ruleStyle,
         public ?Color $ruleColor,
+        /**
+         * CSS Multi-column 1 §3.3 — `column-fill: auto` fragmentation. When
+         * true the container's content was laid out in a SINGLE tall column
+         * (children keep their column-0 positions) and the painter must
+         * SLICE it into `columnCount` bands of `columnHeight`, translating
+         * band `i` to column `i`. `contentTop` is the layout-Y of the top of
+         * the tall column (band 0's origin). False (the default) = the
+         * classic balance path, where children were already moved to their
+         * columns and paint once.
+         */
+        public bool $fragmented = false,
+        public float $columnHeight = 0.0,
+        public float $contentTop = 0.0,
     ) {}
 }

@@ -1698,6 +1698,50 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($section->multiColumn->ruleColor);
     }
 
+    public function testColumnFillAutoWithDefiniteHeightMarksFragmented(): void
+    {
+        // CSS Multi-column 1 §3.3 — `column-fill: auto` on a definite-height
+        // multicol container fragments its content into fixed-height column
+        // bands (the painter slices the single tall column). Layout marks
+        // the container fragmented and records the column height.
+        $box = $this->buildTree(
+            '<html><body><section><div></div></section></body></html>',
+            'html, body, section, div { display: block; }
+             section { columns: 3; column-fill: auto; height: 100px; column-gap: 10px; }
+             section > div { height: 300px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        self::assertNotNull($section->multiColumn);
+        self::assertTrue(
+            $section->multiColumn->fragmented,
+            'column-fill:auto + definite height fragments',
+        );
+        self::assertEqualsWithDelta(100.0, $section->multiColumn->columnHeight, 0.5);
+    }
+
+    public function testColumnFillBalanceDoesNotFragment(): void
+    {
+        // The initial `column-fill: balance` keeps the classic move-and-
+        // paint-once path: the container is NOT marked fragmented, so the
+        // 167-passing balance fixtures are untouched.
+        $box = $this->buildTree(
+            '<html><body><section><div></div></section></body></html>',
+            'html, body, section, div { display: block; }
+             section { columns: 3; height: 100px; }
+             section > div { height: 300px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        self::assertNotNull($section->multiColumn);
+        self::assertFalse(
+            $section->multiColumn->fragmented,
+            'default column-fill:balance does not fragment',
+        );
+    }
+
     public function testColumnCountZeroClampsToSingleColumn(): void
     {
         $box = $this->buildTree(

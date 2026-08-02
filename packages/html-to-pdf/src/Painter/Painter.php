@@ -14,6 +14,7 @@ use Phpdftk\HtmlToPdf\Box\Box;
 use Phpdftk\HtmlToPdf\Layout\BoxGeometry;
 use Phpdftk\HtmlToPdf\Layout\InlineFragment;
 use Phpdftk\HtmlToPdf\Layout\LineBox;
+use Phpdftk\HtmlToPdf\Layout\MultiColumnLayout;
 use Phpdftk\Pdf\Core\Content\ContentStream;
 use Phpdftk\Pdf\Core\Font\RegisteredFont;
 use Phpdftk\Pdf\Writer\Font as WriterFont;
@@ -1149,8 +1150,15 @@ final class Painter
             $stream->saveGraphicsState();
             $this->emitOverflowClipPath($stream, $box);
         }
-        foreach ($this->paintOrderChildren($box) as $child) {
-            $this->paintBox($child, $stream, $box);
+        $mcFragment = $box->multiColumn;
+        if ($mcFragment !== null && $mcFragment->fragmented) {
+            // CSS Multi-column 1 §3.3 — `column-fill: auto`: the content was
+            // laid out in one tall column; slice it into columns here.
+            $this->paintFragmentedColumns($box, $stream, $mcFragment);
+        } else {
+            foreach ($this->paintOrderChildren($box) as $child) {
+                $this->paintBox($child, $stream, $box);
+            }
         }
         if ($overflowClip) {
             $stream->restoreGraphicsState();
@@ -7721,6 +7729,49 @@ final class Painter
             $stream->stroke();
         }
         $stream->restoreGraphicsState();
+    }
+
+    /**
+     * CSS Multi-column 1 §3.3 — paint a `column-fill: auto` fragmented
+     * container. Its content was laid out in one tall column at the
+     * container's left edge (layout y from `contentTop` down); render it
+     * once per column, clipping to column `i`'s `columnHeight` band and
+     * translating band `i` up into that column. Bands past the content
+     * height simply clip to empty.
+     */
+    private function paintFragmentedColumns(Box $box, ContentStream $stream, MultiColumnLayout $mc): void
+    {
+        $colW = $mc->columnWidth;
+        $gap = $mc->columnGap;
+        $height = $mc->columnHeight;
+        if ($height <= 0.0 || $colW <= 0.0) {
+            // Degenerate — fall back to a single unsliced pass.
+            foreach ($this->paintOrderChildren($box) as $child) {
+                $this->paintBox($child, $stream, $box);
+            }
+            return;
+        }
+        $baseX = $box->geometry->x;
+        $children = $this->paintOrderChildren($box);
+        for ($i = 0; $i < $mc->columnCount; $i++) {
+            $colX = $baseX + $i * ($colW + $gap);
+            $stream->saveGraphicsState();
+            // Clip to column i's band: layout rect [colX, contentTop, colW,
+            // height] → PDF y = pageHeight − (contentTop + height).
+            $clipPdfY = $this->pageHeight - ($mc->contentTop + $height);
+            $stream->rectangle($colX, $clipPdfY, $colW, $height);
+            $stream->clip();
+            $stream->endPath();
+            // Translate band i into this column: layout (dx = i·(colW+gap),
+            // dy = −i·height) → PDF (dx, +i·height).
+            if ($i > 0) {
+                $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $i * ($colW + $gap), $i * $height);
+            }
+            foreach ($children as $child) {
+                $this->paintBox($child, $stream, $box);
+            }
+            $stream->restoreGraphicsState();
+        }
     }
 
     /**

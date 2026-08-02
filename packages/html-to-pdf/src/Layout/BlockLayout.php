@@ -7029,7 +7029,16 @@ final class BlockLayout
 
         // No span-all children — fall through to the original two-pass
         // codepath that operates on `$box->children` directly.
-        return $this->layoutColumnarRun($box, $box->children, $childContext, $columnWidth, $gap, $count, $geo->y);
+        return $this->layoutColumnarRun(
+            $box,
+            $box->children,
+            $childContext,
+            $columnWidth,
+            $gap,
+            $count,
+            $geo->y,
+            allowFragment: true,
+        );
     }
 
     /**
@@ -7086,6 +7095,7 @@ final class BlockLayout
         float $gap,
         int $count,
         float $originY,
+        bool $allowFragment = false,
     ): float {
         $geo = $box->geometry;
         if ($children === []) {
@@ -7101,6 +7111,44 @@ final class BlockLayout
             $geo->x,
             $originY,
         );
+
+        // CSS Multi-column 1 §3.3 — `column-fill: auto` with a DEFINITE
+        // container height fragments the single tall column into fixed-
+        // height bands that the painter SLICES into columns, rather than
+        // balancing and moving whole children (which cannot reproduce a
+        // block fragmented across columns). Children keep their tall
+        // column-0 positions; only the paint is sliced. Gated tightly to
+        // the non-segmented run (`$allowFragment`) so `balance` /
+        // auto-height / span-all containers keep the classic, well-tested
+        // move-and-paint-once path byte-identical.
+        if ($allowFragment && $count > 1) {
+            $columnFill = $box->style->get('column-fill');
+            $isAutoFill = $columnFill instanceof Keyword
+                && strtolower($columnFill->name) === 'auto';
+            if ($isAutoFill) {
+                $definiteHeight = $this->resolveExplicitHeightOrNull(
+                    $box->style,
+                    $childContext->containingBlockHeight,
+                );
+                if ($definiteHeight !== null && $definiteHeight > 0.0) {
+                    $mc = $box->multiColumn;
+                    if ($mc !== null) {
+                        $box->multiColumn = new MultiColumnLayout(
+                            columnCount: $mc->columnCount,
+                            columnWidth: $mc->columnWidth,
+                            columnGap: $mc->columnGap,
+                            ruleWidth: $mc->ruleWidth,
+                            ruleStyle: $mc->ruleStyle,
+                            ruleColor: $mc->ruleColor,
+                            fragmented: true,
+                            columnHeight: $definiteHeight,
+                            contentTop: $originY,
+                        );
+                    }
+                    return $definiteHeight;
+                }
+            }
+        }
 
         $balanced = $count > 0 ? ceil($childTotal / $count) : $childTotal;
 
