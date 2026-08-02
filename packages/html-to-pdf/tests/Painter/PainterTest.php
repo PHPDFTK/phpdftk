@@ -4362,6 +4362,33 @@ final class PainterTest extends TestCase
     }
 
     /**
+     * A `<percentage>` border-radius on a non-square box yields ELLIPTICAL
+     * corners (CSS Backgrounds 3 §5.1): `border-radius: 50%` on 100×60 is
+     * rx=50, ry=30. The background fill must emit Bézier corner curves (`c`),
+     * not a sharp rectangle — the old scalar path dropped `<percentage>` /
+     * two-value radii and rendered a rectangle.
+     */
+    public function testPercentageBorderRadiusEmitsEllipticalCurves(): void
+    {
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 60px; background: green; border-radius: 50%; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('c', $opcodes, 'percentage border-radius emits Bézier corner curves');
+    }
+
+    /**
      * Pull the last whitespace-separated token out of each operator line —
      * that's the PDF operator code (e.g. `re`, `f`, `rg`).
      *

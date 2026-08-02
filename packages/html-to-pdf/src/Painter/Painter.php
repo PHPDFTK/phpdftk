@@ -3872,7 +3872,7 @@ final class Painter
                     + $geo->borderTop + $geo->borderBottom;
         }
         if ($hasColor) {
-            $radii = $this->borderRadii($box);
+            $radii = $this->borderRadiiXY($box, $width, $height);
             // CSS Backgrounds 4 — `background-clip: border-area`
             // paints only on the border ring. Emit border-box rect
             // ∪ padding-box rect with the even-odd fill rule so the
@@ -3892,7 +3892,7 @@ final class Painter
                 $stream->rectangle($padX, $padPdfY, $padWidth, $padHeight);
                 $stream->fillEvenOdd();
                 $stream->restoreGraphicsState();
-            } elseif (array_sum($radii) > 0.0) {
+            } elseif ($this->radiiAnyPositive($radii)) {
                 $this->emitRoundedFill($stream, $x, $top, $width, $height, $radii, $color);
             } else {
                 $this->emitRect($stream, $x, $top, $width, $height, fill: $color);
@@ -8170,12 +8170,75 @@ final class Painter
     }
 
     /**
+     * Per-corner border radii as `[horizontal, vertical]` pairs (CSS
+     * Backgrounds 3 §5.1). Resolves `<length>`, `<percentage>` (horizontal %
+     * of `$width`, vertical % of `$height`) and the two-value elliptical form
+     * (`border-top-right-radius: 75px 50px`). Order: [TL, TR, BR, BL]. A
+     * single-value corner yields a circular `[r, r]`, so this is a superset
+     * of {@see borderRadii}.
+     *
+     * @return array{array{float,float}, array{float,float}, array{float,float}, array{float,float}}
+     */
+    private function borderRadiiXY(Box $box, float $width, float $height): array
+    {
+        $corner = function (string $name) use ($box, $width, $height): array {
+            $v = $box->style->get($name);
+            if ($v instanceof \Phpdftk\Css\Value\ValueList && $v->values !== []) {
+                $h = $v->values[0];
+                $vv = $v->values[1] ?? $v->values[0];
+                return [
+                    $this->resolveRadiusComponent($h, $width),
+                    $this->resolveRadiusComponent($vv, $height),
+                ];
+            }
+            return [
+                $this->resolveRadiusComponent($v, $width),
+                $this->resolveRadiusComponent($v, $height),
+            ];
+        };
+        return [
+            $corner('border-top-left-radius'),
+            $corner('border-top-right-radius'),
+            $corner('border-bottom-right-radius'),
+            $corner('border-bottom-left-radius'),
+        ];
+    }
+
+    private function resolveRadiusComponent(?\Phpdftk\Css\Value\Value $v, float $extent): float
+    {
+        if ($v instanceof \Phpdftk\Css\Value\Length) {
+            return max(0.0, $v->value);
+        }
+        if ($v instanceof \Phpdftk\Css\Value\Percentage) {
+            return max(0.0, $v->value / 100.0 * $extent);
+        }
+        return 0.0;
+    }
+
+    /**
+     * @param array<array{float,float}> $radii
+     */
+    private function radiiAnyPositive(array $radii): bool
+    {
+        foreach ($radii as $r) {
+            if ($r[0] > 0.0 || $r[1] > 0.0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Emit a rounded-rectangle fill path using cubic Béziers at the four
      * corners. Topology in layout-Y (top-down) with the painter's flip
      * applied at emission time. The 0.5522847498 constant is the standard
      * cubic-Bézier circle approximation factor.
      *
-     * @param array{float, float, float, float} $radii [tl, tr, br, bl]
+     * Each corner is an `[rx, ry]` pair (elliptical corners, CSS Backgrounds
+     * 3 §5.1); `rx == ry` gives the circular case (byte-identical to the old
+     * scalar path).
+     *
+     * @param array{array{float,float}, array{float,float}, array{float,float}, array{float,float}} $radii [tl, tr, br, bl]
      */
     private function emitRoundedFill(
         ContentStream $stream,
@@ -8186,57 +8249,62 @@ final class Painter
         array $radii,
         Color $fill,
     ): void {
-        $maxR = min($width, $height) / 2.0;
-        [$rtl, $rtr, $rbr, $rbl] = array_map(static fn($r) => min($r, $maxR), $radii);
+        $clamp = static fn(array $r): array => [
+            min(max(0.0, $r[0]), $width / 2.0),
+            min(max(0.0, $r[1]), $height / 2.0),
+        ];
+        [$tl, $tr, $br, $bl] = array_map($clamp, $radii);
         $k = 0.5522847498;
         // Flip to PDF coords for emission.
         $bottomPdfY = $this->pageHeight - $topY - $height;
         $topPdfY = $this->pageHeight - $topY;
-        // Walk clockwise starting at the top-left straight edge.
+        // Walk clockwise starting at the top-left straight edge. Each corner
+        // curve uses the horizontal radius for x-handles and the vertical
+        // radius for y-handles.
         $stream->saveGraphicsState();
         $stream->setFillColorRGB($fill->r, $fill->g, $fill->b);
-        $stream->moveTo($x + $rtl, $topPdfY);
-        $stream->lineTo($x + $width - $rtr, $topPdfY);
-        if ($rtr > 0.0) {
+        $stream->moveTo($x + $tl[0], $topPdfY);
+        $stream->lineTo($x + $width - $tr[0], $topPdfY);
+        if ($tr[0] > 0.0 || $tr[1] > 0.0) {
             $stream->curveTo(
-                $x + $width - $rtr + $rtr * $k,
+                $x + $width - $tr[0] + $tr[0] * $k,
                 $topPdfY,
                 $x + $width,
-                $topPdfY - $rtr + $rtr * $k,
+                $topPdfY - $tr[1] + $tr[1] * $k,
                 $x + $width,
-                $topPdfY - $rtr,
+                $topPdfY - $tr[1],
             );
         }
-        $stream->lineTo($x + $width, $bottomPdfY + $rbr);
-        if ($rbr > 0.0) {
+        $stream->lineTo($x + $width, $bottomPdfY + $br[1]);
+        if ($br[0] > 0.0 || $br[1] > 0.0) {
             $stream->curveTo(
                 $x + $width,
-                $bottomPdfY + $rbr - $rbr * $k,
-                $x + $width - $rbr + $rbr * $k,
+                $bottomPdfY + $br[1] - $br[1] * $k,
+                $x + $width - $br[0] + $br[0] * $k,
                 $bottomPdfY,
-                $x + $width - $rbr,
+                $x + $width - $br[0],
                 $bottomPdfY,
             );
         }
-        $stream->lineTo($x + $rbl, $bottomPdfY);
-        if ($rbl > 0.0) {
+        $stream->lineTo($x + $bl[0], $bottomPdfY);
+        if ($bl[0] > 0.0 || $bl[1] > 0.0) {
             $stream->curveTo(
-                $x + $rbl - $rbl * $k,
+                $x + $bl[0] - $bl[0] * $k,
                 $bottomPdfY,
                 $x,
-                $bottomPdfY + $rbl - $rbl * $k,
+                $bottomPdfY + $bl[1] - $bl[1] * $k,
                 $x,
-                $bottomPdfY + $rbl,
+                $bottomPdfY + $bl[1],
             );
         }
-        $stream->lineTo($x, $topPdfY - $rtl);
-        if ($rtl > 0.0) {
+        $stream->lineTo($x, $topPdfY - $tl[1]);
+        if ($tl[0] > 0.0 || $tl[1] > 0.0) {
             $stream->curveTo(
                 $x,
-                $topPdfY - $rtl + $rtl * $k,
-                $x + $rtl - $rtl * $k,
+                $topPdfY - $tl[1] + $tl[1] * $k,
+                $x + $tl[0] - $tl[0] * $k,
                 $topPdfY,
-                $x + $rtl,
+                $x + $tl[0],
                 $topPdfY,
             );
         }
