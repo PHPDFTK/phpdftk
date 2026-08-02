@@ -5383,25 +5383,30 @@ final class BlockLayout
             if ($isColumn) {
                 $adornment = $g->marginTop + $g->borderTop + $g->paddingTop
                     + $g->paddingBottom + $g->borderBottom + $g->marginBottom;
-                $minInner = $this->resolveLength(
-                    $children[$i]->style->get('min-height'),
-                    $cbHeight,
-                );
-                $maxInnerVal = $children[$i]->style->get('max-height');
-                $maxInner = ($maxInnerVal instanceof Keyword && strtolower($maxInnerVal->name) === 'none')
-                    ? null
-                    : $this->resolveLength($maxInnerVal, $cbHeight);
             } else {
                 $adornment = $g->marginLeft + $g->borderLeft + $g->paddingLeft
                     + $g->paddingRight + $g->borderRight + $g->marginRight;
-                $minInner = $this->resolveLength(
-                    $children[$i]->style->get('min-width'),
-                    $cbWidth,
-                );
-                $maxInnerVal = $children[$i]->style->get('max-width');
-                $maxInner = ($maxInnerVal instanceof Keyword && strtolower($maxInnerVal->name) === 'none')
-                    ? null
-                    : $this->resolveLength($maxInnerVal, $cbWidth);
+            }
+            $minProp2 = $isColumn ? 'min-height' : 'min-width';
+            $maxProp2 = $isColumn ? 'max-height' : 'max-width';
+            $cbMain = $isColumn ? $cbHeight : $cbWidth;
+            $contentBlockI = $itemContentBlock[$i] ?? 0.0;
+            // CSS Sizing 3 §5.1 — an intrinsic-size keyword (`min-content`
+            // / `max-content` / `fit-content`) on the main-axis min / max
+            // resolves to a content-derived length, not 0.
+            $minVal = $children[$i]->style->get($minProp2);
+            $minKw = $this->sizingKeywordName($minVal);
+            $minInner = ($itemCtx !== null && $minKw !== null && $minKw !== 'stretch')
+                ? $this->flexMainIntrinsicSize($children[$i], $minKw, $isColumn, $itemCtx, $contentBlockI, $containerMain)
+                : $this->resolveLength($minVal, $cbMain);
+            $maxInnerVal = $children[$i]->style->get($maxProp2);
+            $maxKw = $this->sizingKeywordName($maxInnerVal);
+            if ($maxInnerVal instanceof Keyword && strtolower($maxInnerVal->name) === 'none') {
+                $maxInner = null;
+            } elseif ($itemCtx !== null && $maxKw !== null && $maxKw !== 'stretch') {
+                $maxInner = $this->flexMainIntrinsicSize($children[$i], $maxKw, $isColumn, $itemCtx, $contentBlockI, $containerMain);
+            } else {
+                $maxInner = $this->resolveLength($maxInnerVal, $cbMain);
             }
             // CSS Flexbox 1 §4.5 — automatic minimum size. When the
             // main-axis `min-{width,height}` is `auto` (the initial
@@ -5824,8 +5829,24 @@ final class BlockLayout
                 + $this->resolveBorderWidth($childStyle, 'right')
                 + $this->resolveLength($childStyle->get('padding-left'), $context->containingBlockWidth)
                 + $this->resolveLength($childStyle->get('padding-right'), $context->containingBlockWidth);
-            $itemMaxes[] = $mm['max'] + $mbpx;
-            $itemMins[] = $mm['min'] + $mbpx;
+            $contribMin = $mm['min'];
+            $contribMax = $mm['max'];
+            if (!$isColumn) {
+                // CSS Flexbox 1 §9.9.1 — a flex item's contribution to
+                // the container's intrinsic MAIN size is its flex base
+                // size (clamped by used min/max), adjusted for
+                // flexibility, NOT its raw content size. Otherwise an
+                // empty `flex: 1 0 100px` item contributes 0 (container
+                // collapses) and a `flex: 0 1 100px` item with wide
+                // content over-sizes the container.
+                [$contribMin, $contribMax] = $this->flexItemMainContribution(
+                    $childStyle,
+                    $context->containingBlockWidth,
+                    $mm,
+                );
+            }
+            $itemMaxes[] = $contribMax + $mbpx;
+            $itemMins[] = $contribMin + $mbpx;
         }
         if ($itemMaxes === []) {
             $maxContent = 0.0;
@@ -5838,6 +5859,69 @@ final class BlockLayout
             $minContent = max($itemMins);
         }
         return ['max' => $maxContent, 'min' => $minContent];
+    }
+
+    /**
+     * CSS Flexbox 1 §9.9.1 — a flex item's min / max-content
+     * contribution to its container's intrinsic MAIN size. The base is
+     * the item's flex base size (explicit `flex-basis`, else a definite
+     * main size, else content max-content), clamped by the used min /
+     * max main size — all in the content box. A non-growable item
+     * (`flex-grow: 0`) cannot exceed that clamped base; a non-shrinkable
+     * item (`flex-shrink: 0`) cannot fall below it.
+     *
+     * @param array{min: float, max: float} $mm content min/max-content (content box)
+     * @return array{0: float, 1: float} [min, max] content-box contribution
+     */
+    private function flexItemMainContribution(
+        CascadedValues $style,
+        float $cbWidth,
+        array $mm,
+    ): array {
+        $borderBox = $this->isBorderBoxSizing($style);
+        $bp = $this->resolveBorderWidth($style, 'left')
+            + $this->resolveBorderWidth($style, 'right')
+            + $this->resolveLength($style->get('padding-left'), $cbWidth)
+            + $this->resolveLength($style->get('padding-right'), $cbWidth);
+        $toContent = static fn(float $v): float => $borderBox ? max(0.0, $v - $bp) : $v;
+
+        // Flex base size (content box).
+        $basis = $this->resolveFlexBasis($style, $cbWidth);
+        if ($basis !== null) {
+            $base = $toContent($basis);
+        } else {
+            $widthVal = $style->get('width');
+            $base = ($widthVal instanceof Length || $widthVal instanceof Percentage)
+                ? $toContent($this->resolveLength($widthVal, $cbWidth))
+                : $mm['max'];
+        }
+
+        // Used min / max main size (content box). Non-`none` keyword
+        // constraints are left unconstraining in this intrinsic path.
+        $usedMin = 0.0;
+        $minWV = $style->get('min-width');
+        if ($minWV instanceof Length || $minWV instanceof Percentage) {
+            $usedMin = $toContent($this->resolveLength($minWV, $cbWidth));
+        }
+        $usedMax = INF;
+        $maxWV = $style->get('max-width');
+        if ($maxWV instanceof Length || $maxWV instanceof Percentage) {
+            $usedMax = $toContent($this->resolveLength($maxWV, $cbWidth));
+        }
+
+        $clampedBase = min(max($base, $usedMin), $usedMax);
+        $grow = $this->resolveFlexGrow($style);
+        $shrink = $this->resolveFlexShrink($style);
+        $adjust = static function (float $content) use ($grow, $shrink, $clampedBase): float {
+            if ($grow === 0.0) {
+                $content = min($content, $clampedBase);
+            }
+            if ($shrink === 0.0) {
+                $content = max($content, $clampedBase);
+            }
+            return $content;
+        };
+        return [$adjust($mm['min']), $adjust($mm['max'])];
     }
 
     /**
@@ -6107,6 +6191,41 @@ final class BlockLayout
             return $item->geometry->width;
         }
         return $this->measureContentMinMax($item, $itemCtx)['min'];
+    }
+
+    /**
+     * CSS Sizing 3 §5.1 — resolve a flex item's main-axis `min-*` /
+     * `max-*` set to an intrinsic-size keyword (`min-content` /
+     * `max-content` / `fit-content`) into a content-derived px length.
+     * The generic length resolver returns 0 for these keywords, so an
+     * intrinsic-keyword min silently collapsed the item and an
+     * intrinsic-keyword max was never applied. The row main axis uses
+     * the item's inline min / max-content; the column main axis uses its
+     * content block size (a block-flow height has no distinct
+     * min / max-content, so both collapse to the content height).
+     */
+    private function flexMainIntrinsicSize(
+        Box $item,
+        string $keyword,
+        bool $isColumn,
+        LayoutContext $itemCtx,
+        float $contentBlock,
+        float $available,
+    ): float {
+        $min = $this->flexItemContentMainMin($item, $isColumn, $itemCtx, null, $contentBlock);
+        if ($isColumn) {
+            $max = $min;
+        } elseif ($item instanceof AtomicInlineBox || $item instanceof TextBox) {
+            $max = $item->geometry->width;
+        } else {
+            $max = $this->measureContentMinMax($item, $itemCtx)['max'];
+        }
+        return match ($keyword) {
+            'min-content' => $min,
+            'max-content' => $max,
+            'fit-content' => min($max, max($min, $available)),
+            default => 0.0,
+        };
     }
 
     /**
@@ -6462,6 +6581,36 @@ final class BlockLayout
     }
 
     /**
+     * CSS Contain §2.1 — layout / paint / size containment do NOT apply
+     * to internal ruby boxes, internal table boxes other than
+     * table-cell / table-caption, or non-atomic inline boxes. Used to
+     * gate the abspos containing block that layout containment would
+     * otherwise establish on an ineligible element.
+     */
+    private function layoutContainmentAppliesToDisplay(CascadedValues $style): bool
+    {
+        $display = $style->get('display');
+        if (!($display instanceof Keyword)) {
+            return true;
+        }
+        return match (strtolower($display->name)) {
+            'ruby',
+            'ruby-base',
+            'ruby-text',
+            'ruby-base-container',
+            'ruby-text-container',
+            'table-row-group',
+            'table-header-group',
+            'table-footer-group',
+            'table-row',
+            'table-column',
+            'table-column-group',
+            'inline' => false,
+            default => true,
+        };
+    }
+
+    /**
      * CSS 2.1 propidx — `width` does NOT apply to non-replaced
      * inline elements, table rows, table row-groups, or table
      * column/column-groups. It DOES apply to table cells and tables.
@@ -6616,6 +6765,15 @@ final class BlockLayout
      */
     private function establishesAbsPosContainingBlock(CascadedValues $style): bool
     {
+        // CSS Contain §2.1 — layout containment (and the abspos containing
+        // block it would establish) does NOT apply to internal ruby boxes,
+        // internal table boxes other than table-cell / table-caption, or
+        // non-atomic inline boxes. Without this guard an abspos child of
+        // such an element wrongly anchored to it (offset by its padding)
+        // instead of the nearest eligible positioned ancestor.
+        if (!$this->layoutContainmentAppliesToDisplay($style)) {
+            return false;
+        }
         $value = $style->get('contain');
         if (!$value instanceof Keyword && !($value instanceof \Phpdftk\Css\Value\ValueList)) {
             return false;

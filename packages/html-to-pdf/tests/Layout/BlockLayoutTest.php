@@ -548,6 +548,29 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $ap->geometry->height, 0.5);
     }
 
+    public function testContainLayoutDoesNotEstablishAbsPosCBForInternalTableBox(): void
+    {
+        // CSS Contain §2.1 — layout containment does NOT apply to internal
+        // table boxes (other than table-cell / -caption) or ruby boxes, so
+        // such an element must NOT become an abspos containing block even
+        // with `contain: layout`. The abspos child therefore anchors to the
+        // outer `position: relative` wrapper's padding box (x = 50px
+        // margin-left) rather than the contained row-group's inner box
+        // (which would be inset a further 25px by the wrapper's padding).
+        $box = $this->buildTree(
+            '<html><body><div id="rel"><div id="rg"><div id="ap"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #rel { position: relative; width: 100px; height: 100px;
+                    margin-left: 50px; padding: 25px; box-sizing: border-box; }
+             #rg { display: table-row-group; contain: layout; }
+             #ap { position: absolute; top: 0; left: 0; width: 10px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        self::assertEqualsWithDelta(50.0, $ap->geometry->x, 0.5);
+    }
+
     public function testFlexContainerTopMarginCollapsesWithParent(): void
     {
         // CSS 2.1 §8.3.1 + Flexbox 1 §3 — a flex container establishes a
@@ -5990,6 +6013,57 @@ final class BlockLayoutTest extends TestCase
             $flex->children[0]->geometry->height,
             0.001,
             'flex item respects its §4.5 automatic minimum height despite flex-basis:0',
+        );
+    }
+
+    public function testFlexItemMinHeightMinContentKeywordResolvesToContentSize(): void
+    {
+        // CSS Sizing 3 §5.1 — an intrinsic-size keyword (`min-content`) on
+        // a flex item's main-axis `min-height` resolves to the item's
+        // content-based size, not 0. The 100px content child gives a
+        // min-content height of 100px, so the item cannot collapse below
+        // 100px even with `flex-basis: 0` in a 10px-tall container. Before
+        // the fix the generic length resolver returned 0 for the keyword
+        // and the item collapsed.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="flex">'
+                . '<div class="item"><div class="content"></div></div>'
+                . '</div></body></html>',
+            '.flex { display: flex; flex-direction: column; width: 100px; height: 10px; }
+             .flex > .item { flex-basis: 0; min-height: min-content; }
+             .content { width: 100px; height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'div');
+        self::assertNotNull($flex);
+        self::assertEqualsWithDelta(
+            100.0,
+            $flex->children[0]->geometry->height,
+            0.5,
+            'min-height:min-content resolves to the 100px content height',
+        );
+    }
+
+    public function testFlexRowShrinkToFitIntrinsicWidthUsesFlexBaseSize(): void
+    {
+        // CSS Flexbox 1 §9.9.1 — a shrink-to-fit row flex container's
+        // intrinsic width sums each item's FLEX BASE size, not its content
+        // size. An empty `flex: 1 0 100px` item contributes 100px (its
+        // flex-shrink:0 floors the contribution at the base) so a floated
+        // (shrink-to-fit) container is 100px wide, not 0.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div class="c"><div class="i"></div></div></body></html>',
+            '.c { display: flex; float: left; }
+             .c > .i { flex: 1 0 100px; height: 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->find($box, 'div');
+        self::assertNotNull($c);
+        self::assertEqualsWithDelta(
+            100.0,
+            $c->geometry->width,
+            0.5,
+            'floated flex row sizes to the item flex base 100px, not content 0',
         );
     }
 
