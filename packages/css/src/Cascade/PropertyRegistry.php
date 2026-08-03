@@ -916,6 +916,12 @@ final class PropertyRegistry
         $r->register($initial('row-rule-color', new Keyword('currentcolor')));
         $r->register($initial('column-fill', new Keyword('balance')));
         $r->register($initial('column-span', new Keyword('none')));
+        // CSS Multi-column 2 §3 — `column-height` (the fragmentainer height a
+        // `column-fill: auto` container fills before wrapping) and
+        // `column-wrap` (wrap overflowing columns into additional rows).
+        // Both non-inheriting; initial `auto`.
+        $r->register($initial('column-height', new Keyword('auto')));
+        $r->register($initial('column-wrap', new Keyword('auto')));
 
         // CSS Grid Layout 2 — initial values per §7 / §8 / §9.
         // Phase-2 MVP supports explicit-placement layout with

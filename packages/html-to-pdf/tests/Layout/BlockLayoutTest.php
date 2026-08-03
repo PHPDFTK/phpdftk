@@ -1742,6 +1742,31 @@ final class BlockLayoutTest extends TestCase
         );
     }
 
+    public function testColumnHeightWrapMarksGridFragmented(): void
+    {
+        // CSS Multi-column 2 §3 — `column-height` + `column-wrap: wrap`:
+        // the tall content is sliced into `column-height` bands and wrapped
+        // into a columnCount × rowCount grid. Layout marks the container
+        // fragmented + columnWrap and records the band height / content size.
+        $box = $this->buildTree(
+            '<html><body><section><div></div></section></body></html>',
+            'html, body, section, div { display: block; }
+             section { columns: 2; column-fill: auto; width: 100px; column-gap: 0;
+                       column-height: 50px; column-wrap: wrap; }
+             section > div { height: 200px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        self::assertNotNull($section->multiColumn);
+        self::assertTrue($section->multiColumn->fragmented, 'column-wrap fragments');
+        self::assertTrue($section->multiColumn->columnWrap, 'column-wrap:wrap sets the grid flag');
+        self::assertEqualsWithDelta(50.0, $section->multiColumn->columnHeight, 0.5);
+        self::assertEqualsWithDelta(200.0, $section->multiColumn->contentHeight, 0.5);
+        // 200px content / 50px bands = 4 bands over 2 columns = 2 rows → 100px.
+        self::assertEqualsWithDelta(100.0, $section->geometry->height, 0.5);
+    }
+
     public function testColumnCountZeroClampsToSingleColumn(): void
     {
         $box = $this->buildTree(

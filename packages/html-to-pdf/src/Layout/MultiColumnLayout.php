@@ -38,5 +38,16 @@ final readonly class MultiColumnLayout
         public bool $fragmented = false,
         public float $columnHeight = 0.0,
         public float $contentTop = 0.0,
+        /**
+         * CSS Multi-column 2 §3 — `column-wrap: wrap`. When true the tall
+         * content is sliced into bands of `columnHeight` and wrapped into a
+         * `columnCount × rowCount` grid (filling a row of columns left→right,
+         * then the next row down), rather than a single row of `columnCount`
+         * columns. `contentHeight` is the tall content's total block size (to
+         * derive the band/row count); `rowGap` separates the rows.
+         */
+        public bool $columnWrap = false,
+        public float $contentHeight = 0.0,
+        public float $rowGap = 0.0,
     ) {}
 }

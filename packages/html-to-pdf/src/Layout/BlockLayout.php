@@ -7126,6 +7126,48 @@ final class BlockLayout
             $isAutoFill = $columnFill instanceof Keyword
                 && strtolower($columnFill->name) === 'auto';
             if ($isAutoFill) {
+                // CSS Multi-column 2 §3 — `column-height` + `column-wrap: wrap`:
+                // slice the tall content into bands of `column-height` and wrap
+                // them into a columnCount × rowCount grid. Gated on an explicit
+                // wrap so the shipped single-row `column-fill: auto` path stays
+                // byte-identical (no existing fixture sets column-height/wrap).
+                $colHeightVal = $box->style->get('column-height');
+                $colWrapVal = $box->style->get('column-wrap');
+                $wraps = $colWrapVal instanceof Keyword
+                    && strtolower($colWrapVal->name) === 'wrap';
+                if ($wraps && !$this->isAuto($colHeightVal)) {
+                    $colHeight = $this->resolveLength(
+                        $colHeightVal,
+                        $childContext->containingBlockHeight,
+                    );
+                    if ($colHeight > 0.0) {
+                        $rowGap = $this->resolveGridGap(
+                            $box->style->get('row-gap'),
+                            $childContext->containingBlockHeight,
+                        );
+                        $bands = (int) ceil($childTotal / $colHeight - 1e-6);
+                        $bands = max(1, $bands);
+                        $rowCount = (int) ceil($bands / $count);
+                        $mc = $box->multiColumn;
+                        if ($mc !== null) {
+                            $box->multiColumn = new MultiColumnLayout(
+                                columnCount: $mc->columnCount,
+                                columnWidth: $mc->columnWidth,
+                                columnGap: $mc->columnGap,
+                                ruleWidth: $mc->ruleWidth,
+                                ruleStyle: $mc->ruleStyle,
+                                ruleColor: $mc->ruleColor,
+                                fragmented: true,
+                                columnHeight: $colHeight,
+                                contentTop: $originY,
+                                columnWrap: true,
+                                contentHeight: $childTotal,
+                                rowGap: $rowGap,
+                            );
+                        }
+                        return $rowCount * $colHeight + max(0, $rowCount - 1) * $rowGap;
+                    }
+                }
                 $definiteHeight = $this->resolveExplicitHeightOrNull(
                     $box->style,
                     $childContext->containingBlockHeight,

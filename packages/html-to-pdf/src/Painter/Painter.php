@@ -7989,6 +7989,35 @@ final class Painter
         }
         $baseX = $box->geometry->x;
         $children = $this->paintOrderChildren($box);
+        if ($mc->columnWrap) {
+            // CSS Multi-column 2 §3 — `column-wrap: wrap`: slice the tall
+            // content into bands of `columnHeight` and place band `i` at grid
+            // cell (col = i mod columnCount, row = i div columnCount), filling
+            // a row of columns left→right then wrapping to the next row.
+            $rowGap = $mc->rowGap;
+            $bands = (int) ceil($mc->contentHeight / $height - 1e-6);
+            $bands = max(1, $bands);
+            for ($i = 0; $i < $bands; $i++) {
+                $col = $i % $mc->columnCount;
+                $row = intdiv($i, $mc->columnCount);
+                $colX = $baseX + $col * ($colW + $gap);
+                $rowTop = $mc->contentTop + $row * ($height + $rowGap);
+                $stream->saveGraphicsState();
+                $clipPdfY = $this->pageHeight - ($rowTop + $height);
+                $stream->rectangle($colX, $clipPdfY, $colW, $height);
+                $stream->clip();
+                $stream->endPath();
+                // Band i (tall layout-y = contentTop + i·height) → grid cell:
+                // PDF translate dy = i·height − row·(height+rowGap).
+                $dy = $i * $height - $row * ($height + $rowGap);
+                $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, $col * ($colW + $gap), $dy);
+                foreach ($children as $child) {
+                    $this->paintBox($child, $stream, $box);
+                }
+                $stream->restoreGraphicsState();
+            }
+            return;
+        }
         for ($i = 0; $i < $mc->columnCount; $i++) {
             $colX = $baseX + $i * ($colW + $gap);
             $stream->saveGraphicsState();
