@@ -7125,49 +7125,56 @@ final class BlockLayout
             $columnFill = $box->style->get('column-fill');
             $isAutoFill = $columnFill instanceof Keyword
                 && strtolower($columnFill->name) === 'auto';
-            if ($isAutoFill) {
-                // CSS Multi-column 2 §3 — `column-height` + `column-wrap: wrap`:
-                // slice the tall content into bands of `column-height` and wrap
-                // them into a columnCount × rowCount grid. Gated on an explicit
-                // wrap so the shipped single-row `column-fill: auto` path stays
-                // byte-identical (no existing fixture sets column-height/wrap).
-                $colHeightVal = $box->style->get('column-height');
-                $colWrapVal = $box->style->get('column-wrap');
-                $wraps = $colWrapVal instanceof Keyword
-                    && strtolower($colWrapVal->name) === 'wrap';
-                if ($wraps && !$this->isAuto($colHeightVal)) {
-                    $colHeight = $this->resolveLength(
-                        $colHeightVal,
+            // CSS Multi-column 2 §3 — `column-wrap: wrap` slices the tall
+            // content into bands and wraps them into a columnCount × rowCount
+            // grid. Fires INDEPENDENT of column-fill. The band height is
+            // `column-height` when set, else the container's own definite
+            // height (the classic `column-fill:auto` single-row path below
+            // never sets column-wrap, so it stays byte-identical).
+            $colWrapVal = $box->style->get('column-wrap');
+            $colWrapName = $colWrapVal instanceof Keyword ? strtolower($colWrapVal->name) : 'auto';
+            $colHeightVal = $box->style->get('column-height');
+            $colHeightSet = !$this->isAuto($colHeightVal);
+            // `column-wrap: wrap` always wraps; `auto` (the initial) wraps only
+            // when a `column-height` constrains the columns; `nowrap` never
+            // wraps (handled as a single row of column-height bands below).
+            $wraps = $colWrapName === 'wrap'
+                || ($colWrapName === 'auto' && $colHeightSet);
+            if ($wraps) {
+                $colHeight = $colHeightSet
+                    ? $this->resolveLength($colHeightVal, $childContext->containingBlockHeight)
+                    : ($this->resolveExplicitHeightOrNull(
+                        $box->style,
+                        $childContext->containingBlockHeight,
+                    ) ?? 0.0);
+                if ($colHeight > 0.0) {
+                    $rowGap = $this->resolveGridGap(
+                        $box->style->get('row-gap'),
                         $childContext->containingBlockHeight,
                     );
-                    if ($colHeight > 0.0) {
-                        $rowGap = $this->resolveGridGap(
-                            $box->style->get('row-gap'),
-                            $childContext->containingBlockHeight,
+                    $bands = max(1, (int) ceil($childTotal / $colHeight - 1e-6));
+                    $rowCount = (int) ceil($bands / $count);
+                    $mc = $box->multiColumn;
+                    if ($mc !== null) {
+                        $box->multiColumn = new MultiColumnLayout(
+                            columnCount: $mc->columnCount,
+                            columnWidth: $mc->columnWidth,
+                            columnGap: $mc->columnGap,
+                            ruleWidth: $mc->ruleWidth,
+                            ruleStyle: $mc->ruleStyle,
+                            ruleColor: $mc->ruleColor,
+                            fragmented: true,
+                            columnHeight: $colHeight,
+                            contentTop: $originY,
+                            columnWrap: true,
+                            contentHeight: $childTotal,
+                            rowGap: $rowGap,
                         );
-                        $bands = (int) ceil($childTotal / $colHeight - 1e-6);
-                        $bands = max(1, $bands);
-                        $rowCount = (int) ceil($bands / $count);
-                        $mc = $box->multiColumn;
-                        if ($mc !== null) {
-                            $box->multiColumn = new MultiColumnLayout(
-                                columnCount: $mc->columnCount,
-                                columnWidth: $mc->columnWidth,
-                                columnGap: $mc->columnGap,
-                                ruleWidth: $mc->ruleWidth,
-                                ruleStyle: $mc->ruleStyle,
-                                ruleColor: $mc->ruleColor,
-                                fragmented: true,
-                                columnHeight: $colHeight,
-                                contentTop: $originY,
-                                columnWrap: true,
-                                contentHeight: $childTotal,
-                                rowGap: $rowGap,
-                            );
-                        }
-                        return $rowCount * $colHeight + max(0, $rowCount - 1) * $rowGap;
                     }
+                    return $rowCount * $colHeight + max(0, $rowCount - 1) * $rowGap;
                 }
+            }
+            if ($isAutoFill) {
                 $definiteHeight = $this->resolveExplicitHeightOrNull(
                     $box->style,
                     $childContext->containingBlockHeight,
