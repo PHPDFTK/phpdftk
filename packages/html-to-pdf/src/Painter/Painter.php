@@ -1040,6 +1040,17 @@ final class Painter
         if ($z instanceof \Phpdftk\Css\Value\Number) {
             return (int) $z->value;
         }
+        // CSS Values 4 §10.11 — `calc()` in an <integer> context rounds the
+        // result to the nearest integer (halves toward +∞): `z-index: calc(3/2)`
+        // is 2, not dropped to 0. Depending on the cascade path the calc arrives
+        // either unevaluated (Calc) or already reduced to a numeric Length.
+        if ($z instanceof \Phpdftk\Css\Value\Calc) {
+            $v = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate($z, new \Phpdftk\Css\Cascade\LengthContext());
+            return (int) floor($v + 0.5);
+        }
+        if ($z instanceof \Phpdftk\Css\Value\Length) {
+            return (int) floor($z->value + 0.5);
+        }
         return 0;
     }
 

@@ -3177,8 +3177,26 @@ final class BlockLayout
 
                 // align-items / align-self cross placement *within
                 // this line* (not the whole container).
-                $alignSelf = $this->flexKeyword($child->style, 'align-self', 'auto');
-                $effectiveAlign = $alignSelf === 'auto' ? $alignItems : $alignSelf;
+                // CSS Box Alignment 3 §4.4 — `align-self`/`align-items` may
+                // carry a `safe`/`unsafe` overflow keyword (a ValueList, e.g.
+                // `safe center`); unwrap it. `auto`/`normal` map to the
+                // container's align-items / to `stretch` respectively.
+                [$alignSelf, $selfSafe] = $this->flexAlignValue($child->style, 'align-self');
+                if ($alignSelf === 'auto') {
+                    // Only `auto` defers to the container's align-items.
+                    [$effectiveAlign, $safeAlign] = $this->flexAlignValue($style, 'align-items');
+                    if ($effectiveAlign === 'auto') {
+                        $effectiveAlign = $alignItems;
+                    }
+                } else {
+                    $effectiveAlign = $alignSelf;
+                    $safeAlign = $selfSafe;
+                }
+                // `normal` (and a leftover `auto`) behaves as `stretch` on a
+                // flex item (CSS Box Alignment 3 §4.1).
+                if ($effectiveAlign === 'normal' || $effectiveAlign === 'auto') {
+                    $effectiveAlign = 'stretch';
+                }
                 $crossSlack = $lineCross - $itemCross;
                 $alignedCrossInLine = 0.0;
                 switch ($effectiveAlign) {
@@ -3187,6 +3205,10 @@ final class BlockLayout
                         break;
                     case 'flex-end':
                     case 'end':
+                    case 'self-end':
+                        // self-start / self-end resolve against the item's own
+                        // axis; for horizontal-tb LTR that is physical start /
+                        // end (the vertical-wm nuance is deferred).
                         $alignedCrossInLine = $crossSlack;
                         break;
                     case 'stretch':
@@ -3206,6 +3228,12 @@ final class BlockLayout
                         }
                         break;
                         // 'flex-start' / 'start' → no in-line shift.
+                }
+                // CSS Box Alignment 3 §4.4 — `safe` alignment falls back to
+                // `start` when the item overflows its line (negative slack), so
+                // the item never overflows the start edge.
+                if ($safeAlign && $crossSlack < 0.0) {
+                    $alignedCrossInLine = 0.0;
                 }
 
                 $targetCrossEdge = $crossOrigin + $lineCrossOffset + $alignedCrossInLine;
@@ -4422,6 +4450,18 @@ final class BlockLayout
             $this->intrinsicFontStyle($box->style),
         ) ?? $context->defaultFont;
         if ($font === null) {
+            // An explicit `font-size: 0` contributes 0 intrinsic width
+            // (CSS Sizing 3 §5) even on the no-font heuristic path — a
+            // font-size:0 float shrink-to-fits to width 0, not the text width.
+            // (A bare `0` parses as Integer/Number, not Length.)
+            $fs = $box->style->get('font-size');
+            if (($fs instanceof Length
+                    || $fs instanceof \Phpdftk\Css\Value\Integer
+                    || $fs instanceof \Phpdftk\Css\Value\Number)
+                && $fs->value <= 0.0
+            ) {
+                return ['min' => 0.0, 'max' => 0.0];
+            }
             // No font registered — fall back to a character-count
             // heuristic so Grid `auto` tracks still get a usable
             // (if coarse) sizing instead of zero.
@@ -4438,8 +4478,11 @@ final class BlockLayout
             ];
         }
         $fontSizeValue = $box->style->get('font-size');
-        $fontSize = $fontSizeValue instanceof Length && $fontSizeValue->value > 0.0
-            ? $fontSizeValue->value
+        // An explicit `font-size` Length is used verbatim — including 0, whose
+        // intrinsic text contribution is 0 (CSS Sizing 3 §5). The 12px
+        // fallback is only for a non-Length (unresolved) font-size.
+        $fontSize = $fontSizeValue instanceof Length
+            ? max(0.0, $fontSizeValue->value)
             : 12.0;
         $ctx = new \Phpdftk\Text\ShapingContext($font, $fontSize);
         $shaper = new \Phpdftk\Text\Shaper();
@@ -5731,6 +5774,44 @@ final class BlockLayout
             return strtolower($value->name);
         }
         return $default;
+    }
+
+    /**
+     * Resolve a self/content alignment property that may carry a `safe` /
+     * `unsafe` overflow keyword (CSS Box Alignment 3 §4.4). `align-self: safe
+     * center` parses to a ValueList; return the positional keyword plus whether
+     * `safe` was requested. Bare keyword → [keyword, false]; unrecognised →
+     * ['auto', false].
+     *
+     * @return array{0: string, 1: bool}
+     */
+    private function flexAlignValue(CascadedValues $style, string $prop): array
+    {
+        $value = $style->get($prop);
+        if ($value instanceof Keyword) {
+            return [strtolower($value->name), false];
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            $safe = false;
+            $keyword = null;
+            foreach ($value->values as $v) {
+                if (!($v instanceof Keyword)) {
+                    continue;
+                }
+                $name = strtolower($v->name);
+                if ($name === 'safe') {
+                    $safe = true;
+                } elseif ($name === 'unsafe') {
+                    $safe = false;
+                } else {
+                    $keyword = $name;
+                }
+            }
+            if ($keyword !== null) {
+                return [$keyword, $safe];
+            }
+        }
+        return ['auto', false];
     }
 
     /**

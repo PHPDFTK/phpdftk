@@ -155,6 +155,53 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $f->geometry->width, 2.0);
     }
 
+    public function testFontSizeZeroFloatCollapsesToZeroWidth(): void
+    {
+        // CSS Sizing 3 §5 — `font-size: 0` text has 0 intrinsic width, so a
+        // width-less float shrink-to-fits to 0 (regression: the no-font
+        // heuristic sized it to the full text width). `0` parses as Integer.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="f">hello world</div></body></html>',
+            '#f { float: left; font-size: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(0.0, $f->geometry->width, 0.5);
+    }
+
+    public function testAuthorAspectRatioOverridesReplacedIntrinsicRatio(): void
+    {
+        // CSS Sizing 4 §5.1 — an author `aspect-ratio: 1/1` overrides the
+        // replaced element's intrinsic ratio (20:50 here) when deriving the
+        // auto height from the definite width: 100px wide → 100px tall, not
+        // 100 × 50/20 = 250.
+        $box = $this->buildTreeWithUa(
+            '<html><body><canvas id="c" width="20" height="50" '
+            . 'style="width: 100px; aspect-ratio: 1/1"></canvas></body></html>',
+            '',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        self::assertEqualsWithDelta(100.0, $c->geometry->height, 2.0);
+    }
+
+    public function testAlignSelfNormalStretchesFlexItem(): void
+    {
+        // CSS Box Alignment 3 §4.1 — `align-self: normal` behaves as `stretch`
+        // on a flex item (it must NOT defer to align-items:center).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="fc"><div id="it">x</div></div></body></html>',
+            '#fc { display: flex; align-items: center; height: 100px; }
+             #it { align-self: normal; width: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->height, 2.0);
+    }
+
     public function testInlineReplacedDerivesWidthFromDefiniteHeightAndRatio(): void
     {
         // CSS 2.1 §10.3.2 — an inline replaced element (here a canvas with

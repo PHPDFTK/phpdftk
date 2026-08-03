@@ -1918,6 +1918,12 @@ final class BoxGenerator
                 // they behave like `auto`.
                 $wUnset = !$values->has('width') || $this->isReplacedSizeAuto($wValue);
                 $hUnset = !$values->has('height') || $this->isReplacedSizeAuto($hValue);
+                // CSS Sizing 4 §5.1 — an author `aspect-ratio: <ratio>` (a bare
+                // ratio, no `auto`) OVERRIDES the image's natural ratio when
+                // deriving the missing dimension. Capture it before the natural
+                // ratio is exposed below. `auto <ratio>` defers to the natural
+                // ratio for replaced elements, so it is not captured here.
+                $authorRatioWH = $this->explicitReplacedAspectRatio($values);
                 // Replaced elements have an intrinsic aspect ratio
                 // per CSS Sizing 4 §5.1. Expose it as the
                 // `aspect-ratio` cascade value (when the author
@@ -1972,7 +1978,9 @@ final class BoxGenerator
                             [$hInset, $vInset, $borderBox] = $this->presentationalInsetsAndBoxSizing($values);
                             $declaredH = $hValue->value;
                             $contentH = $borderBox ? max(0.0, $declaredH - $vInset) : $declaredH;
-                            $contentW = $contentH * ($nw / $nh);
+                            $contentW = $authorRatioWH !== null
+                                ? $contentH * $authorRatioWH
+                                : $contentH * ($nw / $nh);
                             $declaredW = $borderBox ? ($contentW + $hInset) : $contentW;
                             $values->set(
                                 'width',
@@ -1985,7 +1993,9 @@ final class BoxGenerator
                             [$hInset, $vInset, $borderBox] = $this->presentationalInsetsAndBoxSizing($values);
                             $declaredW = $wValue->value;
                             $contentW = $borderBox ? max(0.0, $declaredW - $hInset) : $declaredW;
-                            $contentH = $contentW * ($nh / $nw);
+                            $contentH = $authorRatioWH !== null
+                                ? $contentW / $authorRatioWH
+                                : $contentW * ($nh / $nw);
                             $declaredH = $borderBox ? ($contentH + $vInset) : $contentH;
                             $values->set(
                                 'height',
@@ -2143,6 +2153,41 @@ final class BoxGenerator
     {
         return $v instanceof Keyword
             && in_array(strtolower($v->name), ['auto', 'min-content', 'max-content', 'fit-content'], true);
+    }
+
+    /**
+     * The author's `aspect-ratio` as a width/height ratio (float), but ONLY
+     * for a bare `<ratio>` — a `<number>` (`n` = n/1) or `w / h`. Returns null
+     * when unset, non-positive, or `auto`-qualified: CSS Sizing 4 §5.1 says
+     * `auto <ratio>` defers to a replaced element's NATURAL ratio, so it must
+     * not override the intrinsic-ratio derivation.
+     */
+    private function explicitReplacedAspectRatio(\Phpdftk\Css\Cascade\CascadedValues $values): ?float
+    {
+        if (!$values->has('aspect-ratio')) {
+            return null;
+        }
+        $ar = $values->get('aspect-ratio');
+        if ($ar instanceof \Phpdftk\Css\Value\Number || $ar instanceof \Phpdftk\Css\Value\Integer) {
+            return $ar->value > 0.0 ? (float) $ar->value : null;
+        }
+        if ($ar instanceof \Phpdftk\Css\Value\ValueList
+            && $ar->separator === \Phpdftk\Css\Value\ListSeparator::Slash
+            && count($ar->values) === 2
+        ) {
+            $w = $ar->values[0];
+            $h = $ar->values[1];
+            // A bare ratio has plain numeric operands; the `auto <ratio>` form
+            // carries the `auto` keyword in the first slash operand (a nested
+            // space list), which fails this instanceof check and is skipped.
+            if (($w instanceof \Phpdftk\Css\Value\Number || $w instanceof \Phpdftk\Css\Value\Integer)
+                && ($h instanceof \Phpdftk\Css\Value\Number || $h instanceof \Phpdftk\Css\Value\Integer)
+                && $w->value > 0.0 && $h->value > 0.0
+            ) {
+                return (float) $w->value / (float) $h->value;
+            }
+        }
+        return null;
     }
 
     /**
