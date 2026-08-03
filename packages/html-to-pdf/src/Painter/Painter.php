@@ -2006,6 +2006,24 @@ final class Painter
         // region outward from a visual reference box (only for the `clip`
         // keyword; hidden/scroll/auto always clip at the padding box).
         [$expandL, $expandT, $expandR, $expandB] = $this->overflowClipMargin($box);
+        // CSS Backgrounds 3 §5.3 — a rounded box clips its overflow to the
+        // padding box's ROUNDED corners (border radii reduced by the border
+        // widths). Only the standard both-axes padding-box clip is rounded;
+        // one-axis clips and `overflow-clip-margin` expansions keep the rect.
+        if ($clipsX && $clipsY
+            && $expandL === 0.0 && $expandT === 0.0 && $expandR === 0.0 && $expandB === 0.0
+        ) {
+            $borderBoxW = $g->borderLeft + $padWidth + $g->borderRight;
+            $borderBoxH = $g->borderTop + $padHeight + $g->borderBottom;
+            $radii = $this->borderRadiiXY($box, $borderBoxW, $borderBoxH);
+            if ($this->radiiAnyPositive($radii)) {
+                $padRadii = $this->reduceRadiiToBox($radii, 'padding-box', $g);
+                $this->buildRoundedRectPath($stream, $padX, $padTop, $padWidth, $padHeight, $padRadii);
+                $stream->clip();
+                $stream->endPath();
+                return;
+            }
+        }
         $rectX = $clipsX ? $padX - $expandL : 0.0;
         $rectWidth = $clipsX ? $padWidth + $expandL + $expandR : $this->pageWidth;
         $rectTop = $clipsY ? $padTop - $expandT : 0.0;
@@ -2253,9 +2271,23 @@ final class Painter
         $ph = $this->pageHeight;
         if ($bareBox) {
             // CSS Masking 1 §6 — `clip-path: <geometry-box>` clips to that
-            // box's edge with no shape.
+            // box's edge. When the element has border-radius the clip follows
+            // the (reference-box-reduced) rounded corners (CSS Backgrounds
+            // 3 §5.3); otherwise a plain rectangle.
             $stream->saveGraphicsState();
-            $stream->rectangle($bx, $ph - $by - $bh, $bw, $bh);
+            $g = $box->geometry;
+            $borderBoxW = $g->borderLeft + $g->paddingLeft + $g->width + $g->paddingRight + $g->borderRight;
+            $borderBoxH = $g->borderTop + $g->paddingTop + $g->height + $g->paddingBottom + $g->borderBottom;
+            $radii = $this->reduceRadiiToBox(
+                $this->borderRadiiXY($box, $borderBoxW, $borderBoxH),
+                $refBox,
+                $g,
+            );
+            if ($this->radiiAnyPositive($radii)) {
+                $this->buildRoundedRectPath($stream, $bx, $by, $bw, $bh, $radii);
+            } else {
+                $stream->rectangle($bx, $ph - $by - $bh, $bw, $bh);
+            }
             $stream->clip();
             $stream->endPath();
             return true;
@@ -3872,7 +3904,19 @@ final class Painter
                     + $geo->borderTop + $geo->borderBottom;
         }
         if ($hasColor) {
-            $radii = $this->borderRadiiXY($box, $width, $height);
+            // Border radii resolve against the border box, then reduce inward
+            // to the background-clip box (CSS Backgrounds 3 §5.3), so a
+            // `padding-box` / `content-box` background rounds its (smaller)
+            // corners rather than reusing the full border-box radius.
+            $borderBoxW = $geo->paddingLeft + $geo->width + $geo->paddingRight
+                + $geo->borderLeft + $geo->borderRight;
+            $borderBoxH = $geo->paddingTop + $geo->height + $geo->paddingBottom
+                + $geo->borderTop + $geo->borderBottom;
+            $radii = $this->reduceRadiiToBox(
+                $this->borderRadiiXY($box, $borderBoxW, $borderBoxH),
+                $clip,
+                $geo,
+            );
             // CSS Backgrounds 4 — `background-clip: border-area`
             // paints only on the border ring. Emit border-box rect
             // ∪ padding-box rect with the even-odd fill rule so the
@@ -8249,20 +8293,39 @@ final class Painter
         array $radii,
         Color $fill,
     ): void {
+        $stream->saveGraphicsState();
+        $stream->setFillColorRGB($fill->r, $fill->g, $fill->b);
+        $this->buildRoundedRectPath($stream, $x, $topY, $width, $height, $radii);
+        $stream->fill();
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Emit a rounded-rectangle SUBPATH (moveTo → lineTo/curveTo → closePath)
+     * in PDF coords, without any graphics-state / colour / paint operator, so
+     * callers can either fill or `clip` it. Each corner is an `[rx, ry]` pair
+     * (elliptical). Layout-Y (top-down) in, PDF-Y flip applied here.
+     *
+     * @param array{array{float,float}, array{float,float}, array{float,float}, array{float,float}} $radii [tl, tr, br, bl]
+     */
+    private function buildRoundedRectPath(
+        ContentStream $stream,
+        float $x,
+        float $topY,
+        float $width,
+        float $height,
+        array $radii,
+    ): void {
         $clamp = static fn(array $r): array => [
             min(max(0.0, $r[0]), $width / 2.0),
             min(max(0.0, $r[1]), $height / 2.0),
         ];
         [$tl, $tr, $br, $bl] = array_map($clamp, $radii);
         $k = 0.5522847498;
-        // Flip to PDF coords for emission.
         $bottomPdfY = $this->pageHeight - $topY - $height;
         $topPdfY = $this->pageHeight - $topY;
         // Walk clockwise starting at the top-left straight edge. Each corner
-        // curve uses the horizontal radius for x-handles and the vertical
-        // radius for y-handles.
-        $stream->saveGraphicsState();
-        $stream->setFillColorRGB($fill->r, $fill->g, $fill->b);
+        // curve uses the horizontal radius for x-handles, vertical for y.
         $stream->moveTo($x + $tl[0], $topPdfY);
         $stream->lineTo($x + $width - $tr[0], $topPdfY);
         if ($tr[0] > 0.0 || $tr[1] > 0.0) {
@@ -8309,7 +8372,38 @@ final class Painter
             );
         }
         $stream->closePath();
-        $stream->fill();
-        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * Reduce per-corner border radii from the border box inward to a
+     * reference box (CSS Backgrounds 3 §5.3): each corner's rx shrinks by the
+     * border (+ padding for content-box) on its horizontal side, ry by the
+     * vertical side. `border-box` / `margin-box` pass through unchanged.
+     *
+     * @param array{array{float,float}, array{float,float}, array{float,float}, array{float,float}} $radii
+     * @return array{array{float,float}, array{float,float}, array{float,float}, array{float,float}}
+     */
+    private function reduceRadiiToBox(array $radii, string $refBox, BoxGeometry $g): array
+    {
+        if ($refBox !== 'padding-box' && $refBox !== 'content-box') {
+            return $radii;
+        }
+        $insL = $g->borderLeft;
+        $insT = $g->borderTop;
+        $insR = $g->borderRight;
+        $insB = $g->borderBottom;
+        if ($refBox === 'content-box') {
+            $insL += $g->paddingLeft;
+            $insT += $g->paddingTop;
+            $insR += $g->paddingRight;
+            $insB += $g->paddingBottom;
+        }
+        $sub = static fn(float $r, float $i): float => max(0.0, $r - $i);
+        return [
+            [$sub($radii[0][0], $insL), $sub($radii[0][1], $insT)], // TL
+            [$sub($radii[1][0], $insR), $sub($radii[1][1], $insT)], // TR
+            [$sub($radii[2][0], $insR), $sub($radii[2][1], $insB)], // BR
+            [$sub($radii[3][0], $insL), $sub($radii[3][1], $insB)], // BL
+        ];
     }
 }

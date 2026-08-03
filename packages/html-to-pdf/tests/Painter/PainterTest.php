@@ -4389,6 +4389,36 @@ final class PainterTest extends TestCase
     }
 
     /**
+     * An `overflow: hidden` (or `contain: paint`) box with border-radius
+     * clips its descendants to the padding box's ROUNDED corners (CSS
+     * Backgrounds 3 §5.3), so the overflow clip path emits Bézier curves
+     * (`c`), not a plain rectangle.
+     */
+    public function testRoundedOverflowClipEmitsCurves(): void
+    {
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="clip"><div class="child"></div></div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .clip { width: 100px; height: 100px; overflow: hidden; border-radius: 30px; }
+             .child { width: 200px; height: 200px; background: green; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('W', $opcodes, 'overflow:hidden emits a clip');
+        self::assertContains('c', $opcodes, 'rounded overflow clip emits Bézier corner curves');
+    }
+
+    /**
      * Pull the last whitespace-separated token out of each operator line —
      * that's the PDF operator code (e.g. `re`, `f`, `rg`).
      *
