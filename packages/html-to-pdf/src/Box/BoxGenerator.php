@@ -54,6 +54,9 @@ final class BoxGenerator
      */
     private array $namedStrings = [];
 
+    /** Lazily-created parser for coercing typed `attr()` attribute values. */
+    private ?\Phpdftk\Css\ValueParser $attrParser = null;
+
     /**
      * CSS Generated Content for Paged Media 3 §4 — running-element
      * store populated by `position: running(name)` declarations.
@@ -1879,6 +1882,10 @@ final class BoxGenerator
      */
     private function applyPresentationalAttributes(Element $element, CascadedValues $values, bool $parentIsFlexOrGrid = false): void
     {
+        // CSS Values 5 §11 — substitute typed `attr()` into property values
+        // from the element's attributes, before the presentational sizing
+        // below reads width/height.
+        $this->resolveAttrFunctions($element, $values);
         $tag = strtolower($element->localName);
         if ($tag === 'img' || $tag === 'embed' || $tag === 'iframe' || $tag === 'video') {
             foreach (['width', 'height'] as $attr) {
@@ -2153,6 +2160,120 @@ final class BoxGenerator
     {
         return $v instanceof Keyword
             && in_array(strtolower($v->name), ['auto', 'min-content', 'max-content', 'fit-content'], true);
+    }
+
+    /**
+     * CSS Values 5 §11 — replace typed `attr()` occurrences in an element's
+     * cascaded property values with the coerced attribute value (or fallback).
+     * Recurses into value lists / functions so `max(attr(...), ...)` resolves.
+     */
+    private function resolveAttrFunctions(Element $element, CascadedValues $values): void
+    {
+        foreach ($values->all() as $prop => $value) {
+            $resolved = $this->substituteAttr($value, $element);
+            if ($resolved !== null && $resolved !== $value) {
+                $values->set($prop, $resolved);
+            }
+        }
+    }
+
+    /**
+     * Recursively substitute AttrFunction nodes inside a value. Returns the
+     * (possibly new) value, or null when a bare `attr()` has no attribute and
+     * no fallback (guaranteed-invalid — leave the original in place).
+     */
+    private function substituteAttr(
+        \Phpdftk\Css\Value\Value $value,
+        Element $element,
+    ): ?\Phpdftk\Css\Value\Value {
+        if ($value instanceof \Phpdftk\Css\Value\AttrFunction) {
+            return $this->coerceAttr($value, $element);
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            $changed = false;
+            $out = [];
+            foreach ($value->values as $v) {
+                $r = $this->substituteAttr($v, $element);
+                if ($r === null) {
+                    return $value; // an unresolvable attr — keep the list as-is
+                }
+                $changed = $changed || $r !== $v;
+                $out[] = $r;
+            }
+            return $changed ? new \Phpdftk\Css\Value\ValueList($out, $value->separator) : $value;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\CssFunction) {
+            $changed = false;
+            $out = [];
+            foreach ($value->arguments as $v) {
+                $r = $this->substituteAttr($v, $element);
+                if ($r === null) {
+                    return $value;
+                }
+                $changed = $changed || $r !== $v;
+                $out[] = $r;
+            }
+            return $changed ? new \Phpdftk\Css\Value\CssFunction($value->name, $out) : $value;
+        }
+        return $value;
+    }
+
+    /**
+     * Coerce a single `attr()` to a typed value: read the attribute, cast per
+     * its `type()`/unit, or use the fallback when missing / the cast fails.
+     * Null when the attribute is absent and no fallback is given.
+     */
+    private function coerceAttr(
+        \Phpdftk\Css\Value\AttrFunction $attr,
+        Element $element,
+    ): ?\Phpdftk\Css\Value\Value {
+        $raw = $element->getAttribute($attr->attributeName);
+        if ($raw !== null) {
+            $cast = $this->castAttrValue(trim($raw), $attr->typeOrUnit);
+            if ($cast !== null) {
+                return $cast;
+            }
+        }
+        if ($attr->fallback !== null) {
+            return $this->substituteAttr($attr->fallback, $element);
+        }
+        return null;
+    }
+
+    /**
+     * Cast a raw attribute string to a CSS value per the `attr()` type. Handles
+     * the modern `type(<length>|<color>|<number>|<integer>|<percentage>)` form
+     * and a bare CSS unit (old syntax). Returns null on an invalid cast.
+     */
+    private function castAttrValue(string $raw, ?string $type): ?\Phpdftk\Css\Value\Value
+    {
+        $this->attrParser ??= new \Phpdftk\Css\ValueParser();
+        $syntax = null;
+        if ($type !== null && preg_match('/^type\(\s*(.+?)\s*\)$/i', $type, $m) === 1) {
+            $syntax = strtolower($m[1]);
+        }
+        if ($syntax !== null) {
+            $parsed = $raw === '' ? null : $this->attrParser->parseFromString($raw);
+            return match ($syntax) {
+                '<length>', '<length-percentage>' => $parsed instanceof \Phpdftk\Css\Value\Length
+                    || $parsed instanceof \Phpdftk\Css\Value\Percentage ? $parsed : null,
+                '<color>' => $parsed instanceof \Phpdftk\Css\Value\Color ? $parsed : null,
+                '<number>' => $parsed instanceof \Phpdftk\Css\Value\Number
+                    || $parsed instanceof \Phpdftk\Css\Value\Integer ? $parsed : null,
+                '<integer>' => $parsed instanceof \Phpdftk\Css\Value\Integer ? $parsed : null,
+                '<percentage>' => $parsed instanceof \Phpdftk\Css\Value\Percentage ? $parsed : null,
+                default => null,
+            };
+        }
+        // Old syntax: a bare unit (`attr(data-w px)`) means the attribute is a
+        // unitless number scaled by that unit.
+        if ($type !== null && strtolower($type) !== 'string' && is_numeric($raw)) {
+            $unit = \Phpdftk\Css\Value\LengthUnit::tryFrom(strtolower($type));
+            if ($unit !== null) {
+                return new \Phpdftk\Css\Value\Length((float) $raw, $unit);
+            }
+        }
+        return null;
     }
 
     /**

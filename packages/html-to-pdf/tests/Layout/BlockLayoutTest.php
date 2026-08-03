@@ -202,6 +202,36 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $it->geometry->height, 2.0);
     }
 
+    public function testTypedAttrLengthResolvesToWidth(): void
+    {
+        // CSS Values 5 §11 — `width: attr(data-w type(<length>))` reads the
+        // element's `data-w` attribute and casts it to a length.
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="t" data-w="150px" '
+            . 'style="width: attr(data-w type(&lt;length&gt;))"></div></body></html>',
+            '',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(150.0, $t->geometry->width, 1.0);
+    }
+
+    public function testTypedAttrInvalidCastUsesFallback(): void
+    {
+        // An attribute value that can't cast to the declared type falls back
+        // to the supplied default (CSS Values 5 §11).
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="t" data-w="notalength" '
+            . 'style="width: attr(data-w type(&lt;length&gt;), 120px)"></div></body></html>',
+            '',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertEqualsWithDelta(120.0, $t->geometry->width, 1.0);
+    }
+
     public function testInlineReplacedDerivesWidthFromDefiniteHeightAndRatio(): void
     {
         // CSS 2.1 §10.3.2 — an inline replaced element (here a canvas with
