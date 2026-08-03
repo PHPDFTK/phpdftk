@@ -4419,6 +4419,45 @@ final class PainterTest extends TestCase
     }
 
     /**
+     * A `border-collapse: collapse` cell's border paints AFTER its content
+     * (CSS Tables 3 §4.3), so a descendant can't overpaint the collapsed
+     * table border. The cell's lime border fill (`0 1 0 rg`) must appear in
+     * the stream after the child's red border fill (`1 0 0 rg`).
+     */
+    public function testCollapsedBorderCellPaintsBorderAfterContent(): void
+    {
+        $doc = $this->html->parseDocument(
+            '<html><body><table><tr><td><div></div></td></tr></table></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             table { display: table; border-collapse: collapse; }
+             tr { display: table-row; }
+             td { display: table-cell; border: 20px solid lime; padding: 0; }
+             td > div { display: block; width: 20px; height: 20px; border: 20px solid red; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $ops = implode("\n", $stream->getOperators());
+        $greenPos = strpos($ops, '0 1 0 rg'); // cell's lime (collapsed) border
+        $redPos = strpos($ops, '1 0 0 rg');   // child div's red border
+        self::assertNotFalse($greenPos, 'cell border painted');
+        self::assertNotFalse($redPos, 'child border painted');
+        self::assertGreaterThan(
+            $redPos,
+            $greenPos,
+            'collapsed cell border paints after the child content',
+        );
+    }
+
+    /**
      * Pull the last whitespace-separated token out of each operator line —
      * that's the PDF operator code (e.g. `re`, `f`, `rg`).
      *

@@ -1127,7 +1127,14 @@ final class Painter
             $this->paintBoxShadow($box, $stream, insetOnly: false);
             $this->paintBackground($box, $stream);
             $this->paintBoxShadow($box, $stream, insetOnly: true);
-            $this->paintBorders($box, $stream);
+            // CSS Tables 3 §4.3 / painting order — a `border-collapse: collapse`
+            // cell's (collapsed) border belongs to the table and paints AFTER
+            // the cell's content, so a descendant can't overpaint it. Defer it
+            // to the late phase below; separated-border cells paint here.
+            $deferBorder = $this->isCollapsedBorderCell($box);
+            if (!$deferBorder) {
+                $this->paintBorders($box, $stream);
+            }
             if ($originalGeo !== null) {
                 $box->geometry = $originalGeo;
             }
@@ -1162,6 +1169,12 @@ final class Painter
         }
         if ($overflowClip) {
             $stream->restoreGraphicsState();
+        }
+        // Late phase: a deferred `border-collapse: collapse` cell border paints
+        // over the cell's content (CSS Tables 3 §4.3), after the overflow clip
+        // is released so the border ring itself is not clipped.
+        if ($deferBorder ?? false) {
+            $this->paintBorders($box, $stream);
         }
         if ($clipPathApplied) {
             $stream->restoreGraphicsState();
@@ -8434,5 +8447,20 @@ final class Painter
             [$sub($radii[2][0], $insR), $sub($radii[2][1], $insB)], // BR
             [$sub($radii[3][0], $insL), $sub($radii[3][1], $insB)], // BL
         ];
+    }
+
+    /**
+     * A `border-collapse: collapse` table cell whose border must paint in the
+     * late (post-content) phase so a descendant cannot overpaint the collapsed
+     * table border (CSS Tables 3 §4.3 painting order).
+     */
+    private function isCollapsedBorderCell(Box $box): bool
+    {
+        if (!($box instanceof \Phpdftk\HtmlToPdf\Box\TableCellBox)) {
+            return false;
+        }
+        $bc = $box->style->get('border-collapse');
+        return $bc instanceof \Phpdftk\Css\Value\Keyword
+            && strtolower($bc->name) === 'collapse';
     }
 }
