@@ -730,7 +730,7 @@ final class Cascade
      * Queries 4 §3.1) so a query gated on something we don't model
      * never accidentally matches.
      */
-    private function mediaPreludeMatches(string $prelude): bool
+    public function mediaPreludeMatches(string $prelude): bool
     {
         $lower = strtolower($prelude);
         if ($lower === '' || $lower === 'all') {

@@ -4419,6 +4419,51 @@ final class PainterTest extends TestCase
     }
 
     /**
+     * `transform-origin` position keywords bind by AXIS IDENTITY, not order
+     * (CSS Transforms 1 §6): `top`/`bottom` set Y and `left`/`right` set X in
+     * any order, and a single keyword leaves the other axis at center.
+     */
+    public function testTransformOriginKeywordAxisBinding(): void
+    {
+        $painter = new Painter(792.0);
+        $method = new \ReflectionMethod(Painter::class, 'resolveTransformOriginOffsets');
+        $method->setAccessible(true);
+        $kw = static fn(string $n): \Phpdftk\Css\Value\Keyword => new \Phpdftk\Css\Value\Keyword($n);
+        $call = static fn(array $vals): array => $method->invoke($painter, $vals, 100.0, 100.0);
+
+        // `top` alone → X = center (50), Y = top (0).
+        self::assertEqualsWithDelta([50.0, 0.0], $call([$kw('top')]), 0.1);
+        // `top center` → X = center, Y = top (top binds Y regardless of order).
+        self::assertEqualsWithDelta([50.0, 0.0], $call([$kw('top'), $kw('center')]), 0.1);
+        // `top right` → X = right (100), Y = top (0).
+        self::assertEqualsWithDelta([100.0, 0.0], $call([$kw('top'), $kw('right')]), 0.1);
+    }
+
+    /**
+     * A `solid` outline paints a FILLED BAND (even-odd `f*`), not a centred
+     * stroke, so large widths / negative offsets fill correctly (CSS UI 3 §4).
+     */
+    public function testSolidOutlineEmitsFilledBand(): void
+    {
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; outline: 20px solid green; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('f*', $opcodes, 'solid outline emits an even-odd filled band');
+    }
+
+    /**
      * A `border-collapse: collapse` cell's border paints AFTER its content
      * (CSS Tables 3 §4.3), so a descendant can't overpaint the collapsed
      * table border. The cell's lime border fill (`0 1 0 rg`) must appear in

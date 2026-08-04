@@ -1392,14 +1392,53 @@ final class Painter
         $boxY = $g->y - $g->paddingTop - $g->borderTop;
 
         $value = $box->style->get('transform-origin');
-        $offX = $width / 2.0;
-        $offY = $height / 2.0;
-        if ($value instanceof \Phpdftk\Css\Value\ValueList && count($value->values) >= 2) {
-            $offX = $this->resolveOriginComponent($value->values[0], $width, $offX);
-            $offY = $this->resolveOriginComponent($value->values[1], $height, $offY);
-        }
+        $values = $value instanceof \Phpdftk\Css\Value\ValueList
+            ? $value->values
+            : ($value !== null ? [$value] : []);
+        [$offX, $offY] = $this->resolveTransformOriginOffsets($values, $width, $height);
         $cssY = $boxY + $offY;
         return [$boxX + $offX, $this->pageHeight - $cssY];
+    }
+
+    /**
+     * Resolve `transform-origin`'s 1-3 components to (x, y) offsets. Position
+     * keywords bind by AXIS IDENTITY, not order (CSS Transforms 1 §6 / the
+     * <position> grammar): `left`/`right` set X, `top`/`bottom` set Y in any
+     * order; `center`, `<length>` and `<percentage>` fill the remaining axes
+     * positionally (X first). A single keyword leaves the other axis at center.
+     *
+     * @param list<\Phpdftk\Css\Value\Value> $values
+     * @return array{float, float}
+     */
+    private function resolveTransformOriginOffsets(array $values, float $width, float $height): array
+    {
+        $offX = null;
+        $offY = null;
+        $positional = [];
+        foreach ($values as $v) {
+            if ($v instanceof \Phpdftk\Css\Value\Keyword) {
+                switch (strtolower($v->name)) {
+                    case 'left':   $offX = 0.0;
+                        continue 2;
+                    case 'right':  $offX = $width;
+                        continue 2;
+                    case 'top':    $offY = 0.0;
+                        continue 2;
+                    case 'bottom': $offY = $height;
+                        continue 2;
+                        // 'center' falls through to positional assignment.
+                }
+            }
+            $positional[] = $v;
+        }
+        foreach ($positional as $v) {
+            if ($offX === null) {
+                $offX = $this->resolveOriginComponent($v, $width, $width / 2.0);
+            } elseif ($offY === null) {
+                $offY = $this->resolveOriginComponent($v, $height, $height / 2.0);
+            }
+        }
+        return [$offX ?? $width / 2.0, $offY ?? $height / 2.0];
     }
 
     private function resolveOriginComponent(
@@ -7920,18 +7959,52 @@ final class Painter
             $stream->restoreGraphicsState();
             return;
         }
-        switch ($styleName) {
-            case 'dashed':
-                $stream->setDashPattern([$width * 3, $width * 2], 0);
-                break;
-            case 'dotted':
-                $stream->setDashPattern([$width, $width * 1.5], 0);
-                break;
-                // 'groove' / 'ridge' / 'inset' / 'outset' fall back
-                // to solid for Phase 1.
+        if ($styleName === 'dashed' || $styleName === 'dotted') {
+            $stream->setDashPattern(
+                $styleName === 'dashed' ? [$width * 3, $width * 2] : [$width, $width * 1.5],
+                0,
+            );
+            if ($color->a < 0.999 && $this->page !== null) {
+                $stream->setGraphicsState($this->page->ensureOpacityState($color->a, $color->a));
+            }
+            $stream->rectangle($outerX, $pdfY, $outerWidth, $outerHeight);
+            $stream->stroke();
+            $stream->restoreGraphicsState();
+            return;
         }
-        $stream->rectangle($outerX, $pdfY, $outerWidth, $outerHeight);
-        $stream->stroke();
+        // CSS UI 3 §4 — a `solid` outline (and the groove/ridge/inset/outset
+        // fallbacks) is a SOLID FILLED BAND from the box's outer outline edge
+        // to its inner edge (even-odd fill), NOT a centred stroke: this fills
+        // correctly for large outline widths and honours negative
+        // outline-offset (which a centred stroke inverts/leaks through).
+        $bbX = $geo->x - $geo->paddingLeft - $geo->borderLeft;
+        $bbY = $geo->y - $geo->paddingTop - $geo->borderTop;
+        $bbW = $geo->paddingLeft + $geo->width + $geo->paddingRight
+            + $geo->borderLeft + $geo->borderRight;
+        $bbH = $geo->paddingTop + $geo->height + $geo->paddingBottom
+            + $geo->borderTop + $geo->borderBottom;
+        // A negative outline-offset shrinks the inner edge; clamp it to a
+        // non-negative size so the outer shape never drops below 2×width
+        // (CSS UI 3 — outline-013). The band is always `width` thick per side,
+        // so the outer size is the clamped inner size + 2×width; centre both
+        // on the box so the non-clamped case still lands on the real edges.
+        $innW = max(0.0, $bbW + 2.0 * $offset);
+        $innH = max(0.0, $bbH + 2.0 * $offset);
+        $outW = $innW + 2.0 * $width;
+        $outH = $innH + 2.0 * $width;
+        $cx = $bbX + $bbW / 2.0;
+        $cy = $bbY + $bbH / 2.0;
+        $outLeft = $cx - $outW / 2.0;
+        $outTop = $cy - $outH / 2.0;
+        $innLeft = $cx - $innW / 2.0;
+        $innTop = $cy - $innH / 2.0;
+        if ($color->a < 0.999 && $this->page !== null) {
+            $stream->setGraphicsState($this->page->ensureOpacityState($color->a, $color->a));
+        }
+        $stream->setFillColorRGB($color->r, $color->g, $color->b);
+        $stream->rectangle($outLeft, $this->pageHeight - $outTop - $outH, $outW, $outH);
+        $stream->rectangle($innLeft, $this->pageHeight - $innTop - $innH, $innW, $innH);
+        $stream->fillEvenOdd();
         $stream->restoreGraphicsState();
     }
 

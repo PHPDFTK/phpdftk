@@ -863,11 +863,29 @@ final class Renderer
         if ($href === null || $href === '') {
             return null;
         }
-        // Optional trailing media query. Phase-1 matcher accepts
-        // `print` / `all` / lists containing either.
+        // CSS Cascade 5 §3.1 — an `@import` may carry a `supports(<condition>)`
+        // and/or a media-query list; both must match. Route them through the
+        // cascade's real feature-query / supports evaluators (min/max-width
+        // aware) rather than the coarse print/all token matcher.
         $remainder = trim($remainder);
-        if ($remainder !== '' && !$this->mediaPreludeMatches($remainder)) {
-            return null;
+        if ($remainder !== '') {
+            $condition = $remainder;
+            if (preg_match('~^supports\(\s*(.+?)\s*\)\s*(.*)$~is', $condition, $sm) === 1) {
+                // A bare `<declaration>` inside `supports(...)` (e.g.
+                // `supports(display:block)`) is a supports-condition once
+                // wrapped in parens, which is what supportsPreludeMatches wants.
+                $inner = $sm[1];
+                if ($inner[0] !== '(') {
+                    $inner = '(' . $inner . ')';
+                }
+                if (!$this->cascade->supportsPreludeMatches($inner)) {
+                    return null;
+                }
+                $condition = trim($sm[2]);
+            }
+            if ($condition !== '' && !$this->cascade->mediaPreludeMatches($condition)) {
+                return null;
+            }
         }
         // Resolve the URL (data:text/css… or relative under baseDir).
         $css = $this->fetchImportSource($href);
