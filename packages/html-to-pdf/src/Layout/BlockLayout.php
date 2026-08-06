@@ -3267,6 +3267,11 @@ final class BlockLayout
         // Min/max-width and -height clamping (same as layoutBlock).
         $this->clampMinMax($style, $geo, $cbWidth, $cbHeight);
 
+        // CSS Gap Decorations 1 — record `column-rule` / `row-rule`
+        // segments for the gaps between flex items and flex lines, now
+        // that every item and the container have their final geometry.
+        $this->computeFlexGapRuleSegments($box, $children, $lines, $isColumn);
+
         // CSS Flexbox 1 §3 — lay out absolutely-positioned children
         // last, AFTER the container's geometry is final so they have
         // a definite containing block.
@@ -7944,6 +7949,172 @@ final class BlockLayout
             return max(0.0, (float) $value->value);
         }
         return 0.0;
+    }
+
+    /**
+     * CSS Gap Decorations 1 — compute the `column-rule` / `row-rule`
+     * segments painted in a flex container's gaps and cache them on the
+     * {@see FlexBox} for {@see Painter::paintFlexGapRules()}.
+     *
+     * Model (matching the WPT `flex-gap-decorations-*` references): each
+     * flex line paints main-axis rules centred in its *own* item gaps —
+     * so an irregular line (e.g. one wide item) simply has different gap
+     * positions — while inter-line (cross-axis) rules span the whole main
+     * content extent. A main-axis rule's cross span runs from the centre
+     * of the preceding cross gap (or the content edge) to the centre of
+     * the following cross gap (or the content edge), so rules meet cleanly
+     * at intersections.
+     *
+     * Deferred (left as a no-op so those fixtures stay unaffected): vertical
+     * writing modes, multi-value rule lists, `*-rule` insets/outsets, and
+     * fragmentation — the simple guarded subset mirrors the grid painter.
+     *
+     * @param list<Box>       $children indexed item list (in DOM/order order)
+     * @param list<list<int>> $lines    flex lines as item-index lists
+     */
+    private function computeFlexGapRuleSegments(
+        \Phpdftk\HtmlToPdf\Box\FlexBox $box,
+        array $children,
+        array $lines,
+        bool $isColumn,
+    ): void {
+        $box->gapRuleSegments = [];
+        $style = $box->style;
+
+        // Guard 1 — only horizontal-tb. Vertical writing modes have their
+        // own fixtures and axis mapping; defer them.
+        if (WritingMode::fromStyle($style)->isVertical()) {
+            return;
+        }
+        // Guard 2 — at least one of the two rules must be visibly set.
+        $mainRulePrefix = $isColumn ? 'row-rule' : 'column-rule';
+        $crossRulePrefix = $isColumn ? 'column-rule' : 'row-rule';
+        $mainRuleVisible = $this->gapRuleIsVisible($style, $mainRulePrefix);
+        $crossRuleVisible = $this->gapRuleIsVisible($style, $crossRulePrefix);
+        if (!$mainRuleVisible && !$crossRuleVisible) {
+            return;
+        }
+
+        $geo = $box->geometry;
+        // Content-box extents split into main / cross by direction.
+        if ($isColumn) {
+            $mainContentStart = $geo->y;
+            $mainContentEnd = $geo->y + $geo->height;
+            $crossContentStart = $geo->x;
+            $crossContentEnd = $geo->x + $geo->width;
+        } else {
+            $mainContentStart = $geo->x;
+            $mainContentEnd = $geo->x + $geo->width;
+            $crossContentStart = $geo->y;
+            $crossContentEnd = $geo->y + $geo->height;
+        }
+
+        // Per-line item main-intervals + the line's cross band, read from
+        // the items' *final* margin boxes.
+        $lineData = [];
+        foreach ($lines as $indices) {
+            if ($indices === []) {
+                continue;
+            }
+            $items = [];
+            $crossStart = INF;
+            $crossEnd = -INF;
+            foreach ($indices as $i) {
+                if (!isset($children[$i])) {
+                    continue;
+                }
+                $g = $children[$i]->geometry;
+                $mLeft = $g->x - $g->paddingLeft - $g->borderLeft - $g->marginLeft;
+                $mTop = $g->y - $g->paddingTop - $g->borderTop - $g->marginTop;
+                $mW = $g->outerWidth();
+                $mH = $g->outerHeight();
+                if ($isColumn) {
+                    $items[] = [$mTop, $mTop + $mH];
+                    $crossStart = min($crossStart, $mLeft);
+                    $crossEnd = max($crossEnd, $mLeft + $mW);
+                } else {
+                    $items[] = [$mLeft, $mLeft + $mW];
+                    $crossStart = min($crossStart, $mTop);
+                    $crossEnd = max($crossEnd, $mTop + $mH);
+                }
+            }
+            if ($items === []) {
+                continue;
+            }
+            usort($items, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+            $lineData[] = ['cross' => [$crossStart, $crossEnd], 'items' => $items];
+        }
+        if ($lineData === []) {
+            return;
+        }
+        // Visual cross order (top→bottom / left→right).
+        usort($lineData, static fn(array $a, array $b): int => $a['cross'][0] <=> $b['cross'][0]);
+
+        $lineCount = count($lineData);
+        // Cross-gap centres between consecutive lines.
+        $crossGapCentres = [];
+        for ($l = 0; $l < $lineCount - 1; $l++) {
+            $crossGapCentres[$l] = ($lineData[$l]['cross'][1] + $lineData[$l + 1]['cross'][0]) / 2.0;
+        }
+
+        $segments = [];
+
+        // Main-axis rules: within each line, one per inter-item gap. Cross
+        // span runs gap-centre → gap-centre (content edge at the ends).
+        if ($mainRuleVisible) {
+            for ($l = 0; $l < $lineCount; $l++) {
+                $bandStart = $l === 0 ? $crossContentStart : $crossGapCentres[$l - 1];
+                $bandEnd = $l === $lineCount - 1 ? $crossContentEnd : $crossGapCentres[$l];
+                $items = $lineData[$l]['items'];
+                $itemCount = count($items);
+                for ($k = 0; $k < $itemCount - 1; $k++) {
+                    $centre = ($items[$k][1] + $items[$k + 1][0]) / 2.0;
+                    // Fixed main = $centre, span cross [$bandStart, $bandEnd].
+                    if ($isColumn) {
+                        $segments[] = ['prefix' => $mainRulePrefix, 'x1' => $bandStart, 'y1' => $centre, 'x2' => $bandEnd, 'y2' => $centre];
+                    } else {
+                        $segments[] = ['prefix' => $mainRulePrefix, 'x1' => $centre, 'y1' => $bandStart, 'x2' => $centre, 'y2' => $bandEnd];
+                    }
+                }
+            }
+        }
+
+        // Cross-axis rules: between consecutive lines, spanning the whole
+        // main content extent. Appended last so they paint over the
+        // main-axis rules at intersections (matching the WPT references).
+        if ($crossRuleVisible) {
+            for ($l = 0; $l < $lineCount - 1; $l++) {
+                $centre = $crossGapCentres[$l];
+                // Fixed cross = $centre, span main [$mainContentStart, $mainContentEnd].
+                if ($isColumn) {
+                    $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $centre, 'y1' => $mainContentStart, 'x2' => $centre, 'y2' => $mainContentEnd];
+                } else {
+                    $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $mainContentStart, 'y1' => $centre, 'x2' => $mainContentEnd, 'y2' => $centre];
+                }
+            }
+        }
+
+        $box->gapRuleSegments = $segments;
+    }
+
+    /**
+     * Whether a gap-decoration rule (`column-rule` / `row-rule`) resolves
+     * to something paintable: a non-`none`/`hidden` single-keyword style
+     * with positive width. Multi-value lists (a ValueList, not a Keyword)
+     * fall through to `false` so those fixtures stay a no-op.
+     */
+    private function gapRuleIsVisible(CascadedValues $style, string $prefix): bool
+    {
+        $styleValue = $style->get("$prefix-style");
+        if (!$styleValue instanceof Keyword) {
+            return false;
+        }
+        $name = strtolower($styleValue->name);
+        if ($name === 'none' || $name === 'hidden') {
+            return false;
+        }
+        $width = $style->get("$prefix-width");
+        return $width instanceof Length && $width->value > 0.0;
     }
 
     private function resolveColumnRuleWidth(CascadedValues $style): float

@@ -1152,6 +1152,7 @@ final class Painter
             $this->paintOutline($box, $stream);
             $this->paintColumnRules($box, $stream);
             $this->paintGridGapRules($box, $stream);
+            $this->paintFlexGapRules($box, $stream);
             $this->paintImage($box, $stream, $parent);
             $this->paintListMarker($box, $stream);
             $this->paintLineBoxes($box, $stream);
@@ -8191,6 +8192,48 @@ final class Painter
                     $pdfY,
                 );
             }
+        }
+        $stream->restoreGraphicsState();
+    }
+
+    /**
+     * CSS Gaps 1 — paint the `column-rule` / `row-rule` decorations in a
+     * flex container's gaps. The segments (in top-down layout space) were
+     * resolved per flex line during layout; here they are Y-flipped into
+     * PDF space and stroked with the shared {@see strokeGapRule()} helper.
+     * No-op for non-flex boxes or when no segments were recorded.
+     */
+    private function paintFlexGapRules(Box $box, ContentStream $stream): void
+    {
+        if (!$box instanceof \Phpdftk\HtmlToPdf\Box\FlexBox) {
+            return;
+        }
+        if ($box->gapRuleSegments === []) {
+            return;
+        }
+        $stream->saveGraphicsState();
+        // Mirror the grid painter: a scroll container (`overflow` other
+        // than `visible`) clips its gap decorations to the padding box.
+        if ($this->shouldOverflowClip($box)) {
+            $g = $box->geometry;
+            $padLeft = $g->x - $g->paddingLeft;
+            $padTop = $g->y - $g->paddingTop;
+            $padWidth = $g->paddingLeft + $g->width + $g->paddingRight;
+            $padHeight = $g->paddingTop + $g->height + $g->paddingBottom;
+            $stream->rectangle($padLeft, $this->pageHeight - $padTop - $padHeight, $padWidth, $padHeight);
+            $stream->clip();
+            $stream->endPath();
+        }
+        foreach ($box->gapRuleSegments as $seg) {
+            $this->strokeGapRule(
+                $box,
+                $stream,
+                $seg['prefix'],
+                $seg['x1'],
+                $this->pageHeight - $seg['y1'],
+                $seg['x2'],
+                $this->pageHeight - $seg['y2'],
+            );
         }
         $stream->restoreGraphicsState();
     }

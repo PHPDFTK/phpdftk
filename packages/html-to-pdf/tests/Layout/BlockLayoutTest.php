@@ -12,6 +12,7 @@ use Phpdftk\Css\Sheet\Origin;
 use Phpdftk\HtmlToPdf\Box\BlockBox;
 use Phpdftk\HtmlToPdf\Box\Box;
 use Phpdftk\HtmlToPdf\Box\BoxGenerator;
+use Phpdftk\HtmlToPdf\Box\FlexBox;
 use Phpdftk\HtmlToPdf\Layout\BlockLayout;
 use Phpdftk\FontParser\OpenTypeParser;
 use Phpdftk\HtmlToPdf\Layout\FontResolver;
@@ -1956,6 +1957,54 @@ final class BlockLayoutTest extends TestCase
         self::assertNotNull($section->multiColumn);
         self::assertSame('none', $section->multiColumn->ruleStyle);
         self::assertSame(0.0, $section->multiColumn->ruleWidth);
+    }
+
+    public function testFlexGapRuleSegmentsRecordedForWrappedGrid(): void
+    {
+        // CSS Gaps 1 — a 2×2 wrapped flex container records one
+        // column-rule segment per line (the inter-item main-axis gap,
+        // vertical) plus one row-rule segment for the single inter-line
+        // cross-axis gap (horizontal, spanning the full main content).
+        $box = $this->buildTree(
+            '<html><body><main class="f">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</main></body></html>',
+            'html, body { display: block; margin: 0; }
+             .f { display: flex; flex-wrap: wrap; width: 90px;
+                  column-gap: 10px; row-gap: 10px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue;
+                  row-rule-style: solid; row-rule-width: 4px; row-rule-color: green; }
+             .f > div { width: 40px; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'main');
+        self::assertInstanceOf(FlexBox::class, $flex);
+
+        $segments = $flex->gapRuleSegments;
+        self::assertCount(3, $segments, '2 column-rule + 1 row-rule');
+
+        $columnRules = array_values(array_filter(
+            $segments,
+            static fn(array $s): bool => $s['prefix'] === 'column-rule',
+        ));
+        $rowRules = array_values(array_filter(
+            $segments,
+            static fn(array $s): bool => $s['prefix'] === 'row-rule',
+        ));
+        self::assertCount(2, $columnRules, 'one column-rule per flex line');
+        self::assertCount(1, $rowRules, 'one row-rule between the two lines');
+
+        // Column rules are vertical (x1 == x2) and centred in the single
+        // 10px main gap between the 40px items → x = 45 from the content
+        // origin (body margin 0).
+        foreach ($columnRules as $seg) {
+            self::assertSame($seg['x1'], $seg['x2'], 'column-rule is vertical');
+            self::assertEqualsWithDelta(45.0, $seg['x1'], 0.001, 'gap centre between 40px items');
+        }
+        // The row rule is horizontal (y1 == y2) and spans the whole 90px
+        // main content extent.
+        self::assertSame($rowRules[0]['y1'], $rowRules[0]['y2'], 'row-rule is horizontal');
+        self::assertEqualsWithDelta(90.0, abs($rowRules[0]['x2'] - $rowRules[0]['x1']), 0.001, 'row-rule spans main content');
     }
 
     public function testDetailsClosedByDefaultHidesNonSummaryContent(): void

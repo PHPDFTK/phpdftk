@@ -36,4 +36,18 @@ namespace Phpdftk\HtmlToPdf\Box;
  *
  * Deferred: baseline alignment, intrinsic-aspect-ratio transfer.
  */
-final class FlexBox extends Box {}
+final class FlexBox extends Box
+{
+    /**
+     * CSS Gap Decorations 1 — resolved `column-rule` / `row-rule`
+     * gap-decoration segments in top-down layout coordinates. Each entry
+     * carries the rule prefix (`'column-rule'` or `'row-rule'`, which
+     * selects the `-width` / `-style` / `-color` longhands) and the two
+     * endpoints of the centre-line to stroke. Populated per flex line by
+     * {@see \Phpdftk\HtmlToPdf\Layout\BlockLayout::computeFlexGapRuleSegments()}
+     * and consumed by {@see \Phpdftk\HtmlToPdf\Painter\Painter::paintFlexGapRules()}.
+     *
+     * @var list<array{prefix: string, x1: float, y1: float, x2: float, y2: float}>
+     */
+    public array $gapRuleSegments = [];
+}

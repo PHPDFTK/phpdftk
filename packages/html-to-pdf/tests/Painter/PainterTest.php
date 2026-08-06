@@ -3507,6 +3507,101 @@ final class PainterTest extends TestCase
         self::assertNotContains('S', $opcodes, 'vertical writing-mode → gap rules skipped');
     }
 
+    public function testFlexGapRulesPaintStrokes(): void
+    {
+        // CSS Gaps 1 — a wrapped flex container with `column-rule` /
+        // `row-rule` and gaps paints rule lines (stroke `S`) between its
+        // items (column-rule) and between its flex lines (row-rule).
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="f">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .f { display: flex; flex-wrap: wrap; width: 90px;
+                  column-gap: 10px; row-gap: 10px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue;
+                  row-rule-style: solid; row-rule-width: 4px; row-rule-color: green; }
+             .f > div { width: 40px; height: 40px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('S', $opcodes, 'flex gap rules stroke lines');
+        self::assertContains('RG', $opcodes, 'flex gap rules set a stroke colour');
+    }
+
+    public function testFlexGapRulesSkippedForVerticalWritingMode(): void
+    {
+        // CSS Gaps 1 — flex gap decorations are writing-mode dependent;
+        // the guarded painter only handles `horizontal-tb`, so a vertical
+        // flex container skips rules rather than drawing them on the wrong
+        // axis.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="f">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .f { display: flex; flex-wrap: wrap; writing-mode: vertical-rl;
+                  width: 90px; column-gap: 10px; row-gap: 10px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue;
+                  row-rule-style: solid; row-rule-width: 4px; row-rule-color: green; }
+             .f > div { width: 40px; height: 40px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('S', $opcodes, 'vertical writing-mode → flex gap rules skipped');
+    }
+
+    public function testFlexGapRulesNoneStyleEmitsNoStroke(): void
+    {
+        // CSS Gaps 1 — the initial `*-rule-style: none` means a flex
+        // container with gaps but no authored rule paints nothing.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="f">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .f { display: flex; flex-wrap: wrap; width: 90px;
+                  column-gap: 10px; row-gap: 10px; }
+             .f > div { width: 40px; height: 40px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('S', $opcodes, 'no authored rule → no gap-rule stroke');
+    }
+
     public function testSingleStopGradientPaintsSolidFill(): void
     {
         // CSS Images 3 §3.5.1 — a gradient with a single color stop renders
