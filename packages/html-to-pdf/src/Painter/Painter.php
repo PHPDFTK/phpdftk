@@ -5486,6 +5486,23 @@ final class Painter
         $yPercent = 0.5;
         $xLength = null;
         $yLength = null;
+        // CSS Backgrounds 3 §3.6 — the 3-4 value edge-offset form: each
+        // <length-percentage> is an OFFSET FROM a preceding edge keyword
+        // (`bottom 10px right 20px` = 10px up from bottom, 20px left from
+        // right). Only triggers at 3+ items so the 1-2 value paths stay
+        // byte-identical.
+        if (count($items) >= 3) {
+            [$xLength, $xPercent, $yLength, $yPercent] = $this->resolveEdgeOffsetPosition(
+                $items,
+                $imageWidth,
+                $imageHeight,
+                $boxWidth,
+                $boxHeight,
+            );
+            $offsetX = $xLength ?? ($boxWidth - $imageWidth) * $xPercent;
+            $offsetY = $yLength ?? ($boxHeight - $imageHeight) * $yPercent;
+            return ['offsetX' => $offsetX, 'offsetY' => $offsetY];
+        }
         // Single keyword: maps to one axis and centres the other.
         if (count($items) === 1 && $items[0] instanceof \Phpdftk\Css\Value\Keyword) {
             $kw = strtolower($items[0]->name);
@@ -5533,6 +5550,87 @@ final class Painter
         $offsetX = $xLength ?? ($boxWidth - $imageWidth) * $xPercent;
         $offsetY = $yLength ?? ($boxHeight - $imageHeight) * $yPercent;
         return ['offsetX' => $offsetX, 'offsetY' => $offsetY];
+    }
+
+    /**
+     * CSS Backgrounds 3 §3.6 — resolve the 3-4 value `background-position`
+     * edge-offset form into `[xLength, xPercent, yLength, yPercent]` (the
+     * same shape {@see resolveBackgroundPosition} folds into an offset).
+     * Each edge keyword (`left`/`right`/`top`/`bottom`/`center`) may be
+     * followed by a `<length-percentage>` offset measured FROM that edge:
+     * a `right`/`bottom` offset counts inward from the far edge. `center`
+     * takes no offset and fills whichever axis the other group left open.
+     *
+     * @param list<\Phpdftk\Css\Value\Value> $items
+     * @return array{0: ?float, 1: float, 2: ?float, 3: float}
+     */
+    private function resolveEdgeOffsetPosition(
+        array $items,
+        float $imageWidth,
+        float $imageHeight,
+        float $boxWidth,
+        float $boxHeight,
+    ): array {
+        $xLength = null;
+        $yLength = null;
+        $xPercent = null;
+        $yPercent = null;
+        $count = count($items);
+        $i = 0;
+        while ($i < $count) {
+            $item = $items[$i];
+            if (!($item instanceof \Phpdftk\Css\Value\Keyword)) {
+                $i++;
+                continue;
+            }
+            $kw = strtolower($item->name);
+            // Pull an optional trailing offset (not for `center`).
+            $offset = null;
+            if ($kw !== 'center' && $i + 1 < $count) {
+                $next = $items[$i + 1];
+                if ($next instanceof \Phpdftk\Css\Value\Length
+                    || $next instanceof \Phpdftk\Css\Value\Percentage
+                ) {
+                    $offset = $next;
+                    $i++;
+                }
+            }
+            $i++;
+            $far = $kw === 'right' || $kw === 'bottom';
+            $isX = $kw === 'left' || $kw === 'right';
+            $isY = $kw === 'top' || $kw === 'bottom';
+            if ($kw === 'center') {
+                if ($xPercent === null && $xLength === null) {
+                    $xPercent = 0.5;
+                } else {
+                    $yPercent = 0.5;
+                }
+                continue;
+            }
+            if ($offset instanceof \Phpdftk\Css\Value\Length) {
+                if ($isX) {
+                    $xLength = $far ? ($boxWidth - $imageWidth) - $offset->value : $offset->value;
+                } elseif ($isY) {
+                    $yLength = $far ? ($boxHeight - $imageHeight) - $offset->value : $offset->value;
+                }
+            } elseif ($offset instanceof \Phpdftk\Css\Value\Percentage) {
+                $p = $offset->value / 100.0;
+                $p = $far ? 1.0 - $p : $p;
+                if ($isX) {
+                    $xPercent = $p;
+                } elseif ($isY) {
+                    $yPercent = $p;
+                }
+            } else {
+                // Bare edge keyword: anchor at that edge.
+                if ($isX) {
+                    $xPercent = $far ? 1.0 : 0.0;
+                } elseif ($isY) {
+                    $yPercent = $far ? 1.0 : 0.0;
+                }
+            }
+        }
+        return [$xLength, $xPercent ?? 0.5, $yLength, $yPercent ?? 0.5];
     }
 
     /**

@@ -1117,6 +1117,53 @@ final class RendererTest extends TestCase
         self::assertGreaterThan($plain, $wide, 'border-image-width:4 widens the corner slice');
     }
 
+    public function testBackgroundPositionEdgeOffsetAnchorsFromNamedEdge(): void
+    {
+        // CSS Backgrounds 3 §3.6 — the 3-4 value edge-offset form. A
+        // `right 20px` offset positions the image 20px inward from the
+        // RIGHT edge; `left 20px` positions it 20px inward from the LEFT.
+        // For a 100px box with a 40px image the two differ by
+        // ((100-40)-20) - 20 = 20px in the emitted image cm translation.
+        $pngBase64 = base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $renderInto = function (string $posDecl) use ($pngBase64): string {
+            $writer = new PdfWriter(compressStreams: false);
+            (new Renderer())->renderInto(
+                $writer,
+                sprintf(
+                    '<html><body><div style="width: 100px; height: 100px; '
+                    . 'background-image: url(\'data:image/png;base64,%s\'); '
+                    . 'background-size: 40px 40px; background-repeat: no-repeat; '
+                    . 'background-position: %s">'
+                    . '</div></body></html>',
+                    $pngBase64,
+                    $posDecl,
+                ),
+            );
+            return $writer->toBytes();
+        };
+        $extractCmX = static function (string $bytes): ?float {
+            if (preg_match('~(\S+) 0 0 (\S+) (\S+) (\S+) cm\s+/Im\d+ Do~', $bytes, $m) !== 1) {
+                return null;
+            }
+            return (float) $m[3];
+        };
+        $rightX = $extractCmX($renderInto('right 20px top 0px'));
+        $leftX = $extractCmX($renderInto('left 20px top 0px'));
+        self::assertNotNull($rightX, 'right-edge offset emits an image cm');
+        self::assertNotNull($leftX, 'left-edge offset emits an image cm');
+        self::assertEqualsWithDelta(
+            20.0,
+            $rightX - $leftX,
+            0.5,
+            'right 20px anchors from the far edge, 20px inward of left 20px',
+        );
+    }
+
     public function testBackgroundOriginBorderBoxAnchorsAtBorderEdge(): void
     {
         // `border-box` origin anchors at the outermost edge — image
