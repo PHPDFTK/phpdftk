@@ -56,9 +56,29 @@ final class ConicGradientTest extends TestCase
         self::assertCount(3, $g->stops);
     }
 
-    public function testSingleStopIsInvalid(): void
+    public function testSingleStopIsValidSolidFill(): void
     {
-        $value = $this->parser->parseFromString('conic-gradient(red)');
+        // CSS Images 3 §3.5.1 — a single colour stop is valid and renders
+        // as a solid fill, matching the linear/radial parsers. Previously
+        // conic rejected it (fell back to a generic CssFunction, dropping
+        // the whole declaration).
+        $g = $this->parseConic('conic-gradient(green)');
+        self::assertCount(1, $g->stops);
+    }
+
+    public function testSingleStopWithHeaderIsValid(): void
+    {
+        // A header (from/at, optionally an interpolation method) followed
+        // by a single stop is also valid.
+        $g = $this->parseConic('conic-gradient(from 0deg at center, green)');
+        self::assertCount(1, $g->stops);
+        self::assertSame(0.0, $g->fromAngleDeg);
+    }
+
+    public function testHeaderOnlyNoStopsIsInvalid(): void
+    {
+        // A header with no colour stops remains invalid.
+        $value = $this->parser->parseFromString('conic-gradient(from 90deg)');
         self::assertInstanceOf(CssFunction::class, $value);
     }
 

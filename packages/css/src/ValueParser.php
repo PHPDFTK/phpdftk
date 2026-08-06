@@ -2585,7 +2585,10 @@ final class ValueParser
     {
         $tokens = self::trimWhitespace($tokens);
         $groups = self::splitTopLevel($tokens, CommaToken::class);
-        if (count($groups) < 2) {
+        // CSS Images 3 §3.5.1 — like linear/radial, a single colour stop
+        // (`conic-gradient(green)`) is valid and renders as a solid fill;
+        // only a truly empty argument list is invalid.
+        if ($groups === []) {
             return null;
         }
         $first = self::trimWhitespace($groups[0]);
@@ -2623,7 +2626,7 @@ final class ValueParser
             [$fromAngle, $centerX, $centerY] = $header;
             $stopGroups = array_slice($groups, 1);
         }
-        if (count($stopGroups) < 2) {
+        if ($stopGroups === []) {
             return null;
         }
         $stops = [];
