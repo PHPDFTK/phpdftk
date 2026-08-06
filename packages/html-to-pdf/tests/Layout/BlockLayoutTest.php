@@ -1028,6 +1028,47 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(40.0, $f->geometry->y, 0.001, 'relative flex container shifted by top:40px');
     }
 
+    public function testJustifyContentStartDoesNotFlipUnderRowReverse(): void
+    {
+        // CSS Box Alignment 3 §5.3 — `start` is writing-mode-relative, not
+        // flow-relative, so it does NOT flip under `flex-direction:
+        // row-reverse` (only `flex-start`/`flex-end` do). Two 20px items in
+        // a 100px LTR container with `justify-content: start` pack at the
+        // physical LEFT edge (block left edge x≈0), regardless of the
+        // reversed main axis. The pre-fix bug swapped start→flex-end and
+        // packed them right (x≈60).
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div class="i"></div><div class="i"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; flex-direction: row-reverse; justify-content: start;
+                  width: 100px; height: 20px; }
+             .i { width: 20px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertInstanceOf(FlexBox::class, $f);
+        $minX = min(array_map(static fn($c) => $c->geometry->x, $f->children));
+        self::assertEqualsWithDelta(0.0, $minX, 0.001, 'justify-content:start packs at the physical left even under row-reverse');
+    }
+
+    public function testFlexMaxContentWidthIncludesColumnGap(): void
+    {
+        // CSS Flexbox 1 §9.9.1 + Box Alignment §8 — a row flex container's
+        // max-content main size sums the item contributions PLUS the
+        // column-gap between them. Two 20px items with a 30px column-gap
+        // give a max-content width of 20+30+20 = 70px (not 40px).
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div class="i"></div><div class="i"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; width: max-content; column-gap: 30px; height: 20px; }
+             .i { width: 20px; height: 20px; flex: 0 0 auto; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertInstanceOf(FlexBox::class, $f);
+        self::assertEqualsWithDelta(70.0, $f->geometry->width, 0.001, 'max-content flex width includes the column-gap');
+    }
+
     public function testRelativeGridContainerShiftsByOffset(): void
     {
         // CSS 2.1 §9.4.3 — same as the flex case for a grid CONTAINER.

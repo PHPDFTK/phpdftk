@@ -2993,9 +2993,14 @@ final class BlockLayout
         $alignItems = $this->flexKeyword($style, 'align-items', 'stretch');
         $justify = $this->flexKeyword($style, 'justify-content', 'flex-start');
         if ($reverseDirection) {
+            // CSS Box Alignment 3 §5.3 — only the flow-relative
+            // `flex-start` / `flex-end` follow the flex main axis and so
+            // flip under `row-reverse` / `column-reverse`. The
+            // writing-mode-relative `start` / `end` (and the physical
+            // `left` / `right`) refer to fixed edges and must NOT flip.
             $justify = match ($justify) {
-                'flex-start', 'start' => 'flex-end',
-                'flex-end', 'end' => 'flex-start',
+                'flex-start' => 'flex-end',
+                'flex-end' => 'flex-start',
                 default => $justify,
             };
         }
@@ -5941,7 +5946,17 @@ final class BlockLayout
             $maxContent = max($itemMaxes);
             $minContent = max($itemMins);
         } else {
-            $maxContent = array_sum($itemMaxes);
+            // CSS Flexbox 1 §9.9.1 + Box Alignment §8 — a row flex
+            // container's max-content main size is the sum of item
+            // contributions PLUS the `column-gap` between adjacent items.
+            // (The min-content path takes the widest single item, which
+            // assumes the line can wrap, so no gap is added there.)
+            $mainGap = $this->resolveFlexGapProperty(
+                $box->style,
+                'column-gap',
+                $context->containingBlockWidth,
+            );
+            $maxContent = array_sum($itemMaxes) + $mainGap * (float) max(0, count($itemMaxes) - 1);
             $minContent = max($itemMins);
         }
         return ['max' => $maxContent, 'min' => $minContent];
