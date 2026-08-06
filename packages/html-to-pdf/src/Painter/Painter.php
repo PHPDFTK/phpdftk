@@ -1956,10 +1956,15 @@ final class Painter
     private function axisClips(Box $box, string $axis): bool
     {
         // CSS Overflow 3 §3.3 — when overflow propagated from body to
-        // root, the root's effective overflow is the body's
-        // (whichever axis the body constrained on).
+        // root, the root's effective overflow is the body's. Per §2.1 a
+        // viewport can't mix a clipped axis with a `visible` one: if the
+        // body constrained EITHER axis, the other (`visible`) axis
+        // computes to `auto` on the viewport and therefore also clips.
+        // (WPT overflow-body-propagation-007 pairs body `overflow-x: clip`
+        // against a ref `html { overflow: hidden auto }` — both axes clip.)
         if ($box === $this->propagatedOverflowRoot && $this->propagatedOverflowBox !== null) {
-            return $this->originalAxisClips($this->propagatedOverflowBox, $axis);
+            return $this->originalAxisClips($this->propagatedOverflowBox, 'x')
+                || $this->originalAxisClips($this->propagatedOverflowBox, 'y');
         }
         return $this->originalAxisClips($box, $axis);
     }

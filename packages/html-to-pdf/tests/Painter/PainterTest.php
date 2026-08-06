@@ -1604,6 +1604,41 @@ final class PainterTest extends TestCase
         self::assertStringNotContainsString('W*', $ops);
     }
 
+    public function testBodyOverflowClipOneAxisPropagatesAsBothAxes(): void
+    {
+        // CSS Overflow 3 §3.3 + §2.1 — `overflow-x: clip` on the body
+        // propagates to the viewport, and because a viewport can't mix a
+        // clipped axis with a `visible` one, the y axis (visible) computes
+        // to `auto` and also clips. So the propagated clip is bounded on
+        // BOTH axes — there is no full-page-height clip rect the way a
+        // plain one-axis `overflow-x` on a normal box would produce.
+        // Backs WPT overflow-body-propagation-007.
+        $doc = $this->html->parseDocument(
+            '<html><body style="overflow-x: clip; width: 30px; height: 30px">'
+            . '<div style="background-color: blue; width: 400px; height: 400px"></div>'
+            . '</body></html>',
+        );
+        $sheet = $this->css->parseStylesheet('html, body, div { display: block; }', Origin::UserAgent);
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, pageWidth: 612.0))->paint($root, $stream);
+
+        $bytes = (string) array_reduce($stream->getOperators(), static fn($a, $o) => $a . $o . "\n", '');
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('W', $opcodes, 'propagated body overflow emits a clip');
+        // Both axes clip → no clip rect spanning the full page height.
+        self::assertDoesNotMatchRegularExpression(
+            '/[-0-9.]+\s+[-0-9.]+\s+[-0-9.]+\s+792(\.0+)?\s+re/',
+            $bytes,
+            'propagated visible y axis computes to auto and clips (not full page height)',
+        );
+    }
+
     public function testOverflowXHiddenClipsOnlyTheXAxis(): void
     {
         // CSS Overflow 3 §3.1: `overflow-x: hidden` constrains the
