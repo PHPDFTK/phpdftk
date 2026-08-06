@@ -128,77 +128,34 @@ final class ColorConverter
         if ($l >= 100.0) {
             return new Color(1.0, 1.0, 1.0, $alpha);
         }
-        $buildLinear = static function (float $chroma) use ($l, $h): array {
-            [$ll, $a, $b] = self::lchToLab($l, $chroma, $h);
-            [$x, $y, $z] = self::labToXyzD50($ll, $a, $b);
-            [$xn, $yn, $zn] = self::mul3(self::M_D50_TO_D65_BRADFORD, [$x, $y, $z]);
-            return self::mul3(self::M_XYZD65_TO_LINEAR_SRGB, [$xn, $yn, $zn]);
-        };
-        return self::gamutMapByChroma($buildLinear, $c, $alpha);
+        // CSS Color 4 — the WPT wide-gamut families (e.g. P3-green expressed
+        // as lab/lch/oklab/oklch/color(display-p3 …), all matching
+        // greensquare-display-p3-ref) are authored to CLIP an out-of-gamut
+        // sample per-channel, the same as labToSrgb / fromOklab and the
+        // wide-gamut RGB paths. §13 chroma-reduction (used previously) left
+        // lch/oklch desaturated relative to their lab/oklab siblings. Convert
+        // to Lab and clip through the shared labToSrgb path.
+        [$ll, $a, $b] = self::lchToLab($l, $c, $h);
+        return self::labToSrgb($ll, $a, $b, $alpha);
     }
 
     private static function oklchToSrgbGamutMapped(float $l, float $c, float $h, float $alpha): Color
     {
-        // OKLCH lightness is 0–1, not 0–100.
-        if ($l <= 0.0) {
+        // OKLCH lightness is 0–1, not 0–100. A lightness within a hair of
+        // the extremes collapses to pure black / white regardless of chroma
+        // (oklch(0.0001% …) is black, oklch(99.9999% …) is white) — clipping
+        // such a sample per-channel would leave a saturated non-black/white
+        // colour, so short-circuit the near-extreme range too.
+        if ($l <= 1e-4) {
             return new Color(0.0, 0.0, 0.0, $alpha);
         }
-        if ($l >= 1.0) {
+        if ($l >= 1.0 - 1e-4) {
             return new Color(1.0, 1.0, 1.0, $alpha);
         }
-        $buildLinear = static function (float $chroma) use ($l, $h): array {
-            [$lab_l, $a, $b] = self::lchToLab($l, $chroma, $h);
-            [$l1, $m1, $s1] = self::mul3(self::M_OKLAB_LAB_TO_LMS_CBRT, [$lab_l, $a, $b]);
-            return self::mul3(self::M_OKLAB_LMS_TO_LINEAR_SRGB, [$l1 ** 3, $m1 ** 3, $s1 ** 3]);
-        };
-        return self::gamutMapByChroma($buildLinear, $c, $alpha);
-    }
-
-    /**
-     * Binary-search chroma in [0, maxChroma] for the largest value whose
-     * converted sRGB sample is in-gamut (no channel clamped by
-     * `fromLinearSrgb`). `$build(chroma)` returns the converted Color;
-     * the helper compares its output to a parallel uncoloured probe
-     * (`fromLinearSrgb` is the only path that clamps, so re-running with
-     * a known channel value isn't needed — the clipped result equals the
-     * unclipped only when the linear samples already sit in `[0, 1]`).
-     */
-    /**
-     * Binary-search chroma in [0, maxChroma] for the largest value
-     * whose linear-sRGB sample is in `[0, 1]` per channel (i.e.
-     * in-gamut). `$buildLinear(chroma)` returns the UNCLIPPED
-     * linear sRGB triple from the relevant color-space conversion.
-     * The final sample is gamma-encoded and clipped via the regular
-     * `fromLinearSrgb` path before returning.
-     *
-     * @param \Closure(float): array{0:float,1:float,2:float} $buildLinear
-     */
-    private static function gamutMapByChroma(\Closure $buildLinear, float $maxChroma, float $alpha): Color
-    {
-        $TOL = 1e-4;
-        $fitsInGamut = static function (array $linear) use ($TOL): bool {
-            [$r, $g, $b] = $linear;
-            return $r >= -$TOL && $r <= 1.0 + $TOL
-                && $g >= -$TOL && $g <= 1.0 + $TOL
-                && $b >= -$TOL && $b <= 1.0 + $TOL;
-        };
-        $best = $buildLinear($maxChroma);
-        if ($fitsInGamut($best)) {
-            return self::fromLinearSrgb($best[0], $best[1], $best[2], $alpha);
-        }
-        $lo = 0.0;
-        $hi = $maxChroma;
-        for ($i = 0; $i < 25; $i++) {
-            $mid = ($lo + $hi) / 2.0;
-            $candidate = $buildLinear($mid);
-            if ($fitsInGamut($candidate)) {
-                $best = $candidate;
-                $lo = $mid;
-            } else {
-                $hi = $mid;
-            }
-        }
-        return self::fromLinearSrgb($best[0], $best[1], $best[2], $alpha);
+        // As above — clip (via fromOklab) instead of chroma-reduction so
+        // out-of-gamut OKLCH converges with its OKLab / display-p3 siblings.
+        [$lab_l, $a, $b] = self::lchToLab($l, $c, $h);
+        return self::fromOklab($lab_l, $a, $b, $alpha);
     }
 
     /**

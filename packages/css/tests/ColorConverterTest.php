@@ -100,6 +100,28 @@ final class ColorConverterTest extends TestCase
         self::assertSrgb(ColorConverter::toSrgb(new Color(1.0, 0.4, 30.0, 1.0, ColorSpace::OKLCH)), 1.0, 1.0, 1.0, 0.0001);
     }
 
+    public function testOklchNearExtremeLightnessCollapsesToBlackOrWhite(): void
+    {
+        // A lightness within a hair of the extremes (oklch(0.0001% …) /
+        // oklch(99.9999% …)) is black / white regardless of chroma —
+        // per-channel clipping would otherwise leave a saturated colour.
+        self::assertSrgb(ColorConverter::toSrgb(new Color(0.000001, 0.2, 45.0, 1.0, ColorSpace::OKLCH)), 0.0, 0.0, 0.0, 0.0001);
+        self::assertSrgb(ColorConverter::toSrgb(new Color(0.999999, 0.2, 45.0, 1.0, ColorSpace::OKLCH)), 1.0, 1.0, 1.0, 0.0001);
+    }
+
+    public function testOklchOutOfGamutClipsLikeDisplayP3(): void
+    {
+        // CSS Color 4 — an out-of-gamut wide-gamut colour clips per-channel
+        // so lch/oklch converge with their lab/oklab/display-p3 siblings.
+        // color(display-p3 0 1 0) ≈ oklch(0.8664 0.2947 142.5) clips to pure
+        // green (#00ff00), matching the display-p3 conversion.
+        $p3 = ColorConverter::toSrgb(new Color(0.0, 1.0, 0.0, 1.0, ColorSpace::DisplayP3));
+        $oklch = ColorConverter::toSrgb(new Color(0.8664, 0.2947, 142.5, 1.0, ColorSpace::OKLCH));
+        self::assertEqualsWithDelta($p3->r, $oklch->r, 0.02, 'oklch red matches display-p3 (clip)');
+        self::assertEqualsWithDelta($p3->g, $oklch->g, 0.02, 'oklch green matches display-p3 (clip)');
+        self::assertEqualsWithDelta($p3->b, $oklch->b, 0.02, 'oklch blue matches display-p3 (clip)');
+    }
+
     public function testHwbWhitePlusBlackOverOneNormalisesToGray(): void
     {
         // w + b >= 1 collapses to gray = w / (w + b), ignoring hue.
