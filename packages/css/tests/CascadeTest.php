@@ -1287,6 +1287,28 @@ final class CascadeTest extends TestCase
         self::assertSame(1.0, $values->get('color')->r);
     }
 
+    public function testRevertLayerFromInlineStyleRevertsToStyleSheet(): void
+    {
+        // CSS Cascade 5 §6.4.4 — the style attribute is its own cascade
+        // context, so `revert-layer` in an inline declaration rolls back to
+        // the author style sheets rather than knocking out the unlayered
+        // rules it shares an origin+layer with. Backs WPT revert-layer-009:
+        // an inline `revert-layer` reverts to `#target { background: green }`
+        // instead of falling through to the initial (transparent) value.
+        $sheet = $this->parser->parseStylesheet(
+            '#target { background-color: green; }',
+        );
+        $el = new FakeElement('div', 'target', [], [
+            'style' => 'background-color: red; background-color: revert-layer;',
+        ]);
+        $values = $this->cascade->computeFor([$sheet], $el);
+        $bg = $values->get('background-color');
+        self::assertNotNull($bg);
+        // `green` is rgb(0, 128, 0): red channel 0, green channel ~0.5.
+        self::assertSame(0.0, $bg->r, 'not the inline red (r=1) nor transparent');
+        self::assertGreaterThan(0.4, $bg->g, 'reverted to the style-sheet green');
+    }
+
     public function testRevertRollsBackToLowerOrigin(): void
     {
         // CSS Cascade 5 §5.3 — `revert` rolls the cascade back to

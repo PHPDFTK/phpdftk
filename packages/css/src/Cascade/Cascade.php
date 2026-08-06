@@ -326,6 +326,13 @@ final class Cascade
                         'origin' => Origin::Author,
                         'layerIndex' => null,
                         'order' => $order++,
+                        // CSS Cascade 5 §6.4.4 — the style attribute is its
+                        // own cascade context above the author style sheets.
+                        // Tag it so `revert-layer` from an inline declaration
+                        // rolls back to the *style sheets* (reverting only the
+                        // inline bucket) instead of knocking out the unlayered
+                        // author rules it shares an origin+layer with.
+                        'inline' => true,
                     ];
                 }
             }
@@ -2258,7 +2265,7 @@ final class Cascade
      * non-`revert-layer` value or run out of candidates.
      *
      * @param list<int> $indices
-     * @param list<array{declaration: Declaration, specificity: Specificity, origin: Origin, layerIndex: ?int, order: int}> $candidates
+     * @param list<array{declaration: Declaration, specificity: Specificity, origin: Origin, layerIndex: ?int, order: int, inline?: bool}> $candidates
      * @return null|array{declaration: Declaration, tier: int, specificity: Specificity, order: int}
      */
     private function pickCascadeWinner(string $property, array $indices, array $candidates): ?array
@@ -2285,8 +2292,14 @@ final class Cascade
                 // `revert-layer` only knocks out the author bucket
                 // (not the UA stylesheet's matching candidates, which
                 // live at origin=UserAgent with layerIndex=null too).
+                // The style attribute is its own bucket (CSS Cascade 5
+                // §6.4.4) so `revert-layer` from an inline declaration
+                // reverts to the author style sheets rather than to itself.
+                $isInline = $c['inline'] ?? false;
                 $layerKey = $c['origin']->name . ':'
-                    . ($layer === null ? 'unlayered' : 'L' . $layer);
+                    . ($isInline
+                        ? 'inline'
+                        : ($layer === null ? 'unlayered' : 'L' . $layer));
                 if (isset($excludedLayers[$layerKey])) {
                     continue;
                 }
