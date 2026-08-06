@@ -23,9 +23,12 @@ final class AnPlusBParser
 {
     /**
      * @param list<Token> $tokens
+     * @param bool $allowOf Whether an `of S` clause is valid here. Per
+     *   Selectors 4 §9 only `:nth-child` / `:nth-last-child` accept it;
+     *   `:nth-of-type` / `:nth-last-of-type` do NOT.
      * @return array{AnPlusB, ?SelectorList}
      */
-    public static function parseWithOf(array $tokens): array
+    public static function parseWithOf(array $tokens, bool $allowOf = true): array
     {
         $tokens = self::trimWhitespace($tokens);
         if ($tokens === []) {
@@ -33,11 +36,22 @@ final class AnPlusBParser
         }
         // Look for ` of ` separator at the top level.
         $ofIndex = self::findOfKeyword($tokens);
+        if ($ofIndex !== null && !$allowOf) {
+            throw new SelectorSyntaxException('`of` clause is not valid for this pseudo-class');
+        }
         $anbTokens = $ofIndex === null ? $tokens : array_slice($tokens, 0, $ofIndex);
         $ofList = null;
         if ($ofIndex !== null) {
-            $ofTokens = array_slice($tokens, $ofIndex + 1);
+            $ofTokens = self::trimWhitespace(array_slice($tokens, $ofIndex + 1));
+            // Selectors 4 §9 — the `of` keyword MUST be followed by a
+            // non-empty <complex-selector-list>; `:nth-child(1 of)` is invalid.
+            if ($ofTokens === []) {
+                throw new SelectorSyntaxException('Empty `of` selector list');
+            }
             $ofList = SelectorParser::parseTokens($ofTokens);
+            if ($ofList->isEmpty()) {
+                throw new SelectorSyntaxException('Invalid `of` selector list');
+            }
         }
         return [self::parse($anbTokens), $ofList];
     }

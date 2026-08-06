@@ -453,7 +453,10 @@ final class SelectorParser
             case 'nth-last-child':
             case 'nth-of-type':
             case 'nth-last-of-type':
-                [$anb, $of] = AnPlusBParser::parseWithOf($argTokens);
+                // Selectors 4 §9 — only nth-child / nth-last-child accept an
+                // `of S` clause; nth-of-type / nth-last-of-type do not.
+                $allowOf = $name === 'nth-child' || $name === 'nth-last-child';
+                [$anb, $of] = AnPlusBParser::parseWithOf($argTokens, $allowOf);
                 return new PseudoClassSelector($name, $of, $anb);
             case 'lang':
             case 'dir':

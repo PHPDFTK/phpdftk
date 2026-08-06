@@ -233,6 +233,23 @@ final class SelectorParserTest extends TestCase
         self::assertCount(1, $c->arguments->selectors);
     }
 
+    public function testNthOfTypeRejectsOfClause(): void
+    {
+        // Selectors 4 §9 — `of S` is valid only on nth-child / nth-last-child.
+        // On nth-of-type / nth-last-of-type it invalidates the whole selector.
+        self::assertCount(0, SelectorParser::parse(':nth-of-type(2n of .x)')->selectors);
+        self::assertCount(0, SelectorParser::parse(':nth-last-of-type(1 of p)')->selectors);
+    }
+
+    public function testNthChildRejectsEmptyOfList(): void
+    {
+        // `:nth-child(1 of)` — the `of` keyword must be followed by a
+        // non-empty selector list, so the whole selector is invalid.
+        self::assertCount(0, SelectorParser::parse(':nth-child(1 of)')->selectors);
+        // The valid form still parses.
+        self::assertCount(1, SelectorParser::parse(':nth-child(2n+1 of .row)')->selectors);
+    }
+
     public function testAnPlusBMatches(): void
     {
         $anb = new AnPlusB(2, 1); // 2n+1 → 1, 3, 5, 7
