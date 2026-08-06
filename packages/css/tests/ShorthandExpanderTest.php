@@ -287,6 +287,24 @@ final class ShorthandExpanderTest extends TestCase
         self::assertSame('no-repeat', $out['background-repeat']->name);
     }
 
+    public function testBackgroundColorTypedAttrRoutesToBackgroundColor(): void
+    {
+        // CSS Values 5 §11 — a typed `attr()` is still unresolved at cascade
+        // time and matches no concrete classifier; a `type(<color>)` attr()
+        // must route to background-color (not be dropped, which would let an
+        // earlier `background: red` win).
+        $out = $this->expander->expand('background', $this->value('attr(data-test type(<color>))'));
+        self::assertInstanceOf(\Phpdftk\Css\Value\AttrFunction::class, $out['background-color'] ?? null);
+        self::assertArrayNotHasKey('background-image', $out);
+    }
+
+    public function testBackgroundImageTypedAttrRoutesToBackgroundImage(): void
+    {
+        $out = $this->expander->expand('background', $this->value('attr(data-src type(<url>))'));
+        self::assertInstanceOf(\Phpdftk\Css\Value\AttrFunction::class, $out['background-image'] ?? null);
+        self::assertArrayNotHasKey('background-color', $out);
+    }
+
     public function testBackgroundWithUrlAndPosition(): void
     {
         $out = $this->expander->expand('background', $this->value('url(bg.png) top left repeat'));

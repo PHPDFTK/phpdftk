@@ -748,6 +748,21 @@ final class ShorthandExpander
                 $color = $c;
                 continue;
             }
+            // CSS Values 5 §11 — a typed `attr()` is still unresolved at
+            // cascade time (it resolves per-element in BoxGenerator), so it
+            // matches none of the concrete classifiers below and would be
+            // dropped. Route it to the right longhand by its declared type so
+            // the later attr() resolution lands on background-color /
+            // -image. An untyped attr() is ambiguous — leave it dropped.
+            if ($c instanceof \Phpdftk\Css\Value\AttrFunction) {
+                $type = $c->typeOrUnit !== null ? strtolower($c->typeOrUnit) : '';
+                if (str_contains($type, 'color')) {
+                    $color = $c;
+                } elseif (str_contains($type, 'url') || str_contains($type, 'image')) {
+                    $image = $c;
+                }
+                continue;
+            }
             // CSS Backgrounds 3 §3.1 — `background-image` accepts
             // any <image>: url, image-set, gradient, cross-fade.
             if ($c instanceof \Phpdftk\Css\Value\Url
