@@ -8,6 +8,7 @@ use Phpdftk\Css\Cascade\Cascade;
 use Phpdftk\Css\Cascade\PropertyRegistry;
 use Phpdftk\Css\Parser as CssParser;
 use Phpdftk\Css\Sheet\Origin;
+use Phpdftk\Css\Value\Keyword;
 use Phpdftk\HtmlToPdf\Box\AnonymousBlockBox;
 use Phpdftk\HtmlToPdf\Box\AtomicInlineBox;
 use Phpdftk\HtmlToPdf\Box\BlockBox;
@@ -147,10 +148,13 @@ final class BoxGeneratorTest extends TestCase
         self::assertSame('html', $box->element?->localName);
     }
 
-    public function testContentVisibilityHiddenSkipsSubtree(): void
+    public function testContentVisibilityHiddenKeepsBoxButSkipsContents(): void
     {
-        // CSS Containment 2 §4 — `content-visibility: hidden` is
-        // equivalent to display: none for static print.
+        // CSS Containment 2 §4 — `content-visibility: hidden` does NOT drop
+        // the box (unlike display:none). The element's own box exists and
+        // paints, but its contents are skipped (no child boxes) and it is
+        // size-contained (synthesized `contain: strict`). A following
+        // sibling is unaffected.
         $sheet = $this->css->parseStylesheet(<<<CSS
             html, body, div, p { display: block; }
             .cv-hidden { content-visibility: hidden; }
@@ -161,7 +165,12 @@ final class BoxGeneratorTest extends TestCase
         $box = $this->generator->generate($doc, [$sheet]);
         self::assertNotNull($box);
         $hidden = $this->findFirstByClass($box, 'cv-hidden');
-        self::assertNull($hidden, 'content-visibility:hidden element is omitted');
+        self::assertNotNull($hidden, 'content-visibility:hidden element still generates a box');
+        self::assertSame([], $hidden->children, 'its contents (children) are skipped');
+        $contain = $hidden->style->get('contain');
+        self::assertInstanceOf(Keyword::class, $contain);
+        self::assertSame('strict', strtolower($contain->name), 'content-visibility:hidden synthesizes contain:strict');
+        // The following sibling <p>shown</p> is untouched.
         $p = $this->findFirstByTag($box, 'p');
         self::assertNotNull($p);
     }

@@ -3554,6 +3554,44 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(5.0, $div->geometry->y);
     }
 
+    public function testContentVisibilityHiddenSizesFromContainIntrinsicSize(): void
+    {
+        // CSS Containment 2 §4 — a content-visibility:hidden box is
+        // size-contained: its auto width/height come from
+        // `contain-intrinsic-size` (not its skipped contents). Here the
+        // element has a huge child but no explicit size, so it sizes to the
+        // 111×222 intrinsic size, not the child's 500px.
+        $box = $this->buildTree(
+            '<html><body><div id="cv"><div id="big"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #cv { content-visibility: hidden; contain-intrinsic-size: 111px 222px; }
+             #big { width: 500px; height: 500px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cv = $this->findById($box, 'cv');
+        self::assertNotNull($cv);
+        self::assertSame([], $cv->children, 'contents are skipped');
+        self::assertEqualsWithDelta(111.0, $cv->geometry->width, 0.001, 'auto width from contain-intrinsic-size');
+        self::assertEqualsWithDelta(222.0, $cv->geometry->height, 0.001, 'auto height from contain-intrinsic-size');
+    }
+
+    public function testContentVisibilityHiddenExplicitSizeWins(): void
+    {
+        // An explicit width/height still wins over the intrinsic size.
+        $box = $this->buildTree(
+            '<html><body><div id="cv"><div id="big"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #cv { content-visibility: hidden; contain-intrinsic-size: 111px 222px;
+                   width: 60px; height: 70px; }
+             #big { width: 500px; height: 500px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cv = $this->findById($box, 'cv');
+        self::assertNotNull($cv);
+        self::assertEqualsWithDelta(60.0, $cv->geometry->width, 0.001, 'explicit width wins');
+        self::assertEqualsWithDelta(70.0, $cv->geometry->height, 0.001, 'explicit height wins');
+    }
+
     public function testRelativeCalcInsetWithPercentAgainstIndefiniteHeightDropsPercent(): void
     {
         // CSS Position 3 §3.4 — a relative inset `calc(10px + 10%)` whose

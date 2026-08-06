@@ -257,20 +257,29 @@ final class BoxGenerator
             $values->set('display', new Keyword($blockified));
             $display = $blockified;
         }
-        // CSS Containment 2 §4 — `content-visibility: hidden`
-        // suppresses box generation just like `display: none` for
-        // static print. (`auto` is a runtime-visibility optimisation
-        // with no print equivalent and is treated as `visible`.)
+        // CSS Containment 2 §4 — `content-visibility: hidden` does NOT
+        // suppress the box (unlike `display: none`). The element still
+        // generates a box that lays out and paints its own background /
+        // border / outline, but it SKIPS its contents: descendants are
+        // neither laid out nor painted, and the element is size-contained
+        // (its auto size comes from `contain-intrinsic-size`, not its
+        // contents). This is exactly `contain: strict` plus a childless
+        // box, so synthesize the containment and drop the children below.
+        // (`auto` is a runtime-visibility optimisation with no print
+        // equivalent and is treated as `visible`.)
         $cv = $values->get('content-visibility');
-        if ($cv instanceof Keyword && strtolower($cv->name) === 'hidden') {
-            return null;
+        $contentVisibilityHidden = $cv instanceof Keyword && strtolower($cv->name) === 'hidden';
+        if ($contentVisibilityHidden) {
+            $values->set('contain', new Keyword('strict'));
         }
         // CSS GCPM 3 §4 — `position: running(<name>)` opts the
         // element out of normal flow and into the running-element
         // store. No box is generated; the element's text content
         // becomes available to @page margin boxes via
-        // `content: element(<name>)`.
-        $runningName = $this->extractRunningPositionName($values);
+        // `content: element(<name>)`. A content-visibility:hidden element
+        // keeps its box (and must not read its skipped contents), so it
+        // never enters the running store.
+        $runningName = $contentVisibilityHidden ? null : $this->extractRunningPositionName($values);
         if ($runningName !== null) {
             $this->runningElements[$runningName] = $element->textContent();
             return null;
@@ -290,6 +299,18 @@ final class BoxGenerator
         $this->applyCounterSet($values);
         $this->applyCounterIncrement($values);
         $this->applyStringSet($element, $values);
+
+        // CSS Containment 2 §4 — a content-visibility:hidden element paints
+        // its own box but skips ALL of its contents. Return a CHILDLESS box
+        // (no ::before/::after, no DOM/text children, no hoisted abspos
+        // descendants — they are never generated) at this element's own
+        // display type. `contain: strict` (synthesized above) makes layout
+        // size-contain the box via `contain-intrinsic-size` and the painter
+        // paint-clip it. This must precede the `<br>`/replaced-element
+        // shortcuts so those elements' contents are hidden too.
+        if ($contentVisibilityHidden) {
+            return $this->makeBox($element, $values, $display);
+        }
 
         // HTML `<br>` produces a sentinel line-break box — a hard break
         // inside the parent inline formatting context that survives
