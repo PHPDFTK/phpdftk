@@ -349,6 +349,52 @@ switch ($subcommand) {
         }
         exit(0);
     }
+    case 'render-diff': {
+        // Debug aid: write rendered / reference / diff PNGs for the
+        // in-scope tests matching --filter, using the exact production
+        // render+rasterise+diff pipeline. Inspect the artefacts to see
+        // WHY a fixture fails (the -diff.png highlights differing pixels).
+        $parsed = parseOptions($args);
+        $root = isset($parsed['opts']['root']) && is_string($parsed['opts']['root'])
+            ? $parsed['opts']['root']
+            : defaultWptRoot();
+        $filter = isset($parsed['opts']['filter']) && is_string($parsed['opts']['filter'])
+            ? $parsed['opts']['filter']
+            : null;
+        $out = isset($parsed['opts']['out']) && is_string($parsed['opts']['out'])
+            ? $parsed['opts']['out']
+            : sys_get_temp_dir() . '/wpt-artefacts';
+        $limit = isset($parsed['opts']['limit']) && is_numeric($parsed['opts']['limit'])
+            ? (int) $parsed['opts']['limit']
+            : 20;
+        if (!is_dir($root)) {
+            fwrite(STDERR, "wpt render-diff: corpus not found at $root\n");
+            exit(2);
+        }
+        $manifest = Manifest::loadFromDirectory(manifestDir());
+        $runner = new HarnessRunner(
+            $manifest,
+            new Rasteriser(),
+            new Scorer(),
+            $root,
+            maybeDomSettler($root),
+        );
+        $rows = $runner->renderDiffArtefacts($filter, $out, $limit);
+        if ($rows === []) {
+            fwrite(STDERR, "no in-scope tests matched --filter=" . ($filter ?? '(none)') . "\n");
+            exit(1);
+        }
+        foreach ($rows as $r) {
+            printf("%-4s  score=%.4f  %s\n", $r['passed'] ? 'PASS' : 'FAIL', $r['score'], $r['testId']);
+            if ($r['reason'] !== null) {
+                printf("      reason: %s\n", $r['reason']);
+            }
+            if ($r['rendered'] !== null) {
+                printf("      rendered: %s\n      ref:      %s\n      diff:     %s\n", $r['rendered'], $r['reference'], $r['diff'] ?? '(identical)');
+            }
+        }
+        exit(0);
+    }
     case 'classify': {
         $parsed = parseOptions($args);
         if (count($parsed['positional']) < 1) {

@@ -100,6 +100,113 @@ final class HarnessRunner
     }
 
     /**
+     * Debug aid — write the visual-diff artefacts (the rendered PNG, the
+     * reference PNG, and the ImageMagick diff PNG) for every in-scope test
+     * matching `$filter`, up to `$limit`, into `$outDir`. Reuses the exact
+     * production render → rasterise → diff pipeline (same `Renderer`
+     * options, same `Rasteriser`, same `Scorer`) so the artefacts match
+     * what `run` scores — no divergence from a hand-rolled renderer.
+     *
+     * @return list<array{testId: string, score: float, passed: bool, rendered: ?string, reference: ?string, diff: ?string, reason: ?string}>
+     */
+    public function renderDiffArtefacts(?string $filter, string $outDir, int $limit = 20): array
+    {
+        if (!is_dir($outDir) && !@mkdir($outDir, 0o777, true) && !is_dir($outDir)) {
+            throw new \RuntimeException("cannot create artefact dir: $outDir");
+        }
+        $rows = [];
+        foreach ($this->discoverTests($this->wptRoot) as $absolutePath) {
+            if (count($rows) >= $limit) {
+                break;
+            }
+            $testId = $this->testIdFromPath($absolutePath);
+            if ($testId === null) {
+                continue;
+            }
+            if ($filter !== null && !Manifest::matches($filter, $testId)) {
+                continue;
+            }
+            if ($this->manifest->classify($testId) !== null) {
+                // Out-of-scope / pending-substrate — nothing to render.
+                continue;
+            }
+            $rows[] = $this->renderOneArtefact($testId, $outDir);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array{testId: string, score: float, passed: bool, rendered: ?string, reference: ?string, diff: ?string, reason: ?string}
+     */
+    private function renderOneArtefact(string $testId, string $outDir): array
+    {
+        $row = [
+            'testId' => $testId,
+            'score' => 1.0,
+            'passed' => false,
+            'rendered' => null,
+            'reference' => null,
+            'diff' => null,
+            'reason' => null,
+        ];
+        $safe = preg_replace('/[^A-Za-z0-9._-]/', '_', $testId) ?? $testId;
+        $base = rtrim($outDir, '/') . '/' . $safe;
+
+        $rootAbs = realpath($this->wptRoot);
+        $testPath = $rootAbs !== false ? $this->resolveTestFile($rootAbs, $testId) : null;
+        if ($testPath === null) {
+            $row['reason'] = 'test file not found';
+
+            return $row;
+        }
+        $refPath = $this->locateReference($testPath);
+        if ($refPath === null) {
+            $row['reason'] = 'no -ref sibling / rel=match reference';
+
+            return $row;
+        }
+        try {
+            $renderedPng = $this->renderToPng($testPath);
+        } catch (\Throwable $e) {
+            $row['reason'] = 'render failed: ' . $e->getMessage();
+
+            return $row;
+        }
+        try {
+            $refPng = str_ends_with(strtolower($refPath), '.png')
+                ? $refPath
+                : $this->renderToPng($refPath);
+        } catch (\Throwable $e) {
+            @unlink($renderedPng);
+            $row['reason'] = 'reference render failed: ' . $e->getMessage();
+
+            return $row;
+        }
+        $fuzzy = $this->parseFuzzyMeta($testPath);
+        $diff = $this->scorer->diff($renderedPng, $refPng, $fuzzy['maxPixels']);
+
+        @copy($renderedPng, $base . '-rendered.png');
+        @copy($refPng, $base . '-ref.png');
+        if ($diff['diffImage'] !== null) {
+            @copy($diff['diffImage'], $base . '-diff.png');
+            @unlink($diff['diffImage']);
+        }
+        @unlink($renderedPng);
+        if ($refPng !== $refPath) {
+            @unlink($refPng);
+        }
+
+        $row['score'] = $diff['score'];
+        $row['passed'] = $diff['passed'];
+        $row['rendered'] = is_file($base . '-rendered.png') ? $base . '-rendered.png' : null;
+        $row['reference'] = is_file($base . '-ref.png') ? $base . '-ref.png' : null;
+        $row['diff'] = is_file($base . '-diff.png') ? $base . '-diff.png' : null;
+
+        return $row;
+    }
+
+    /**
      * Render an in-scope test, rasterise the resulting PDF, and
      * visually-diff against its WPT reference. Tests without a
      * `*-ref.{png,html,xht,svg}` sibling are reported as Skipped
