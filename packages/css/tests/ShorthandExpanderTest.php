@@ -442,6 +442,24 @@ final class ShorthandExpanderTest extends TestCase
         self::assertSame([], $out);
     }
 
+    public function testRowRuleShorthandExpandsAllThreeLonghands(): void
+    {
+        // CSS Gap Decorations 1 §3.2 — `row-rule` mirrors `column-rule`,
+        // expanding to the row-rule-* longhands. Without this the shorthand
+        // is dropped and the gap rule never paints.
+        $out = $this->expander->expand('row-rule', $this->value('30px solid blue'));
+        self::assertInstanceOf(Length::class, $out['row-rule-width']);
+        self::assertSame(30.0, $out['row-rule-width']->value);
+        self::assertSame('solid', $out['row-rule-style']->name);
+        self::assertInstanceOf(Color::class, $out['row-rule-color']);
+        self::assertArrayNotHasKey('column-rule-width', $out);
+    }
+
+    public function testRowRuleIsRecognisedAsShorthand(): void
+    {
+        self::assertTrue($this->expander->isShorthand('row-rule'));
+    }
+
     public function testOverflowOneValueAppliesToBothAxes(): void
     {
         $out = $this->expander->expand('overflow', $this->value('hidden'));

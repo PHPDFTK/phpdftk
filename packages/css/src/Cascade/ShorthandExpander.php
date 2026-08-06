@@ -94,6 +94,7 @@ final class ShorthandExpander
             'list-style' => $this->expandListStyle($value),
             'columns' => $this->expandColumns($value),
             'column-rule' => $this->expandColumnRule($value),
+            'row-rule' => $this->expandRowRule($value),
             'gap' => $this->expandGap($value),
             'inset' => $this->expandInset($value),
             // CSS Logical Properties 1 §5 / §6 — axis pair
@@ -206,7 +207,7 @@ final class ShorthandExpander
             'border-block-start', 'border-block-end',
             'border-inline-start', 'border-inline-end',
             'border', 'outline', 'font', 'text-decoration', 'background',
-            'list-style', 'columns', 'column-rule', 'gap', 'inset',
+            'list-style', 'columns', 'column-rule', 'row-rule', 'gap', 'inset',
             'inset-block', 'inset-inline',
             'margin-block', 'margin-inline', 'padding-block', 'padding-inline',
             'overflow', 'flex', 'flex-flow',
@@ -1231,6 +1232,31 @@ final class ShorthandExpander
      */
     private function expandColumnRule(Value $value): array
     {
+        return $this->expandRuleShorthand($value, 'column-rule');
+    }
+
+    /**
+     * CSS Gap Decorations 1 §3.2 — `row-rule` shorthand for
+     * `row-rule-{width,style,color}`. Mirrors `column-rule` exactly,
+     * only the target longhand prefix differs.
+     *
+     * @return array<string, Value>
+     */
+    private function expandRowRule(Value $value): array
+    {
+        return $this->expandRuleShorthand($value, 'row-rule');
+    }
+
+    /**
+     * Shared `<line-width> || <line-style> || <color>` expander for the
+     * `column-rule` (CSS Multicol 1) and `row-rule` (CSS Gap Decorations
+     * 1) shorthands. The two grammars are identical; only the longhand
+     * prefix differs.
+     *
+     * @return array<string, Value>
+     */
+    private function expandRuleShorthand(Value $value, string $prefix): array
+    {
         $components = $this->toComponents($value);
         $width = null;
         $style = null;
@@ -1250,13 +1276,13 @@ final class ShorthandExpander
         }
         $out = [];
         if ($width !== null) {
-            $out['column-rule-width'] = $width;
+            $out[$prefix . '-width'] = $width;
         }
         if ($style !== null) {
-            $out['column-rule-style'] = $style;
+            $out[$prefix . '-style'] = $style;
         }
         if ($color !== null) {
-            $out['column-rule-color'] = $color;
+            $out[$prefix . '-color'] = $color;
         }
         return $out;
     }

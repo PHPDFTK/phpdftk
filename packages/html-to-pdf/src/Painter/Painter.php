@@ -8149,6 +8149,27 @@ final class Painter
      * cross axis. Reuses the multicol rule-stroking convention (solid /
      * dashed / dotted; other styles approximate to solid).
      */
+    /**
+     * CSS Gaps 1 — true when a grid gap rule on the given axis is a plain
+     * continuous line, i.e. the default `spanning-item` break with no
+     * per-item visibility restriction. The grid painter only strokes the
+     * full-track span, which matches the reference only in this case; the
+     * segmented forms (`intersection`/`none` break, `around`/`between`
+     * visibility) are not yet modelled, so callers skip that axis instead
+     * of painting a wrong continuous rule.
+     */
+    private function gapRuleIsContinuous(Box $box, string $prefix): bool
+    {
+        $breakV = $box->style->get("$prefix-break");
+        $break = $breakV instanceof Keyword ? strtolower($breakV->name) : 'spanning-item';
+        if ($break !== 'spanning-item') {
+            return false;
+        }
+        $visV = $box->style->get("$prefix-visibility-items");
+        $vis = $visV instanceof Keyword ? strtolower($visV->name) : 'all';
+        return $vis === 'all';
+    }
+
     private function paintGridGapRules(Box $box, ContentStream $stream): void
     {
         if (!$box instanceof \Phpdftk\HtmlToPdf\Box\GridBox) {
@@ -8184,7 +8205,14 @@ final class Painter
             }
         }
         // Row rules: horizontal lines, spanning the grid's column-track area.
-        if ($box->rowGapCenters !== [] && $box->gridContentRight > $box->gridContentLeft) {
+        // The naive full-span stroke below is only correct for a continuous
+        // rule: the default `spanning-item` break with no per-item visibility
+        // restriction. When the author opts into segmentation we do not yet
+        // model (`*-rule-break: intersection`/`none`, or a non-default
+        // `*-rule-visibility-items`), painting a continuous rule is worse
+        // than painting none — skip that axis rather than draw a wrong rule.
+        if ($box->rowGapCenters !== [] && $box->gridContentRight > $box->gridContentLeft
+            && $this->gapRuleIsContinuous($box, 'row-rule')) {
             foreach ($box->rowGapCenters as $cy) {
                 $pdfY = $this->pageHeight - $cy;
                 $this->strokeGapRule(

@@ -3542,6 +3542,70 @@ final class PainterTest extends TestCase
         self::assertNotContains('S', $opcodes, 'vertical writing-mode → gap rules skipped');
     }
 
+    public function testGridRowRuleSkippedForNonDefaultVisibilityItems(): void
+    {
+        // CSS Gaps 1 §3.3 — the naive grid painter only strokes a
+        // continuous full-track rule, which is correct for the default
+        // `spanning-item` break with `visibility-items: all`. A non-default
+        // `row-rule-visibility-items` (`around`) segments the rule per item,
+        // which we do not model — so the row rule is skipped (painting a
+        // wrong continuous rule is worse than none). Only a row rule is set
+        // here, so nothing strokes.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="g">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .g { display: grid; grid-template-columns: 40px 40px;
+                  grid-template-rows: 40px 40px; column-gap: 10px; row-gap: 10px;
+                  row-rule: 4px solid green; row-rule-visibility-items: around; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('S', $opcodes, 'non-default row-rule-visibility-items → row rule skipped');
+    }
+
+    public function testGridRowRuleFromShorthandPaintsWhenContinuous(): void
+    {
+        // CSS Gap Decorations 1 §3.2 — the `row-rule` shorthand must expand
+        // to row-rule-* longhands (regression guard for the expander) and,
+        // with the default break/visibility, paint a continuous rule.
+        $doc = $this->html->parseDocument(
+            '<html><body><div class="g">'
+            . '<div></div><div></div><div></div><div></div>'
+            . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body { display: block; }
+             .g { display: grid; grid-template-columns: 40px 40px;
+                  grid-template-rows: 40px 40px; column-gap: 10px; row-gap: 10px;
+                  row-rule: 4px solid green; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter();
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('S', $opcodes, 'row-rule shorthand expands and paints a continuous rule');
+    }
+
     public function testFlexGapRulesPaintStrokes(): void
     {
         // CSS Gaps 1 — a wrapped flex container with `column-rule` /

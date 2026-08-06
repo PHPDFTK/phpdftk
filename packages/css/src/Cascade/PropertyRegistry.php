@@ -929,6 +929,14 @@ final class PropertyRegistry
         // `intersection` additionally breaks at every perpendicular gap.
         $r->register($initial('column-rule-break', new Keyword('spanning-item')));
         $r->register($initial('row-rule-break', new Keyword('spanning-item')));
+        // CSS Gaps 1 §3.3 — `*-rule-visibility-items` restricts which gap
+        // segments paint relative to the items bordering them (`around` /
+        // `between`). Initial `all` draws a continuous rule. Registered so
+        // the painter can detect the non-default forms it does not yet
+        // model and fall back to not painting that axis (rather than
+        // painting a wrong continuous rule).
+        $r->register($initial('column-rule-visibility-items', new Keyword('all')));
+        $r->register($initial('row-rule-visibility-items', new Keyword('all')));
         $r->register($initial('column-fill', new Keyword('balance')));
         $r->register($initial('column-span', new Keyword('none')));
         // CSS Multi-column 2 §3 — `column-height` (the fragmentainer height a
