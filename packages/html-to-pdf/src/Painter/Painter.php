@@ -2082,7 +2082,7 @@ final class Painter
             $radii = $this->borderRadiiXY($box, $borderBoxW, $borderBoxH);
             if ($this->radiiAnyPositive($radii)) {
                 $padRadii = $this->reduceRadiiToBox($radii, 'padding-box', $g);
-                $this->buildRoundedRectPath($stream, $padX, $padTop, $padWidth, $padHeight, $padRadii);
+                $this->buildRoundedRectPath($stream, $padX, $padTop, $padWidth, $padHeight, $padRadii, $this->cornerShapes($box));
                 $stream->clip();
                 $stream->endPath();
                 return;
@@ -2348,7 +2348,7 @@ final class Painter
                 $g,
             );
             if ($this->radiiAnyPositive($radii)) {
-                $this->buildRoundedRectPath($stream, $bx, $by, $bw, $bh, $radii);
+                $this->buildRoundedRectPath($stream, $bx, $by, $bw, $bh, $radii, $this->cornerShapes($box));
             } else {
                 $stream->rectangle($bx, $ph - $by - $bh, $bw, $bh);
             }
@@ -4001,7 +4001,7 @@ final class Painter
                 $stream->fillEvenOdd();
                 $stream->restoreGraphicsState();
             } elseif ($this->radiiAnyPositive($radii)) {
-                $this->emitRoundedFill($stream, $x, $top, $width, $height, $radii, $color);
+                $this->emitRoundedFill($stream, $x, $top, $width, $height, $radii, $color, $this->cornerShapes($box));
             } else {
                 $this->emitRect($stream, $x, $top, $width, $height, fill: $color);
             }
@@ -8452,6 +8452,7 @@ final class Painter
      * scalar path).
      *
      * @param array{array{float,float}, array{float,float}, array{float,float}, array{float,float}} $radii [tl, tr, br, bl]
+     * @param list<string> $shapes [tl, tr, br, bl] corner shapes; empty → all round
      */
     private function emitRoundedFill(
         ContentStream $stream,
@@ -8461,10 +8462,11 @@ final class Painter
         float $height,
         array $radii,
         Color $fill,
+        array $shapes = [],
     ): void {
         $stream->saveGraphicsState();
         $stream->setFillColorRGB($fill->r, $fill->g, $fill->b);
-        $this->buildRoundedRectPath($stream, $x, $topY, $width, $height, $radii);
+        $this->buildRoundedRectPath($stream, $x, $topY, $width, $height, $radii, $shapes);
         $stream->fill();
         $stream->restoreGraphicsState();
     }
@@ -8475,7 +8477,14 @@ final class Painter
      * callers can either fill or `clip` it. Each corner is an `[rx, ry]` pair
      * (elliptical). Layout-Y (top-down) in, PDF-Y flip applied here.
      *
+     * Each corner may carry a CSS Borders 4 `corner-shape` (`$shapes` as
+     * `[tl, tr, br, bl]` strings): `round` (arc, the default), `bevel`
+     * (straight chamfer), `square` (fills to the box corner), `notch`
+     * (inward square), or `scoop` (concave arc). An empty `$shapes` keeps
+     * every corner round (byte-identical to the pre-corner-shape path).
+     *
      * @param array{array{float,float}, array{float,float}, array{float,float}, array{float,float}} $radii [tl, tr, br, bl]
+     * @param list<string> $shapes [tl, tr, br, bl] corner shapes; empty → all round
      */
     private function buildRoundedRectPath(
         ContentStream $stream,
@@ -8484,63 +8493,208 @@ final class Painter
         float $width,
         float $height,
         array $radii,
+        array $shapes = [],
     ): void {
         $clamp = static fn(array $r): array => [
             min(max(0.0, $r[0]), $width / 2.0),
             min(max(0.0, $r[1]), $height / 2.0),
         ];
         [$tl, $tr, $br, $bl] = array_map($clamp, $radii);
-        $k = 0.5522847498;
+        $shapeTl = $shapes[0] ?? 'round';
+        $shapeTr = $shapes[1] ?? 'round';
+        $shapeBr = $shapes[2] ?? 'round';
+        $shapeBl = $shapes[3] ?? 'round';
         $bottomPdfY = $this->pageHeight - $topY - $height;
         $topPdfY = $this->pageHeight - $topY;
         // Walk clockwise starting at the top-left straight edge. Each corner
-        // curve uses the horizontal radius for x-handles, vertical for y.
+        // runs from its incoming edge point (A) to the outgoing edge point (B),
+        // shaped around either the box corner (convex) or the inner corner
+        // (concave) per `corner-shape`.
         $stream->moveTo($x + $tl[0], $topPdfY);
         $stream->lineTo($x + $width - $tr[0], $topPdfY);
-        if ($tr[0] > 0.0 || $tr[1] > 0.0) {
-            $stream->curveTo(
-                $x + $width - $tr[0] + $tr[0] * $k,
-                $topPdfY,
-                $x + $width,
-                $topPdfY - $tr[1] + $tr[1] * $k,
-                $x + $width,
-                $topPdfY - $tr[1],
-            );
-        }
+        $this->emitCornerSegment(
+            $stream,
+            $shapeTr,
+            $x + $width - $tr[0],
+            $topPdfY,
+            $x + $width,
+            $topPdfY - $tr[1],
+            $x + $width,
+            $topPdfY,
+        );
         $stream->lineTo($x + $width, $bottomPdfY + $br[1]);
-        if ($br[0] > 0.0 || $br[1] > 0.0) {
-            $stream->curveTo(
-                $x + $width,
-                $bottomPdfY + $br[1] - $br[1] * $k,
-                $x + $width - $br[0] + $br[0] * $k,
-                $bottomPdfY,
-                $x + $width - $br[0],
-                $bottomPdfY,
-            );
-        }
+        $this->emitCornerSegment(
+            $stream,
+            $shapeBr,
+            $x + $width,
+            $bottomPdfY + $br[1],
+            $x + $width - $br[0],
+            $bottomPdfY,
+            $x + $width,
+            $bottomPdfY,
+        );
         $stream->lineTo($x + $bl[0], $bottomPdfY);
-        if ($bl[0] > 0.0 || $bl[1] > 0.0) {
-            $stream->curveTo(
-                $x + $bl[0] - $bl[0] * $k,
-                $bottomPdfY,
-                $x,
-                $bottomPdfY + $bl[1] - $bl[1] * $k,
-                $x,
-                $bottomPdfY + $bl[1],
-            );
-        }
+        $this->emitCornerSegment(
+            $stream,
+            $shapeBl,
+            $x + $bl[0],
+            $bottomPdfY,
+            $x,
+            $bottomPdfY + $bl[1],
+            $x,
+            $bottomPdfY,
+        );
         $stream->lineTo($x, $topPdfY - $tl[1]);
-        if ($tl[0] > 0.0 || $tl[1] > 0.0) {
-            $stream->curveTo(
-                $x,
-                $topPdfY - $tl[1] + $tl[1] * $k,
-                $x + $tl[0] - $tl[0] * $k,
-                $topPdfY,
-                $x + $tl[0],
-                $topPdfY,
-            );
-        }
+        $this->emitCornerSegment(
+            $stream,
+            $shapeTl,
+            $x,
+            $topPdfY - $tl[1],
+            $x + $tl[0],
+            $topPdfY,
+            $x,
+            $topPdfY,
+        );
         $stream->closePath();
+    }
+
+    /**
+     * Emit one corner of {@see buildRoundedRectPath()} from the current point
+     * A=(ax,ay) to B=(bx,by), shaped per `corner-shape`. `(boxX,boxY)` is the
+     * physical box corner (the convex direction); the inner corner (concave
+     * direction) is its reflection A+B−box. The 0.5522847498 constant is the
+     * standard cubic-Bézier quarter-ellipse factor.
+     */
+    private function emitCornerSegment(
+        ContentStream $stream,
+        string $shape,
+        float $ax,
+        float $ay,
+        float $bx,
+        float $by,
+        float $boxX,
+        float $boxY,
+    ): void {
+        // Zero-radius corner: A == B, nothing to add (the edge lineTos meet
+        // at the box corner already).
+        if ($ax === $bx && $ay === $by) {
+            return;
+        }
+        $k = 0.5522847498;
+        $innerX = $ax + $bx - $boxX;
+        $innerY = $ay + $by - $boxY;
+        switch ($shape) {
+            case 'bevel':
+                $stream->lineTo($bx, $by);
+                return;
+            case 'square':
+                $stream->lineTo($boxX, $boxY);
+                $stream->lineTo($bx, $by);
+                return;
+            case 'notch':
+                $stream->lineTo($innerX, $innerY);
+                $stream->lineTo($bx, $by);
+                return;
+            case 'scoop':
+                // Concave quarter: pull the Bézier handles toward the inner
+                // corner instead of the box corner.
+                $stream->curveTo(
+                    $ax + $k * ($innerX - $ax),
+                    $ay + $k * ($innerY - $ay),
+                    $bx + $k * ($innerX - $bx),
+                    $by + $k * ($innerY - $by),
+                    $bx,
+                    $by,
+                );
+                return;
+            case 'round':
+            case 'squircle':
+            default:
+                // Convex quarter-ellipse toward the box corner.
+                $stream->curveTo(
+                    $ax + $k * ($boxX - $ax),
+                    $ay + $k * ($boxY - $ay),
+                    $bx + $k * ($boxX - $bx),
+                    $by + $k * ($boxY - $by),
+                    $bx,
+                    $by,
+                );
+                return;
+        }
+    }
+
+    /**
+     * CSS Borders 4 §5 — resolve `corner-shape` into `[tl, tr, br, bl]`
+     * shape names (the 1-4 value shorthand expanded like `border-radius`).
+     * `superellipse(<n>)` maps to the nearest implemented keyword by its
+     * exponent (large → square, ~1 → round, ~0 → bevel, very negative →
+     * notch). Absent / unrecognised → all `round`.
+     *
+     * @return list<string> [tl, tr, br, bl]
+     */
+    private function cornerShapes(Box $box): array
+    {
+        $value = $box->style->get('corner-shape');
+        if ($value === null) {
+            return ['round', 'round', 'round', 'round'];
+        }
+        $items = $value instanceof \Phpdftk\Css\Value\ValueList ? $value->values : [$value];
+        $shapes = [];
+        foreach ($items as $item) {
+            $shapes[] = $this->cornerShapeName($item);
+        }
+        return match (count($shapes)) {
+            0 => ['round', 'round', 'round', 'round'],
+            1 => [$shapes[0], $shapes[0], $shapes[0], $shapes[0]],
+            2 => [$shapes[0], $shapes[1], $shapes[0], $shapes[1]],
+            3 => [$shapes[0], $shapes[1], $shapes[2], $shapes[1]],
+            default => [$shapes[0], $shapes[1], $shapes[2], $shapes[3]],
+        };
+    }
+
+    private function cornerShapeName(\Phpdftk\Css\Value\Value $item): string
+    {
+        if ($item instanceof Keyword) {
+            $name = strtolower($item->name);
+            if (in_array($name, ['round', 'bevel', 'square', 'notch', 'scoop', 'squircle'], true)) {
+                return $name;
+            }
+            return 'round';
+        }
+        if ($item instanceof \Phpdftk\Css\Value\CssFunction
+            && strtolower($item->name) === 'superellipse'
+        ) {
+            $s = $this->superellipseExponent($item->arguments[0] ?? null);
+            return match (true) {
+                $s >= 3.0 => 'square',
+                $s >= 1.5 => 'squircle',
+                $s >= 0.5 => 'round',
+                $s >= -0.5 => 'bevel',
+                $s >= -1.5 => 'scoop',
+                default => 'notch',
+            };
+        }
+        return 'round';
+    }
+
+    private function superellipseExponent(?\Phpdftk\Css\Value\Value $arg): float
+    {
+        if ($arg instanceof Keyword) {
+            $name = strtolower($arg->name);
+            if ($name === 'infinity') {
+                return INF;
+            }
+            if ($name === '-infinity') {
+                return -INF;
+            }
+        }
+        if ($arg instanceof \Phpdftk\Css\Value\Integer || $arg instanceof \Phpdftk\Css\Value\Number) {
+            return (float) $arg->value;
+        }
+        if ($arg instanceof \Phpdftk\Css\Value\Length) {
+            return $arg->value;
+        }
+        return 1.0;
     }
 
     /**

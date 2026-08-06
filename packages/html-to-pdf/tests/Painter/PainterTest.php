@@ -3602,6 +3602,73 @@ final class PainterTest extends TestCase
         self::assertNotContains('S', $opcodes, 'no authored rule → no gap-rule stroke');
     }
 
+    public function testCornerShapeRoundEmitsCurves(): void
+    {
+        // CSS Borders 4 §5 — the default `corner-shape: round` draws each
+        // border-radius corner as a Bézier arc (`c` operator).
+        $doc = $this->html->parseDocument('<html><body><div class="b"></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .b { width: 100px; height: 100px; background-color: green; border-radius: 25px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+        $writer = new PdfWriter();
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('c', $opcodes, 'round corners use Bézier curves');
+    }
+
+    public function testCornerShapeBevelEmitsStraightCorners(): void
+    {
+        // CSS Borders 4 §5 — `corner-shape: bevel` replaces each rounded
+        // corner with a straight chamfer, so the background fill path has
+        // no curve operator despite a non-zero border-radius.
+        $doc = $this->html->parseDocument('<html><body><div class="b"></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .b { width: 100px; height: 100px; background-color: green;
+                  border-radius: 25px; corner-shape: bevel; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+        $writer = new PdfWriter();
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('c', $opcodes, 'bevel corners are straight, no Bézier');
+    }
+
+    public function testCornerShapeSquareFillsToBoxCorner(): void
+    {
+        // CSS Borders 4 §5 — `corner-shape: square` fills the corner out to
+        // the box corner (a sharp right angle), so like bevel it emits no
+        // curve; `superellipse(<large>)` maps to square too.
+        $doc = $this->html->parseDocument('<html><body><div class="b"></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             .b { width: 100px; height: 100px; background-color: green;
+                  border-radius: 25px; corner-shape: square superellipse(24) square square; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+        $writer = new PdfWriter();
+        $stream = $writer->addContentStream($writer->addPage(612, 792));
+        (new Painter(792.0))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('c', $opcodes, 'square + high superellipse corners are sharp, no Bézier');
+    }
+
     public function testSingleStopGradientPaintsSolidFill(): void
     {
         // CSS Images 3 §3.5.1 — a gradient with a single color stop renders

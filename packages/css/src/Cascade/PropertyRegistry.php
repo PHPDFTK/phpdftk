@@ -247,6 +247,14 @@ final class PropertyRegistry
         $r->register($initial('border-bottom-right-radius', $zero));
         $r->register($initial('border-bottom-left-radius', $zero));
 
+        // CSS Borders 4 §5 — `corner-shape` maps each `border-radius` corner
+        // to a superellipse: `round` (initial, elliptical arc), `bevel`
+        // (straight chamfer), `square` (fills to the box corner), `notch`
+        // (inward square), `scoop` (concave), `squircle`, or an explicit
+        // `superellipse(<number>)`. The 1-4 value shorthand cascades as a
+        // single value list, read per corner by the painter.
+        $r->register($initial('corner-shape', new Keyword('round')));
+
         // CSS UI 3 §4 outline — like border but doesn't take part in
         // layout (drawn outside the border edge).
         $r->register($initial('outline-color', $black));
