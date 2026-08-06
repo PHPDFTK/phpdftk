@@ -3554,6 +3554,58 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(5.0, $div->geometry->y);
     }
 
+    public function testBlockAspectRatioContributesIntrinsicWidthFromHeight(): void
+    {
+        // CSS Sizing 4 §5.1 — an empty non-replaced block with a definite
+        // height and an aspect-ratio contributes height × ratio as its
+        // min/max-content width. `height:50px; aspect-ratio:2/1;
+        // width:min-content` → 100px, not the collapsed 0.
+        $box = $this->buildTree(
+            '<html><body><div id="ar"></div></body></html>',
+            'html, body, div { display: block; }
+             #ar { height: 50px; aspect-ratio: 2 / 1; width: min-content; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ar = $this->findById($box, 'ar');
+        self::assertNotNull($ar);
+        self::assertEqualsWithDelta(100.0, $ar->geometry->width, 0.001, 'min-content width = height × ratio');
+    }
+
+    public function testBlockAspectRatioIntrinsicWidthFlowsToMinContentParent(): void
+    {
+        // The ratio-derived width also propagates as a child's contribution
+        // to a `width:min-content` parent (intrinsic-size-001 shape): a
+        // height:100 / ratio 1:1 child gives the parent a 100px min-content.
+        $box = $this->buildTree(
+            '<html><body><div id="p"><div id="c"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #p { width: min-content; }
+             #c { height: 100px; aspect-ratio: 1 / 1; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        self::assertEqualsWithDelta(100.0, $p->geometry->width, 0.001, 'parent min-content picks up child ratio width');
+    }
+
+    public function testBlockExplicitWidthSuppressesRatioIntrinsicContribution(): void
+    {
+        // An explicit inline size fixes the width, so the ratio does NOT
+        // feed the intrinsic width (it flows to the block axis instead).
+        // width:min-content on the parent, child has explicit width:30px →
+        // parent min-content = 30, not height × ratio.
+        $box = $this->buildTree(
+            '<html><body><div id="p"><div id="c"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #p { width: min-content; }
+             #c { height: 100px; aspect-ratio: 1 / 1; width: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $p = $this->findById($box, 'p');
+        self::assertNotNull($p);
+        self::assertEqualsWithDelta(30.0, $p->geometry->width, 0.001, 'explicit child width wins over ratio');
+    }
+
     public function testFlexContainInlineSizeZeroesIntrinsicWidth(): void
     {
         // CSS Containment §4.6 — `contain: inline-size` on a flex container

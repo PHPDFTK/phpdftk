@@ -4427,11 +4427,24 @@ final class BlockLayout
         // e.g. two `display: inline-block` siblings sit side-by-side.
         // Otherwise the children stack vertically (block formatting) and
         // the container needs the widest of them.
-        return $this->aggregateChildrenMinMax(
+        $aggregate = $this->aggregateChildrenMinMax(
             $box,
             $context,
             inline: $this->allInlineLevel($box->children),
         );
+        // CSS Sizing 4 §5.1 — a plain block with a definite height and an
+        // aspect-ratio contributes height × ratio as its preferred inline
+        // size. It floors the content-derived intrinsic width (a wider
+        // content minimum still wins), so an empty ratio'd block reports
+        // height × ratio instead of 0.
+        $ratioWidth = $this->nonReplacedBlockRatioIntrinsicWidth($box, $context);
+        if ($ratioWidth !== null) {
+            return [
+                'min' => max($aggregate['min'], $ratioWidth),
+                'max' => max($aggregate['max'], $ratioWidth),
+            ];
+        }
+        return $aggregate;
     }
 
     /**
@@ -6500,6 +6513,60 @@ final class BlockLayout
             return null;
         }
         $h = $box->style->get('height');
+        $height = match (true) {
+            $h instanceof Length => $h->value,
+            $h instanceof \Phpdftk\Css\Value\Integer => (float) $h->value,
+            $h instanceof Percentage
+                && $context->inFlowHeightDefinite
+                && $context->containingBlockHeight > 0.0
+                => $context->containingBlockHeight * ($h->value / 100.0),
+            default => null,
+        };
+        if ($height === null || $height <= 0.0) {
+            return null;
+        }
+        return $height * $ratio;
+    }
+
+    /**
+     * CSS Sizing 4 §5.1 — a NON-replaced block with a definite block size
+     * and an `aspect-ratio` transfers `height × ratio` as its (min = max)
+     * intrinsic inline-size contribution, mirroring the replaced-atomic
+     * case above. Without this a `<div style="height:50px; aspect-ratio:
+     * 2/1; width:min-content">` (or such a child under a `width:min-content`
+     * parent) reports 0 width and collapses to blank. Returns null unless
+     * the box is a plain block, has no explicit inline size (an explicit
+     * width fixes the inline axis so the ratio flows the other way), has a
+     * valid ratio, and resolves a definite non-auto content height.
+     */
+    private function nonReplacedBlockRatioIntrinsicWidth(Box $box, LayoutContext $context): ?float
+    {
+        if (!($box instanceof BlockBox) && !($box instanceof AnonymousBlockBox)) {
+            return null;
+        }
+        $style = $box->style;
+        $width = $style->get('width');
+        if ($width instanceof Length || $width instanceof Percentage) {
+            return null;
+        }
+        // Under `box-sizing: border-box` the specified height is the border
+        // box, and CSS Sizing 4 §5.1 maps the ratio across the border box —
+        // the used-width layout path already handles that mapping. Applying
+        // the raw height × ratio here (a content-box value) would double-
+        // count the box-sizing and conflict with it, so only contribute the
+        // intrinsic width in the plain content-box case (the failing tests).
+        $boxSizing = $style->get('box-sizing');
+        if ($boxSizing instanceof Keyword && strtolower($boxSizing->name) === 'border-box') {
+            return null;
+        }
+        $ratio = $this->resolveAspectRatio($style);
+        if ($ratio === null || $ratio <= 0.0) {
+            return null;
+        }
+        $h = $style->get('height');
+        if ($this->isHeightAutoLike($h)) {
+            return null;
+        }
         $height = match (true) {
             $h instanceof Length => $h->value,
             $h instanceof \Phpdftk\Css\Value\Integer => (float) $h->value,
