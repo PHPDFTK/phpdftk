@@ -75,6 +75,35 @@ final class InlineSvgIntegrationTest extends TestCase
         self::assertStringEndsWith("%%EOF", trim($bytes));
     }
 
+    public function testInlineSvgClipsOversizedContentToViewport(): void
+    {
+        // SVG 2 §8.2 / CSS Overflow 3 — the SVG viewport clips content
+        // larger than its box (UA default `svg { overflow: clip }`). A
+        // 150x150 rect inside a CSS-sized 100x100 svg emits an EXTRA clip
+        // (`W n`) around the draw versus the same svg with `overflow:
+        // visible`, which paints the rect unconfined. Comparing the two
+        // isolates the SVG viewport clip from the always-present page clip.
+        $clips = fn(string $extraSvgStyle): int => substr_count(
+            (function () use ($extraSvgStyle): string {
+                $writer = new PdfWriter(compressStreams: false);
+                (new Renderer())->renderInto(
+                    $writer,
+                    '<html><body>'
+                        . '<svg style="width:100px;height:100px;' . $extraSvgStyle . '" xmlns="http://www.w3.org/2000/svg">'
+                        . '<rect width="150" height="150" fill="#008000"/>'
+                        . '</svg>'
+                        . '</body></html>',
+                );
+                return $writer->toBytes();
+            })(),
+            "W\nn",
+        );
+
+        $default = $clips('');
+        $visible = $clips('overflow:visible;');
+        self::assertGreaterThan($visible, $default, 'default SVG overflow must add a viewport clip the overflow:visible case omits');
+    }
+
     public function testMalformedInlineSvgSkipsRatherThanCrashes(): void
     {
         // An `<svg>` element with a child whose markup the SVG parser

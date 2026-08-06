@@ -441,6 +441,12 @@ final readonly class RendererOptions
                 display: inline;
             }
             img, button, input, select, textarea, svg, math { display: inline-block; }
+            /* SVG 2 §8.2 / CSS Overflow 3 — the SVG viewport establishes a
+               clipping region: content outside the `width`×`height` box is
+               clipped by default. Modelled as `overflow: clip` so authored
+               per-axis `overflow-x/y: visible` and `overflow-clip-margin`
+               compose through the standard overflow machinery. */
+            svg { overflow: clip; }
             input, select, textarea {
                 border: 1px solid #888;
                 padding: 2pt 4pt;

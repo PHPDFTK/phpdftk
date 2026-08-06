@@ -1993,7 +1993,11 @@ final class Painter
      */
     private function overflowClipMargin(Box $box): array
     {
-        if (!$this->hasOverflowClip($box)) {
+        // CSS Overflow 3 §4.2 — `overflow-clip-margin` applies to a box
+        // that clips via `overflow: clip` OR paint containment
+        // (`contain: paint`), the latter clipping even when `overflow`
+        // stays `visible` (WPT paint-containment-svg).
+        if (!$this->hasOverflowClip($box) && !$this->containImpliesPaintClip($box)) {
             return [0.0, 0.0, 0.0, 0.0];
         }
         $value = $box->style->get('overflow-clip-margin');
@@ -7399,6 +7403,17 @@ final class Painter
         // PDF y-axis runs bottom-up; the box geometry's `y` is the
         // top edge in CSS coords, so we flip relative to pageHeight.
         $pdfY = $this->pageHeight - $geo->y - $height;
+        // SVG 2 §8.2 / CSS Overflow 3 §3.3 — the SVG viewport clips its
+        // content by default (UA `svg { overflow: clip }`). SvgRenderer's
+        // own draw() only clips for slice/preserveAspectRatio, so the
+        // caller must confine content larger than the viewport (a 150×150
+        // rect in a 100×100 svg). Honour per-axis overflow, contain:paint,
+        // and overflow-clip-margin via the shared overflow-clip machinery.
+        $needsClip = $this->shouldOverflowClip($box);
+        if ($needsClip) {
+            $stream->saveGraphicsState();
+            $this->emitOverflowClipPath($stream, $box);
+        }
         $this->svgRenderer()->draw(
             $svgDoc,
             $geo->x,
@@ -7407,6 +7422,9 @@ final class Painter
             $height,
             stream: $stream,
         );
+        if ($needsClip) {
+            $stream->restoreGraphicsState();
+        }
     }
 
     /**
