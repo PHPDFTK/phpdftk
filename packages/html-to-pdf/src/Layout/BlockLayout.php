@@ -5920,6 +5920,16 @@ final class BlockLayout
         LayoutContext $context,
         bool $isColumn,
     ): array {
+        // CSS Sizing 4 §6.1 / CSS Containment §4.6 — `contain: inline-size`
+        // (or `size`/`strict`) makes the container's intrinsic inline size
+        // independent of its contents: it comes from `contain-intrinsic-*`
+        // (or 0), NOT the flex items. The generic block path honours this
+        // via measureContentMinMax, but layoutFlexBox self-sizes through
+        // this method, which otherwise measures the items.
+        $contained = $this->resolveContainIntrinsicWidth($box->style);
+        if ($contained !== null) {
+            return ['max' => $contained, 'min' => $contained];
+        }
         $childCtx = $context;
         $maxContent = 0.0;
         $minContent = 0.0;

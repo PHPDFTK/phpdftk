@@ -3554,6 +3554,26 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(5.0, $div->geometry->y);
     }
 
+    public function testFlexContainInlineSizeZeroesIntrinsicWidth(): void
+    {
+        // CSS Containment §4.6 — `contain: inline-size` on a flex container
+        // with `width: fit-content` makes the intrinsic inline size ignore
+        // the items (contribute 0). Here a 200px item in a fit-content
+        // contained flex box gives a 0-content-width box (+ borders); the
+        // container width collapses to the border box (10px), not 200px.
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="i"></div></div></body></html>',
+            'html, body, div { display: block; }
+             #f { display: flex; contain: inline-size; width: fit-content;
+                  border: 5px solid; }
+             #i { width: 200px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertInstanceOf(FlexBox::class, $f);
+        self::assertEqualsWithDelta(0.0, $f->geometry->width, 0.001, 'contain:inline-size zeroes the flex content width');
+    }
+
     public function testContentVisibilityHiddenSizesFromContainIntrinsicSize(): void
     {
         // CSS Containment 2 §4 — a content-visibility:hidden box is
