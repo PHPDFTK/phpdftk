@@ -2681,8 +2681,25 @@ final class BlockLayout
         float $cbHeight,
         bool $cbHeightDefinite,
     ): float {
-        if (!$cbHeightDefinite && $value instanceof Percentage) {
-            return 0.0;
+        if (!$cbHeightDefinite) {
+            if ($value instanceof Percentage) {
+                return 0.0;
+            }
+            // CSS Position 3 §3.4 — an inset like `calc(10px + 10%)` whose
+            // percentage resolves against an indefinite block size is also
+            // unresolvable (used value 0). A percentage-bearing calc()
+            // evaluates to NAN at a zero percentage basis, so probe it and
+            // treat it the same as a bare percentage. A pure-length calc()
+            // resolves fine and passes through below.
+            if ($value instanceof \Phpdftk\Css\Value\Calc) {
+                $probe = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate(
+                    $value,
+                    new \Phpdftk\Css\Cascade\LengthContext(percentageBasis: 0.0),
+                );
+                if (is_nan($probe)) {
+                    return 0.0;
+                }
+            }
         }
         return $this->resolveLength($value, $cbHeight);
     }

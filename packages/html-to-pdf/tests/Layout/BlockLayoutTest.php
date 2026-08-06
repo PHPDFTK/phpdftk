@@ -3554,6 +3554,44 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(5.0, $div->geometry->y);
     }
 
+    public function testRelativeCalcInsetWithPercentAgainstIndefiniteHeightDropsPercent(): void
+    {
+        // CSS Position 3 §3.4 — a relative inset `calc(10px + 10%)` whose
+        // percentage resolves against an indefinite containing-block height
+        // (body is auto-height here) is unresolvable for the percentage
+        // part; only the 10px length applies → dy = 10, NOT 10 + 10% of the
+        // viewport fallback height. Guards the Calc branch of
+        // resolveLengthAgainstHeight (a bare Percentage was already handled).
+        // The child's containing block (#p) is auto-height — a bare
+        // min-height does NOT make it definite — so the whole inset is
+        // unresolvable and its used value is 0 (per §3.4 the entire calc,
+        // not just the percentage term, is dropped). The child stays at its
+        // static y = 0. Pre-fix, 10% resolved against the viewport fallback
+        // and pushed it ~90px down.
+        $box = $this->buildTree(
+            '<html><body><div id="p"><div id="c" style="position: relative; top: calc(10px + 10%); height: 40px"></div></div></body></html>',
+            'html, body, div { display: block; } #p { min-height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $div = $this->findById($box, 'c');
+        self::assertNotNull($div);
+        self::assertSame(0.0, $div->geometry->y);
+    }
+
+    public function testRelativeCalcInsetPureLengthResolvesFully(): void
+    {
+        // A calc() with no percentage resolves normally regardless of CB
+        // definiteness: `calc(6px + 4px)` → dy = 10 (the probe is non-NAN).
+        $box = $this->buildTree(
+            '<html><body><div style="position: relative; top: calc(6px + 4px); height: 40px"></div></body></html>',
+            'html, body, div { display: block; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $div = $this->find($box, 'div');
+        self::assertNotNull($div);
+        self::assertSame(10.0, $div->geometry->y);
+    }
+
     public function testRelativeDoesNotAffectSiblings(): void
     {
         // A relative box's shift is paint-only. The next sibling stacks
