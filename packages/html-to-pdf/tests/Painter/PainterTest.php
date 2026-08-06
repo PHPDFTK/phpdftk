@@ -2397,6 +2397,41 @@ final class PainterTest extends TestCase
         self::assertNotNull($found, 'expected translate cm operator in ' . implode(' | ', $ops));
     }
 
+    public function testIndividualTranslatePropertyEmitsCmMatrix(): void
+    {
+        // CSS Transforms 2 §5 — the `translate` property (no parens) applies
+        // like translate(): `translate: 10px 20px` → cm (1 0 0 1 10 -20).
+        $root = $this->buildStraddlingBox(40.0, 80.0, 'red', null);
+        $div = $this->firstDivBox($root);
+        $div->style->set('translate', new \Phpdftk\Css\Value\ValueList(
+            [new \Phpdftk\Css\Value\Length(10.0, \Phpdftk\Css\Value\LengthUnit::Px),
+                new \Phpdftk\Css\Value\Length(20.0, \Phpdftk\Css\Value\LengthUnit::Px)],
+            \Phpdftk\Css\Value\ListSeparator::Space,
+        ));
+        $stream = $this->paintAndGetStream($root, new Painter(100.0));
+        self::assertNotNull(
+            $this->findCmOp($stream->getOperators(), '/^1 0 0 1 10 -20 cm$/'),
+            'translate property emits a cm matrix',
+        );
+    }
+
+    public function testIndividualScaleAndTranslateComposeInOrder(): void
+    {
+        // §5 order: translate THEN scale. scale:2 + translate:10px → the
+        // composed matrix scales by 2 with the translate applied first
+        // (a=d=2, e=10, f=0 in PDF space; translate is not scaled because
+        // it composes ahead of the scale).
+        $root = $this->buildStraddlingBox(40.0, 80.0, 'red', null);
+        $div = $this->firstDivBox($root);
+        $div->style->set('translate', new \Phpdftk\Css\Value\Length(10.0, \Phpdftk\Css\Value\LengthUnit::Px));
+        $div->style->set('scale', new \Phpdftk\Css\Value\Number(2.0));
+        $stream = $this->paintAndGetStream($root, new Painter(100.0));
+        self::assertNotNull(
+            $this->findCmOp($stream->getOperators(), '/^2 0 0 2 10 0 cm$/'),
+            'translate then scale compose in order',
+        );
+    }
+
     public function testTransformRotateEmitsRotationMatrix(): void
     {
         // `rotate(90deg)` → cm matrix [0, -1, 1, 0, 0, 0] (with
@@ -2744,6 +2779,21 @@ final class PainterTest extends TestCase
             }
         }
         return null;
+    }
+
+    private function firstDivBox(\Phpdftk\HtmlToPdf\Box\Box $root): \Phpdftk\HtmlToPdf\Box\Box
+    {
+        $stack = [$root];
+        while ($stack !== []) {
+            $node = array_pop($stack);
+            if ($node->element !== null && $node->element->localName === 'div') {
+                return $node;
+            }
+            foreach ($node->children as $c) {
+                $stack[] = $c;
+            }
+        }
+        self::fail('no div box found');
     }
 
     private function applyTransformToFirstBox(

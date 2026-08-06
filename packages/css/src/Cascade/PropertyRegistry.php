@@ -840,6 +840,13 @@ final class PropertyRegistry
         // pivot point. Both are non-inherited per spec. Phase-2
         // implementation honours the 2D subset.
         $r->register($initial('transform', new Keyword('none')));
+        // CSS Transforms 2 §5 — the individual transform properties
+        // `translate` / `rotate` / `scale` are non-inherited, initial
+        // `none`, and compose (in that order) BEFORE the `transform`
+        // property. The painter reads their computed values directly.
+        $r->register($initial('translate', new Keyword('none')));
+        $r->register($initial('rotate', new Keyword('none')));
+        $r->register($initial('scale', new Keyword('none')));
         $r->register($initial('transform-origin', new ValueList(
             [new Percentage(50.0), new Percentage(50.0)],
             ListSeparator::Space,

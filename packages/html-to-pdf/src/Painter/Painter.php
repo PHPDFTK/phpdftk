@@ -1239,11 +1239,18 @@ final class Painter
      */
     private function applyBoxTransform(Box $box, ContentStream $stream): bool
     {
+        // CSS Transforms 2 §5 — the individual transform properties apply in
+        // order (translate, rotate, scale) BEFORE the `transform` list, all
+        // sharing one transform-origin. Build a combined function list.
+        $functions = $this->individualTransformFunctions($box);
         $value = $box->style->get('transform');
-        if (!$value instanceof \Phpdftk\Css\Value\Transform || $value->functions === []) {
+        if ($value instanceof \Phpdftk\Css\Value\Transform) {
+            $functions = array_merge($functions, $value->functions);
+        }
+        if ($functions === []) {
             return false;
         }
-        $matrix = $this->composeTransformMatrix($value, $box);
+        $matrix = $this->composeTransformMatrix(new \Phpdftk\Css\Value\Transform($functions), $box);
         if ($matrix === null) {
             return false;
         }
@@ -1283,6 +1290,149 @@ final class Painter
             $any = true;
         }
         return $any ? $result : null;
+    }
+
+    /**
+     * CSS Transforms 2 §5 — the transform functions contributed by the
+     * individual `translate` / `rotate` / `scale` properties, in that
+     * order (they compose before the `transform` list). Each reads its
+     * computed value directly; `none` / absent / malformed → skipped.
+     *
+     * @return list<\Phpdftk\Css\Value\TransformFunction>
+     */
+    private function individualTransformFunctions(Box $box): array
+    {
+        $out = [];
+        $t = $this->individualTranslate($box->style->get('translate'));
+        if ($t !== null) {
+            $out[] = $t;
+        }
+        $r = $this->individualRotate($box->style->get('rotate'));
+        if ($r !== null) {
+            $out[] = $r;
+        }
+        $s = $this->individualScale($box->style->get('scale'));
+        if ($s !== null) {
+            $out[] = $s;
+        }
+        return $out;
+    }
+
+    /**
+     * Unwrap a transform property's computed value into its component
+     * list. `none` / null → null (skip); a space-separated ValueList →
+     * its values; a single value → a one-element list.
+     *
+     * @return list<\Phpdftk\Css\Value\Value>|null
+     */
+    private function transformPropertyComponents(?\Phpdftk\Css\Value\Value $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        if ($value instanceof Keyword && strtolower($value->name) === 'none') {
+            return null;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            return $value->values;
+        }
+        return [$value];
+    }
+
+    private function individualTranslate(?\Phpdftk\Css\Value\Value $value): ?\Phpdftk\Css\Value\TranslateTransform
+    {
+        $c = $this->transformPropertyComponents($value);
+        if ($c === null || $c === []) {
+            return null;
+        }
+        $x = $c[0];
+        if (!($x instanceof \Phpdftk\Css\Value\Length || $x instanceof \Phpdftk\Css\Value\Percentage)) {
+            return null;
+        }
+        $y = $c[1] ?? new \Phpdftk\Css\Value\Length(0.0, \Phpdftk\Css\Value\LengthUnit::Px);
+        if (!($y instanceof \Phpdftk\Css\Value\Length || $y instanceof \Phpdftk\Css\Value\Percentage)) {
+            return null;
+        }
+        $z = ($c[2] ?? null) instanceof \Phpdftk\Css\Value\Length ? $c[2] : null;
+        return new \Phpdftk\Css\Value\TranslateTransform($x, $y, $z);
+    }
+
+    private function individualScale(?\Phpdftk\Css\Value\Value $value): ?\Phpdftk\Css\Value\ScaleTransform
+    {
+        $c = $this->transformPropertyComponents($value);
+        if ($c === null || $c === []) {
+            return null;
+        }
+        $sx = $this->transformNumber($c[0]);
+        if ($sx === null) {
+            return null;
+        }
+        $sy = isset($c[1]) ? $this->transformNumber($c[1]) : $sx;
+        if ($sy === null) {
+            return null;
+        }
+        $sz = isset($c[2]) ? $this->transformNumber($c[2]) : null;
+        return new \Phpdftk\Css\Value\ScaleTransform($sx, $sy, $sz);
+    }
+
+    private function individualRotate(?\Phpdftk\Css\Value\Value $value): ?\Phpdftk\Css\Value\RotateTransform
+    {
+        $c = $this->transformPropertyComponents($value);
+        if ($c === null || $c === []) {
+            return null;
+        }
+        $ax = 0.0;
+        $ay = 0.0;
+        $az = 1.0;
+        $angle = null;
+        if (count($c) === 1) {
+            // `rotate: <angle>` → 2D rotation about Z.
+            $angle = $c[0];
+        } elseif (count($c) === 2 && $c[0] instanceof Keyword) {
+            // `rotate: [x|y|z] <angle>`.
+            switch (strtolower($c[0]->name)) {
+                case 'x': $ax = 1.0;
+                    $ay = 0.0;
+                    $az = 0.0;
+                    break;
+                case 'y': $ax = 0.0;
+                    $ay = 1.0;
+                    $az = 0.0;
+                    break;
+                case 'z': $ax = 0.0;
+                    $ay = 0.0;
+                    $az = 1.0;
+                    break;
+                default: return null;
+            }
+            $angle = $c[1];
+        } elseif (count($c) === 4) {
+            // `rotate: <number>{3} <angle>` (axis vector + angle).
+            $ax = $this->transformNumber($c[0]);
+            $ay = $this->transformNumber($c[1]);
+            $az = $this->transformNumber($c[2]);
+            if ($ax === null || $ay === null || $az === null) {
+                return null;
+            }
+            $angle = $c[3];
+        } else {
+            return null;
+        }
+        if (!$angle instanceof \Phpdftk\Css\Value\Angle) {
+            return null;
+        }
+        return new \Phpdftk\Css\Value\RotateTransform($angle->toDegrees(), $ax, $ay, $az);
+    }
+
+    private function transformNumber(\Phpdftk\Css\Value\Value $value): ?float
+    {
+        if ($value instanceof \Phpdftk\Css\Value\Number) {
+            return $value->value;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Integer) {
+            return (float) $value->value;
+        }
+        return null;
     }
 
     /**
