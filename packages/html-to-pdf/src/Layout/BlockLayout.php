@@ -8057,14 +8057,28 @@ final class BlockLayout
             $crossGapCentres[$l] = ($lineData[$l]['cross'][1] + $lineData[$l + 1]['cross'][0]) / 2.0;
         }
 
+        // CSS Gaps 1 §3.2 — `intersection` break shortens the rules so they
+        // stop at the perpendicular gaps rather than running through them
+        // (the `spanning-item` default extends to the gap centres). Read
+        // per axis; `inset` is treated as 0 (the intersection fixtures set
+        // `*-rule-inset: 0`; non-zero insets are left unsupported).
+        $mainBreakIntersection = $this->gapRuleBreakIsIntersection($style, $mainRulePrefix);
+        $crossBreakIntersection = $this->gapRuleBreakIsIntersection($style, $crossRulePrefix);
+
         $segments = [];
 
         // Main-axis rules: within each line, one per inter-item gap. Cross
-        // span runs gap-centre → gap-centre (content edge at the ends).
+        // span runs gap-centre → gap-centre (`spanning-item`), or the line's
+        // own item extent when `intersection` breaks it at the row gaps.
         if ($mainRuleVisible) {
             for ($l = 0; $l < $lineCount; $l++) {
-                $bandStart = $l === 0 ? $crossContentStart : $crossGapCentres[$l - 1];
-                $bandEnd = $l === $lineCount - 1 ? $crossContentEnd : $crossGapCentres[$l];
+                if ($mainBreakIntersection) {
+                    $bandStart = $lineData[$l]['cross'][0];
+                    $bandEnd = $lineData[$l]['cross'][1];
+                } else {
+                    $bandStart = $l === 0 ? $crossContentStart : $crossGapCentres[$l - 1];
+                    $bandEnd = $l === $lineCount - 1 ? $crossContentEnd : $crossGapCentres[$l];
+                }
                 $items = $lineData[$l]['items'];
                 $itemCount = count($items);
                 for ($k = 0; $k < $itemCount - 1; $k++) {
@@ -8079,22 +8093,73 @@ final class BlockLayout
             }
         }
 
-        // Cross-axis rules: between consecutive lines, spanning the whole
-        // main content extent. Appended last so they paint over the
-        // main-axis rules at intersections (matching the WPT references).
+        // Cross-axis rules: between consecutive lines. `spanning-item` spans
+        // the whole main content extent; `intersection` draws only where
+        // *both* adjacent lines have an item at that main position (the
+        // pairwise intersection of the two lines' item coverage), broken at
+        // every column gap. Appended last so they paint over the main-axis
+        // rules at intersections (matching the WPT references).
         if ($crossRuleVisible) {
             for ($l = 0; $l < $lineCount - 1; $l++) {
                 $centre = $crossGapCentres[$l];
-                // Fixed cross = $centre, span main [$mainContentStart, $mainContentEnd].
-                if ($isColumn) {
-                    $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $centre, 'y1' => $mainContentStart, 'x2' => $centre, 'y2' => $mainContentEnd];
+                if ($crossBreakIntersection) {
+                    foreach ($this->intersectItemCoverage($lineData[$l]['items'], $lineData[$l + 1]['items']) as [$s, $e]) {
+                        if ($isColumn) {
+                            $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $centre, 'y1' => $s, 'x2' => $centre, 'y2' => $e];
+                        } else {
+                            $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $s, 'y1' => $centre, 'x2' => $e, 'y2' => $centre];
+                        }
+                    }
                 } else {
-                    $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $mainContentStart, 'y1' => $centre, 'x2' => $mainContentEnd, 'y2' => $centre];
+                    // Fixed cross = $centre, span main [$mainContentStart, $mainContentEnd].
+                    if ($isColumn) {
+                        $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $centre, 'y1' => $mainContentStart, 'x2' => $centre, 'y2' => $mainContentEnd];
+                    } else {
+                        $segments[] = ['prefix' => $crossRulePrefix, 'x1' => $mainContentStart, 'y1' => $centre, 'x2' => $mainContentEnd, 'y2' => $centre];
+                    }
                 }
             }
         }
 
         $box->gapRuleSegments = $segments;
+    }
+
+    /**
+     * Whether a gap rule uses `*-rule-break: intersection` (CSS Gaps 1
+     * §3.2) — i.e. the rule breaks at every perpendicular gap rather than
+     * running through it.
+     */
+    private function gapRuleBreakIsIntersection(CascadedValues $style, string $prefix): bool
+    {
+        $value = $style->get("$prefix-break");
+
+        return $value instanceof Keyword && strtolower($value->name) === 'intersection';
+    }
+
+    /**
+     * Pairwise-intersect two lists of `[start, end]` main-axis intervals,
+     * returning the overlapping sub-intervals. Used by the `intersection`
+     * gap-rule break to draw a cross-axis rule only where adjacent flex
+     * lines both have an item at the same main position.
+     *
+     * @param list<array{0: float, 1: float}> $a
+     * @param list<array{0: float, 1: float}> $b
+     * @return list<array{0: float, 1: float}>
+     */
+    private function intersectItemCoverage(array $a, array $b): array
+    {
+        $out = [];
+        foreach ($a as [$as, $ae]) {
+            foreach ($b as [$bs, $be]) {
+                $s = max($as, $bs);
+                $e = min($ae, $be);
+                if ($e > $s) {
+                    $out[] = [$s, $e];
+                }
+            }
+        }
+
+        return $out;
     }
 
     /**

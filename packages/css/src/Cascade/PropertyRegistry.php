@@ -914,6 +914,13 @@ final class PropertyRegistry
         $r->register($initial('row-rule-width', new Length(3.0, LengthUnit::Px))); // medium
         $r->register($initial('row-rule-style', new Keyword('none')));
         $r->register($initial('row-rule-color', new Keyword('currentcolor')));
+        // CSS Gaps 1 §3.2 — `*-rule-break` controls how a gap rule is
+        // segmented at intersections with the perpendicular gap. Initial
+        // `spanning-item`: rules break where a spanning item covers the
+        // gap but run continuously through perpendicular intersections;
+        // `intersection` additionally breaks at every perpendicular gap.
+        $r->register($initial('column-rule-break', new Keyword('spanning-item')));
+        $r->register($initial('row-rule-break', new Keyword('spanning-item')));
         $r->register($initial('column-fill', new Keyword('balance')));
         $r->register($initial('column-span', new Keyword('none')));
         // CSS Multi-column 2 §3 — `column-height` (the fragmentainer height a

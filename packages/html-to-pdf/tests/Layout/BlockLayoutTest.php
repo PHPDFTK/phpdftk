@@ -2007,6 +2007,55 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(90.0, abs($rowRules[0]['x2'] - $rowRules[0]['x1']), 0.001, 'row-rule spans main content');
     }
 
+    public function testFlexGapRuleIntersectionBreakSegmentsCrossRule(): void
+    {
+        // CSS Gaps 1 §3.2 — `row-rule-break: intersection` draws the
+        // cross-axis rule only where both adjacent lines have an item at
+        // the same main position. Line 1 = [a(90), b(90)] (gap 90..110),
+        // line 2 = [c(200)] full-width. The row rule between them is the
+        // pairwise intersection: [0..90] and [110..200], broken at line 1's
+        // column gap — not one continuous [0..200] band.
+        $box = $this->buildTree(
+            '<html><body><main class="f">'
+            . '<div class="a"></div><div class="b"></div><div class="c"></div>'
+            . '</main></body></html>',
+            'html, body { display: block; margin: 0; }
+             .f { display: flex; flex-wrap: wrap; width: 200px;
+                  column-gap: 20px; row-gap: 20px;
+                  column-rule-style: solid; column-rule-width: 4px; column-rule-color: blue;
+                  column-rule-break: intersection;
+                  row-rule-style: solid; row-rule-width: 4px; row-rule-color: green;
+                  row-rule-break: intersection; }
+             .a, .b { width: 90px; height: 40px; }
+             .c { width: 200px; height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $flex = $this->find($box, 'main');
+        self::assertInstanceOf(FlexBox::class, $flex);
+
+        $rowRules = array_values(array_filter(
+            $flex->gapRuleSegments,
+            static fn(array $s): bool => $s['prefix'] === 'row-rule',
+        ));
+        // Two broken row-rule segments, not one continuous band.
+        self::assertCount(2, $rowRules, 'intersection breaks the row rule at the column gap');
+        $spans = array_map(
+            static fn(array $s): array => [round($s['x1'], 2), round($s['x2'], 2)],
+            $rowRules,
+        );
+        usort($spans, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+        self::assertSame([[0.0, 90.0], [110.0, 200.0]], $spans, 'segments are the pairwise item intersection');
+
+        // The single column rule between a and b spans only line 1's item
+        // extent (height 40), not down through the row gap.
+        $columnRules = array_values(array_filter(
+            $flex->gapRuleSegments,
+            static fn(array $s): bool => $s['prefix'] === 'column-rule',
+        ));
+        self::assertCount(1, $columnRules, 'one column rule between a and b');
+        self::assertEqualsWithDelta(40.0, abs($columnRules[0]['y2'] - $columnRules[0]['y1']), 0.001, 'intersection column rule spans only the item extent');
+    }
+
     public function testDetailsClosedByDefaultHidesNonSummaryContent(): void
     {
         // HTML 5 §4.11.1: without `[open]`, only the summary should
