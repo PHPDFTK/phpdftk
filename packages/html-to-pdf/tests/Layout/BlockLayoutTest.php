@@ -246,6 +246,26 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $fc->geometry->width, 2.0);
     }
 
+    public function testFloatHasNoEffectOnGridItem(): void
+    {
+        // CSS Grid 1 §4 / CSS Flexbox 1 §3 — `float` has no effect on a grid
+        // (or flex) item: its used float computes to `none` so it stays an
+        // in-flow item instead of being pulled out as a float.
+        // (WPT css-grid/grid-model/grid-inline-float-001.)
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="g"><div id="it" style="float: left">x</div></div></body></html>',
+            '#g { display: grid; }',
+        );
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        $float = $it->style->get('float');
+        self::assertTrue(
+            !($float instanceof \Phpdftk\Css\Value\Keyword)
+                || strtolower($float->name) === 'none',
+            'float on a grid item must be suppressed to none',
+        );
+    }
+
     public function testTypedAttrLengthResolvesToWidth(): void
     {
         // CSS Values 5 §11 — `width: attr(data-w type(<length>))` reads the

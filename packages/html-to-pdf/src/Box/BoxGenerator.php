@@ -257,6 +257,28 @@ final class BoxGenerator
             $values->set('display', new Keyword($blockified));
             $display = $blockified;
         }
+        // CSS Grid 1 §4 / CSS Flexbox 1 §3 — `float` and `clear` have NO
+        // effect on a grid / flex item: the used values compute to `none`,
+        // so a `float: left` item stays an in-flow grid/flex item instead of
+        // being pulled out of the formatting context as a float (which
+        // `isOutOfFlow` would otherwise do). Absolutely-positioned children
+        // are NOT items — they keep their own rules (and are already
+        // float:none per CSS 2.1 §9.7), so exclude them.
+        if (in_array($parentDisplay, ['flex', 'inline-flex', 'grid', 'inline-grid'], true)) {
+            $position = $values->get('position');
+            $isAbsPos = $position instanceof Keyword
+                && in_array(strtolower($position->name), ['absolute', 'fixed'], true);
+            if (!$isAbsPos) {
+                $floatVal = $values->get('float');
+                if ($floatVal instanceof Keyword && strtolower($floatVal->name) !== 'none') {
+                    $values->set('float', new Keyword('none'));
+                }
+                $clearVal = $values->get('clear');
+                if ($clearVal instanceof Keyword && strtolower($clearVal->name) !== 'none') {
+                    $values->set('clear', new Keyword('none'));
+                }
+            }
+        }
         // CSS Containment 2 §4 — `content-visibility: hidden` does NOT
         // suppress the box (unlike `display: none`). The element still
         // generates a box that lays out and paints its own background /
