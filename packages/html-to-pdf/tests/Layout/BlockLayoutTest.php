@@ -266,6 +266,29 @@ final class BlockLayoutTest extends TestCase
         );
     }
 
+    public function testTableFlexItemNotShrunkBelowMinContent(): void
+    {
+        // CSS Tables 3 §4 — a `display: table` flex item is not shrunk below
+        // its min-content block size even when `min-height: 0` opts out of
+        // the §4.5 automatic minimum (a table can't render shorter than its
+        // content). (WPT css-flexbox/table-as-item-min-content-height-1.)
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="fc">'
+            . '<div id="t"><div id="cell"><div id="inner"></div></div></div>'
+            . '<div id="sib"></div>'
+            . '</div></body></html>',
+            '#fc { display: flex; flex-direction: column; height: 0; width: 100px; }
+             #t { display: table; min-height: 0; width: 100px; }
+             #cell { display: table-cell; }
+             #inner { height: 50px; }
+             #sib { flex: 0 0 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $t = $this->findById($box, 't');
+        self::assertNotNull($t);
+        self::assertGreaterThanOrEqual(48.0, $t->geometry->height);
+    }
+
     public function testTypedAttrLengthResolvesToWidth(): void
     {
         // CSS Values 5 §11 — `width: attr(data-w type(<length>))` reads the

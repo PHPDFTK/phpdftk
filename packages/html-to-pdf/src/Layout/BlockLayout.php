@@ -5603,6 +5603,21 @@ final class BlockLayout
                 // to a small explicit `height`/`width`.
                 $minInner = max($minInner, $transferred);
             }
+            // CSS Tables 3 §4 — a table box can't be sized below its
+            // min-content extent; that floor holds even when the flex
+            // `min-*` opts out (e.g. `min-width: 0`) or the §4.5 automatic
+            // minimum was skipped, because a table can't render narrower
+            // (or shorter) than its content. Non-table items are unaffected.
+            if ($itemCtx !== null && $children[$i] instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+                $tableMin = $this->flexItemContentMainMin(
+                    $children[$i],
+                    $isColumn,
+                    $itemCtx,
+                    $transferred,
+                    $itemContentBlock[$i] ?? 0.0,
+                );
+                $minInner = max($minInner, $tableMin);
+            }
             $minOuter[$i] = max(0.0, ($minInner > 0.0 ? $minInner : 0.0) + $adornment);
             $maxOuter[$i] = $maxInner !== null && $maxInner > 0.0
                 ? $maxInner + $adornment
