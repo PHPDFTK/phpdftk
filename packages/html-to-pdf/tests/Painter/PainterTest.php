@@ -3502,6 +3502,42 @@ final class PainterTest extends TestCase
         self::assertContains('rg', $opcodes, 'masked box still paints its background');
     }
 
+    public function testUrlImageMaskInstallsAlphaSoftMask(): void
+    {
+        // CSS Masking 1 §4 — `mask-image: url(<image>)` in the default
+        // `match-source` mode masks the box by the image's ALPHA: an Alpha
+        // soft mask (`gs` + `/SMask /S /Alpha`) built from the resolved image
+        // is installed over the box paint — the element is NOT blanked.
+        $png = 'data:image/png;base64,' . base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px; background: purple;
+                   mask-image: url(' . $png . '); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('gs', $opcodes, 'url() image mask installs a soft-mask ExtGState');
+        $bytes = $writer->generate();
+        self::assertStringContainsString('/SMask', $bytes);
+        self::assertStringContainsString('/S /Alpha', $bytes);
+        self::assertContains('rg', $opcodes, 'masked box still paints its background (not blanked)');
+    }
+
     public function testNonDefaultMaskGeometryLeavesGradientMaskUnapplied(): void
     {
         // The gradient-mask path only models the default full-border-box

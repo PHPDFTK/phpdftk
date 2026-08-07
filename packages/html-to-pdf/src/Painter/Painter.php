@@ -1063,21 +1063,21 @@ final class Painter
         if ($this->boxEntirelyOffPage($box)) {
             return;
         }
-        // CSS Masking 1 §4.1 — a `mask-image` layer that cannot be
-        // resolved to a mask image is empty (transparent black), which
-        // masks the element AND its subtree fully out. We don't render
-        // `url()` mask sources, so a single `url(...)` mask layer means
-        // "definitively failed" → paint nothing. A gradient / `none` /
-        // multi-layer value is left alone (rendered unmasked for now)
-        // to avoid hiding content that merely uses an unsupported mask.
-        if ($this->maskHidesElement($box)) {
+        // CSS Masking 1 §4 — a `mask-image` masks the box (and its subtree)
+        // by the mask's alpha/luminance. Install a soft mask over the whole
+        // box paint (ISO 32000-2 §11.6.5.2). A `url(<image>)` mask builds an
+        // Alpha/Luminosity soft mask from the resolved image; a
+        // `<linear-gradient>` mask builds one from the gradient's alpha.
+        $maskGsName = $this->buildBoxImageMaskGsName($box, $stream)
+            ?? $this->buildBoxGradientMaskGsName($box, $stream);
+        // CSS Masking 1 §4.1 — a `mask-image` layer that cannot be resolved
+        // to a mask image is empty (transparent black), masking the element
+        // AND its subtree fully out. When we could NOT build a soft mask for
+        // a single `url(...)` layer (unresolvable source, or a mask box model
+        // we don't model yet), fall back to that "definitively failed" blank.
+        if ($maskGsName === null && $this->maskHidesElement($box)) {
             return;
         }
-        // CSS Masking 1 §4 — a `mask-image: <linear-gradient>` masks the
-        // box (and its subtree) by the gradient's alpha. Install a
-        // Luminosity soft mask over the whole box paint, mirroring how
-        // opacity wraps below (ISO 32000-2 §11.6.5.2).
-        $maskGsName = $this->buildBoxGradientMaskGsName($box, $stream);
         if ($maskGsName !== null) {
             $stream->saveGraphicsState();
             $stream->setGraphicsState($maskGsName);
@@ -2348,6 +2348,114 @@ final class Painter
      * `luminance` mode, or any non-default mask geometry longhand — so an
      * unsupported mask never silently hides content.
      */
+    /**
+     * CSS Masking 1 §4 — resolve a `mask-image: url(<image>)` to a soft-mask
+     * ExtGState name that masks the box by the image's alpha (`match-source`
+     * / `alpha`) or luminance (`mask-mode: luminance`). Increment 1 handles a
+     * single url() layer under the DEFAULT mask box model (border-box
+     * origin/clip, position 0 0, size auto, repeat) drawn to fill the border
+     * box; non-default geometry / multi-layer / url(#id) return null (the
+     * caller falls back, so the box paints unmasked or blank as before).
+     * Returns null when not applicable so the gradient builder can try next.
+     */
+    private function buildBoxImageMaskGsName(Box $box, ContentStream $stream): ?string
+    {
+        if ($this->writer === null || $this->page === null) {
+            return null;
+        }
+        $maskImage = $box->style->get('mask-image');
+        if (!$maskImage instanceof \Phpdftk\Css\Value\Url) {
+            return null;
+        }
+        // In-document SVG references (`url(#mask)`) need element resolution —
+        // a later increment; only external image URLs here.
+        $src = $maskImage->url;
+        if (str_starts_with(ltrim($src), '#')) {
+            return null;
+        }
+        // Only the default mask box model for now — mirror the gradient
+        // builder's initial-value comparison.
+        $defaults = [
+            'mask-repeat' => 'repeat',
+            'mask-size' => 'auto',
+            'mask-position' => '0% 0%',
+            'mask-clip' => 'border-box',
+            'mask-origin' => 'border-box',
+            'mask-composite' => 'add',
+        ];
+        foreach ($defaults as $prop => $initial) {
+            $value = $box->style->get($prop);
+            if ($value !== null && $value->toCss() !== $initial) {
+                return null;
+            }
+        }
+        // CSS Masking 1 §3.3 — `match-source` on an image (and explicit
+        // `alpha`) uses the image's ALPHA; explicit `luminance` uses its
+        // LUMINOSITY. (SVG `<mask>` elements default to luminance, but those
+        // are url(#id) references handled later.)
+        $subtype = 'Alpha';
+        $maskMode = $box->style->get('mask-mode');
+        if ($maskMode instanceof \Phpdftk\Css\Value\Keyword
+            && strtolower($maskMode->name) === 'luminance'
+        ) {
+            $subtype = 'Luminosity';
+        }
+        [$bx, $by, $bw, $bh] = $this->clipReferenceBox($box->geometry, 'border-box');
+        if ($bw <= 0.0 || $bh <= 0.0) {
+            return null;
+        }
+        $svgDoc = null;
+        $imgName = null;
+        $imgRef = null;
+        if ($this->isSvgSrc($src)) {
+            $svgDoc = $this->loadSvgDocument($src);
+            if ($svgDoc === null) {
+                return null;
+            }
+        } else {
+            $resolved = $this->resolveImageSrc($src);
+            if ($resolved === null) {
+                return null;
+            }
+            try {
+                $imgName = $this->writer->addImage($resolved, $this->page);
+            } catch (\Throwable) {
+                return null;
+            }
+            $imgRef = $this->page->corePage()->resources->xObject[$imgName] ?? null;
+            if ($imgRef === null) {
+                return null;
+            }
+        }
+        $pdfY = $this->pageHeight - $by - $bh;
+        try {
+            $doc = \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer);
+            $group = $doc->createTransparencyGroup(
+                new \Phpdftk\Geometry\Rectangle($bx, $pdfY, $bw, $bh),
+                function (
+                    ContentStream $cs,
+                    \Phpdftk\Pdf\Core\Content\Resources $res,
+                ) use ($svgDoc, $imgName, $imgRef, $bx, $pdfY, $bw, $bh): void {
+                    $cs->rectangle($bx, $pdfY, $bw, $bh);
+                    $cs->clip();
+                    $cs->endPath();
+                    if ($svgDoc !== null) {
+                        $this->svgRenderer()->draw($svgDoc, $bx, $pdfY, $bw, $bh, stream: $cs);
+                    } elseif ($imgName !== null && $imgRef !== null) {
+                        $res->addXObject($imgName, $imgRef);
+                        $cs->saveGraphicsState();
+                        $cs->concatMatrix($bw, 0.0, 0.0, $bh, $bx, $pdfY);
+                        $cs->doXObject($imgName);
+                        $cs->restoreGraphicsState();
+                    }
+                },
+            );
+            return $this->page->ensureSoftMaskState($group, $subtype);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function buildBoxGradientMaskGsName(Box $box, ContentStream $stream): ?string
     {
         if ($this->writer === null || $this->page === null) {
