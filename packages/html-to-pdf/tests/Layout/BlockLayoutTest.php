@@ -203,6 +203,29 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $it->geometry->height, 2.0);
     }
 
+    public function testNestedFlexItemStretchesToParentLine(): void
+    {
+        // CSS Flexbox 1 §9.4 — a nested flex container that its parent flex
+        // line cross-stretches gains a definite cross size, so ITS own
+        // align-items:stretch sizes ITS auto-height child to that same line
+        // height instead of collapsing it to the content height (0 here).
+        // (WPT css-flexbox/stretched-child-in-nested-flexbox-001.)
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="outer">'
+            . '<div id="sibling"></div>'
+            . '<div id="nested"><div id="inner"></div></div>'
+            . '</div></body></html>',
+            '#outer { display: flex; }
+             #sibling { width: 50px; height: 100px; }
+             #nested { display: flex; }
+             #inner { width: 50px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $inner = $this->findById($box, 'inner');
+        self::assertNotNull($inner);
+        self::assertEqualsWithDelta(100.0, $inner->geometry->height, 2.0);
+    }
+
     public function testTypedAttrLengthResolvesToWidth(): void
     {
         // CSS Values 5 §11 — `width: attr(data-w type(<length>))` reads the

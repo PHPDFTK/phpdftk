@@ -2711,8 +2711,11 @@ final class BlockLayout
      *
      * Returns the container's outer height.
      */
-    private function layoutFlexBox(\Phpdftk\HtmlToPdf\Box\FlexBox $box, LayoutContext $context): float
-    {
+    private function layoutFlexBox(
+        \Phpdftk\HtmlToPdf\Box\FlexBox $box,
+        LayoutContext $context,
+        ?float $definiteContentHeightOverride = null,
+    ): float {
         $style = $box->style;
         $cbWidth = $context->containingBlockWidth;
         $cbHeight = $context->containingBlockHeight;
@@ -2805,7 +2808,15 @@ final class BlockLayout
         $geo->x = $context->originX + $geo->marginLeft + $geo->borderLeft + $geo->paddingLeft;
         $geo->y = $context->originY + $geo->marginTop + $geo->borderTop + $geo->paddingTop;
 
-        $declaredHeight = $this->resolveExplicitHeightOrNull($style, $cbHeight);
+        // CSS Flexbox 1 §9.4 — when this flex container is itself a flex
+        // ITEM that the parent cross-stretched to a definite size, that
+        // stretched size makes the container's cross size definite for a
+        // second layout pass (so its own `align-items: stretch` can size
+        // ITS children against the real line). The parent passes that
+        // stretched CONTENT height here; treat it exactly like an author
+        // `height` (definite → `crossDefinite`, item %-heights resolve).
+        $declaredHeight = $definiteContentHeightOverride
+            ?? $this->resolveExplicitHeightOrNull($style, $cbHeight);
 
         // CSS Flexbox 1 §3 — absolutely-positioned children of a
         // flex container are NOT flex items. They take their
@@ -2934,6 +2945,11 @@ final class BlockLayout
             if (!$isColumn && $basis !== null && $mainIsAuto) {
                 $childCtx = $itemCtx->withContainingBlock($basis, $cbHeight);
             }
+            // Remember the exact context each item was laid out with, so a
+            // cross-stretched nested flex container can be re-laid-out with
+            // the same width constraint + origin but a now-definite height
+            // (CSS Flexbox 1 §9.4 second pass — see the stretch branch).
+            $childLayoutContexts[] = $childCtx;
             $this->layoutBox($child, $childCtx);
             // CSS Display 3 §2.7 — an inline-level box that is a flex item
             // is blockified. `layoutBox`'s atomic-inline path sizes the
@@ -3243,9 +3259,32 @@ final class BlockLayout
                                     - $childGeo->borderLeft - $childGeo->borderRight
                                     - $childGeo->paddingLeft - $childGeo->paddingRight;
                             } else {
-                                $childGeo->height = $lineCross - $childGeo->marginTop - $childGeo->marginBottom
+                                $stretchedContentHeight = $lineCross
+                                    - $childGeo->marginTop - $childGeo->marginBottom
                                     - $childGeo->borderTop - $childGeo->borderBottom
                                     - $childGeo->paddingTop - $childGeo->paddingBottom;
+                                $childGeo->height = $stretchedContentHeight;
+                                // CSS Flexbox 1 §9.4 — a stretched item that is
+                                // itself a ROW flex container now has a definite
+                                // cross size (this height). The first pass sized
+                                // ITS children against an indefinite cross (auto
+                                // → collapsed); re-run its flex layout with the
+                                // height definite so its own align-items:stretch
+                                // reaches ITS children. Gated to row-direction
+                                // FlexBox items (the exact nested-stretch case)
+                                // to keep the blast radius off the block path.
+                                $childDir = $this->flexKeyword($child->style, 'flex-direction', 'row');
+                                if ($child instanceof \Phpdftk\HtmlToPdf\Box\FlexBox
+                                    && ($childDir === 'row' || $childDir === 'row-reverse')
+                                    && $stretchedContentHeight > 0.0
+                                    && isset($childLayoutContexts[$i])
+                                ) {
+                                    $this->layoutFlexBox(
+                                        $child,
+                                        $childLayoutContexts[$i],
+                                        definiteContentHeightOverride: $stretchedContentHeight,
+                                    );
+                                }
                             }
                         }
                         break;
