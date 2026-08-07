@@ -2373,21 +2373,11 @@ final class Painter
         if (str_starts_with(ltrim($src), '#')) {
             return null;
         }
-        // Only the default mask box model for now — mirror the gradient
-        // builder's initial-value comparison.
-        $defaults = [
-            'mask-repeat' => 'repeat',
-            'mask-size' => 'auto',
-            'mask-position' => '0% 0%',
-            'mask-clip' => 'border-box',
-            'mask-origin' => 'border-box',
-            'mask-composite' => 'add',
-        ];
-        foreach ($defaults as $prop => $initial) {
-            $value = $box->style->get($prop);
-            if ($value !== null && $value->toCss() !== $initial) {
-                return null;
-            }
+        // Multi-layer mask compositing beyond a single `add` layer isn't
+        // modeled yet.
+        $composite = $box->style->get('mask-composite');
+        if ($composite !== null && $composite->toCss() !== 'add') {
+            return null;
         }
         // CSS Masking 1 §3.3 — `match-source` on an image (and explicit
         // `alpha`) uses the image's ALPHA; explicit `luminance` uses its
@@ -2400,8 +2390,20 @@ final class Painter
         ) {
             $subtype = 'Luminosity';
         }
-        [$bx, $by, $bw, $bh] = $this->clipReferenceBox($box->geometry, 'border-box');
-        if ($bw <= 0.0 || $bh <= 0.0) {
+        // CSS Masking 1 §4 — resolve the mask box model, reusing the
+        // background origin/clip/size/position/repeat machinery. mask-origin
+        // is the positioning area; mask-clip is the painted (group) region.
+        $origin = $this->backgroundOriginRect($box, $this->resolveMaskOrigin($box));
+        $clipName = $this->resolveMaskClip($box);
+        if ($clipName === 'no-clip') {
+            $clipX = 0.0;
+            $clipTop = 0.0;
+            $clipW = $this->pageWidth;
+            $clipH = $this->pageHeight;
+        } else {
+            [$clipX, $clipTop, $clipW, $clipH] = $this->clipReferenceBox($box->geometry, $clipName);
+        }
+        if ($clipW <= 0.0 || $clipH <= 0.0) {
             return null;
         }
         $svgDoc = null;
@@ -2427,33 +2429,99 @@ final class Painter
                 return null;
             }
         }
-        $pdfY = $this->pageHeight - $by - $bh;
+        // Final paint size (mask-size) then position (mask-position) within
+        // the positioning area.
+        $paint = $this->resolveBackgroundSize(
+            $box->style->get('mask-size'),
+            $src,
+            $origin['width'],
+            $origin['height'],
+        );
+        $maskPos = $box->style->get('mask-position');
+        if ($maskPos !== null) {
+            $pos = $this->resolveBackgroundPosition(
+                $maskPos,
+                $paint['w'],
+                $paint['h'],
+                $origin['width'],
+                $origin['height'],
+            );
+            $paint['offsetX'] = $pos['offsetX'];
+            $paint['offsetY'] = $pos['offsetY'];
+        }
+        $maskRepeat = $box->style->get('mask-repeat');
+        $clipPdfY = $this->pageHeight - $clipTop - $clipH;
         try {
             $doc = \Phpdftk\Pdf\Writer\PdfDoc::wrap($this->writer);
             $group = $doc->createTransparencyGroup(
-                new \Phpdftk\Geometry\Rectangle($bx, $pdfY, $bw, $bh),
+                new \Phpdftk\Geometry\Rectangle($clipX, $clipPdfY, $clipW, $clipH),
                 function (
                     ContentStream $cs,
                     \Phpdftk\Pdf\Core\Content\Resources $res,
-                ) use ($svgDoc, $imgName, $imgRef, $bx, $pdfY, $bw, $bh): void {
-                    $cs->rectangle($bx, $pdfY, $bw, $bh);
-                    $cs->clip();
-                    $cs->endPath();
-                    if ($svgDoc !== null) {
-                        $this->svgRenderer()->draw($svgDoc, $bx, $pdfY, $bw, $bh, stream: $cs);
-                    } elseif ($imgName !== null && $imgRef !== null) {
-                        $res->addXObject($imgName, $imgRef);
-                        $cs->saveGraphicsState();
-                        $cs->concatMatrix($bw, 0.0, 0.0, $bh, $bx, $pdfY);
-                        $cs->doXObject($imgName);
-                        $cs->restoreGraphicsState();
-                    }
+                ) use ($svgDoc, $imgName, $imgRef, $clipX, $clipTop, $clipW, $clipH, $paint, $maskRepeat, $origin): void {
+                    $register = ($imgName !== null && $imgRef !== null)
+                        ? function (string $n) use ($res, $imgRef): void {
+                            $res->addXObject($n, $imgRef);
+                        }
+                    : null;
+                    $this->drawImageTilesInto(
+                        $cs,
+                        $svgDoc,
+                        $imgName,
+                        $clipX,
+                        $clipTop,
+                        $clipW,
+                        $clipH,
+                        $paint,
+                        $maskRepeat,
+                        $origin['x'],
+                        $origin['top'],
+                        $origin['width'],
+                        $origin['height'],
+                        $register,
+                    );
                 },
             );
             return $this->page->ensureSoftMaskState($group, $subtype);
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * CSS Masking 1 §4.5 — `mask-origin` positioning box. Initial `border-box`
+     * (unlike `background-origin`'s `padding-box`).
+     */
+    private function resolveMaskOrigin(Box $box): string
+    {
+        $v = $box->style->get('mask-origin');
+        if ($v instanceof \Phpdftk\Css\Value\Keyword) {
+            $n = strtolower($v->name);
+            if (in_array($n, ['content-box', 'padding-box', 'border-box'], true)) {
+                return $n;
+            }
+        }
+        return 'border-box';
+    }
+
+    /**
+     * CSS Masking 1 §4.6 — `mask-clip` painting box (initial `border-box`).
+     * `no-clip` leaves the mask unclipped; SVG visual boxes (fill/stroke/
+     * view-box) map to the nearest supported CSS box.
+     */
+    private function resolveMaskClip(Box $box): string
+    {
+        $v = $box->style->get('mask-clip');
+        if ($v instanceof \Phpdftk\Css\Value\Keyword) {
+            $n = strtolower($v->name);
+            if ($n === 'no-clip') {
+                return 'no-clip';
+            }
+            if (in_array($n, ['content-box', 'padding-box', 'border-box'], true)) {
+                return $n;
+            }
+        }
+        return 'border-box';
     }
 
     private function buildBoxGradientMaskGsName(Box $box, ContentStream $stream): ?string
@@ -5468,6 +5536,55 @@ final class Painter
             $paint['offsetX'] = $pos['offsetX'];
             $paint['offsetY'] = $pos['offsetY'];
         }
+        $this->drawImageTilesInto(
+            $stream,
+            $svgDoc,
+            $name,
+            $x,
+            $top,
+            $width,
+            $height,
+            $paint,
+            $repeatValue,
+            $originX,
+            $originTop,
+            $originWidth,
+            $originHeight,
+            null,
+        );
+    }
+
+    /**
+     * Tile an image (an SVG doc OR a raster XObject `$name`) across a
+     * positioning area, clipped to a rect, per CSS Backgrounds 3 §3.7-3.9
+     * (background-size / -position / -repeat already folded into `$paint`
+     * and `$repeatValue`). Extracted from {@see paintBackgroundImage} so the
+     * mask painter can reuse it to draw a `mask-image: url()` into a soft-mask
+     * transparency group. `$registerXObject`, when given, is called with the
+     * XObject name before each `Do` so the caller can register the image in
+     * the target stream's resources (needed for a transparency group, which
+     * has its own resources); the background path passes null (the image is
+     * already in the page resources).
+     *
+     * @param array{w: float, h: float, offsetX: float, offsetY: float} $paint
+     * @param \Closure(string): void|null $registerXObject
+     */
+    private function drawImageTilesInto(
+        ContentStream $stream,
+        ?\Phpdftk\Svg\SvgDocument $svgDoc,
+        ?string $name,
+        float $x,
+        float $top,
+        float $width,
+        float $height,
+        array $paint,
+        ?\Phpdftk\Css\Value\Value $repeatValue,
+        float $originX,
+        float $originTop,
+        float $originWidth,
+        float $originHeight,
+        ?\Closure $registerXObject = null,
+    ): void {
         $pdfY = $this->pageHeight - $top - $height;
         $stream->saveGraphicsState();
         // `cover` may overflow the box; clip to box rect so the overflow
@@ -5554,6 +5671,10 @@ final class Painter
                         stream: $stream,
                     );
                 } else {
+                    assert($name !== null);
+                    if ($registerXObject !== null) {
+                        $registerXObject($name);
+                    }
                     $stream->saveGraphicsState();
                     $stream->concatMatrix(
                         $tileW,
@@ -5563,7 +5684,6 @@ final class Painter
                         $originX + $offsetX,
                         $tileBottomY,
                     );
-                    assert($name !== null);
                     $stream->doXObject($name);
                     $stream->restoreGraphicsState();
                 }
