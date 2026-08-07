@@ -305,6 +305,17 @@ final class ShorthandExpanderTest extends TestCase
         self::assertArrayNotHasKey('background-color', $out);
     }
 
+    public function testBackgroundImageFunctionNotationRoutesToBackgroundImage(): void
+    {
+        // CSS Images 4 — the `image()` functional notation is an <image>, so
+        // in the `background` shorthand it must route to background-image (the
+        // painter resolves it to its first supported url or fallback colour).
+        // Without this it is dropped and an earlier `background: red` wins.
+        $out = $this->expander->expand('background', $this->value('image("x.png", green)'));
+        self::assertInstanceOf(\Phpdftk\Css\Value\CssFunction::class, $out['background-image'] ?? null);
+        self::assertSame('image', strtolower($out['background-image']->name));
+    }
+
     public function testBackgroundWithUrlAndPosition(): void
     {
         $out = $this->expander->expand('background', $this->value('url(bg.png) top left repeat'));

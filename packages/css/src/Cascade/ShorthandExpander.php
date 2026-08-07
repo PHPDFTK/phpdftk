@@ -763,12 +763,16 @@ final class ShorthandExpander
                 }
                 continue;
             }
-            // CSS Backgrounds 3 §3.1 — `background-image` accepts
-            // any <image>: url, image-set, gradient, cross-fade.
+            // CSS Backgrounds 3 §3.1 / CSS Images 4 — `background-image`
+            // accepts any <image>: url, image-set, gradient, cross-fade, and
+            // the `image()` functional notation (a CssFunction the painter
+            // resolves to its first supported url or its fallback colour).
             if ($c instanceof \Phpdftk\Css\Value\Url
                 || $c instanceof \Phpdftk\Css\Value\Gradient
                 || $c instanceof \Phpdftk\Css\Value\ImageSet
                 || $c instanceof \Phpdftk\Css\Value\CrossFade
+                || ($c instanceof \Phpdftk\Css\Value\CssFunction
+                    && strtolower($c->name) === 'image')
             ) {
                 $image = $c;
                 continue;
