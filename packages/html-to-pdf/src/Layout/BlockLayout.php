@@ -5987,10 +5987,12 @@ final class BlockLayout
         $minContent = 0.0;
         $itemMaxes = [];
         $itemMins = [];
+        $inFlowChildren = [];
         foreach ($box->children as $child) {
             if ($this->isOutOfFlow($child)) {
                 continue;
             }
+            $inFlowChildren[] = $child;
             $mm = $this->measureMinMaxContent($child, $childCtx);
             $childStyle = $child->style;
             $mbpx = $this->resolveLength($childStyle->get('margin-left'), $context->containingBlockWidth)
@@ -6022,8 +6024,26 @@ final class BlockLayout
             $maxContent = 0.0;
             $minContent = 0.0;
         } elseif ($isColumn) {
-            $maxContent = max($itemMaxes);
-            $minContent = max($itemMins);
+            // CSS Flexbox 1 §9.9 — a `flex-flow: column wrap` container with
+            // a definite main (height) size wraps items into several columns,
+            // so its intrinsic INLINE size is the SUM of each column's widest
+            // item (plus cross gaps), not just the single widest item. Falls
+            // back to the single-column `max()` when not wrapping / main size
+            // indefinite / any item's main size isn't definite.
+            $wrapped = $this->columnWrapIntrinsicWidth(
+                $box,
+                $context,
+                $inFlowChildren,
+                $itemMaxes,
+                $itemMins,
+            );
+            if ($wrapped !== null) {
+                $maxContent = $wrapped['max'];
+                $minContent = $wrapped['min'];
+            } else {
+                $maxContent = max($itemMaxes);
+                $minContent = max($itemMins);
+            }
         } else {
             // CSS Flexbox 1 §9.9.1 + Box Alignment §8 — a row flex
             // container's max-content main size is the sum of item
@@ -6039,6 +6059,106 @@ final class BlockLayout
             $minContent = max($itemMins);
         }
         return ['max' => $maxContent, 'min' => $minContent];
+    }
+
+    /**
+     * CSS Flexbox 1 §9.9 — intrinsic inline (cross) size of a
+     * `flex-flow: column wrap` container whose main (height) size is
+     * definite. Its items wrap into columns by that height, so the width
+     * is the SUM of each column's widest item plus the cross gaps between
+     * columns — not the single widest item the no-wrap path assumes.
+     *
+     * Returns `null` (caller falls back to `max()`) when wrapping is off,
+     * the main size is indefinite, or any item lacks a definite outer main
+     * size (which would need a content-height layout pass to partition).
+     *
+     * @param list<\Phpdftk\HtmlToPdf\Box\Box> $inFlowChildren document order
+     * @param list<float> $itemMaxes per-item max-content cross (outer width)
+     * @param list<float> $itemMins  per-item min-content cross (outer width)
+     * @return array{max: float, min: float}|null
+     */
+    private function columnWrapIntrinsicWidth(
+        \Phpdftk\HtmlToPdf\Box\FlexBox $box,
+        LayoutContext $context,
+        array $inFlowChildren,
+        array $itemMaxes,
+        array $itemMins,
+    ): ?array {
+        $wrap = $this->flexKeyword($box->style, 'flex-wrap', 'nowrap');
+        if ($wrap !== 'wrap' && $wrap !== 'wrap-reverse') {
+            return null;
+        }
+        $mainSize = $this->resolveExplicitHeightOrNull($box->style, $context->containingBlockHeight);
+        if ($mainSize === null) {
+            // An indefinite height still bounds the wrap column length when a
+            // definite `max-height` caps it (CSS Flexbox 1 §9.9 / Sizing 3).
+            $maxH = $box->style->get('max-height');
+            if (($maxH instanceof Length || $maxH instanceof Percentage)
+                && $this->sizingKeywordName($maxH) === null
+            ) {
+                $mainSize = $this->resolveLength($maxH, $context->containingBlockHeight);
+            }
+        }
+        if ($mainSize === null || $mainSize <= 0.0) {
+            return null;
+        }
+        $cbWidth = $context->containingBlockWidth;
+        // Reorder by `order`, carry each item's cross contribution, and
+        // resolve each item's outer MAIN (height) size — bail if any item's
+        // main size is indefinite (auto height + no flex-basis length).
+        $entries = [];
+        foreach ($inFlowChildren as $i => $child) {
+            $s = $child->style;
+            $basis = $this->resolveFlexBasis($s, $mainSize);
+            if ($basis === null) {
+                $h = $s->get('height');
+                if ($h === null || $this->isAuto($h) || $this->sizingKeywordName($h) !== null) {
+                    return null;
+                }
+                $basis = $this->resolveLength($h, $mainSize);
+            }
+            $outerMain = max(0.0, $basis)
+                + $this->resolveLength($s->get('margin-top'), $cbWidth)
+                + $this->resolveLength($s->get('margin-bottom'), $cbWidth)
+                + $this->resolveBorderWidth($s, 'top')
+                + $this->resolveBorderWidth($s, 'bottom')
+                + $this->resolveLength($s->get('padding-top'), $cbWidth)
+                + $this->resolveLength($s->get('padding-bottom'), $cbWidth);
+            $entries[] = [
+                'order' => $this->resolveFlexOrder($s),
+                'doc' => $i,
+                'main' => max(0.0, $outerMain),
+                'max' => $itemMaxes[$i],
+                'min' => $itemMins[$i],
+            ];
+        }
+        if ($entries === []) {
+            return null;
+        }
+        usort($entries, static function (array $a, array $b): int {
+            return $a['order'] !== $b['order']
+                ? $a['order'] <=> $b['order']
+                : $a['doc'] <=> $b['doc'];
+        });
+        $mains = array_map(static fn(array $e): float => $e['main'], $entries);
+        $mainGap = $this->resolveFlexGapProperty($box->style, 'row-gap', $mainSize);
+        $columns = $this->partitionFlexLines($mains, $mainGap, $mainSize);
+        $crossGap = $this->resolveFlexGapProperty($box->style, 'column-gap', $cbWidth);
+        $maxW = 0.0;
+        $minW = 0.0;
+        foreach ($columns as $col) {
+            $colMax = 0.0;
+            $colMin = 0.0;
+            foreach ($col as $idx) {
+                $colMax = max($colMax, $entries[$idx]['max']);
+                $colMin = max($colMin, $entries[$idx]['min']);
+            }
+            $maxW += $colMax;
+            $minW += $colMin;
+        }
+        $gaps = $crossGap * (float) max(0, count($columns) - 1);
+
+        return ['max' => $maxW + $gaps, 'min' => $minW + $gaps];
     }
 
     /**

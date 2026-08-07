@@ -226,6 +226,26 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $inner->geometry->height, 2.0);
     }
 
+    public function testColumnWrapContainerMaxContentWidthSumsColumns(): void
+    {
+        // CSS Flexbox 1 §9.9 — a `flex-flow: column wrap` container with a
+        // definite height wraps items into several columns; its max-content
+        // width is the SUM of the columns' widths, not the single widest
+        // item. Two 100px-tall items in a 100px-tall column wrap into two
+        // 50px columns → 100px wide. (WPT intrinsic-size/col-wrap-001.)
+        $box = $this->buildTreeWithUa(
+            '<html><body><div id="fc">'
+            . '<div class="it"></div><div class="it"></div>'
+            . '</div></body></html>',
+            '#fc { display: flex; flex-flow: column wrap; height: 100px; width: max-content; }
+             .it { width: 50px; flex: 0 0 100px; min-height: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $fc = $this->findById($box, 'fc');
+        self::assertNotNull($fc);
+        self::assertEqualsWithDelta(100.0, $fc->geometry->width, 2.0);
+    }
+
     public function testTypedAttrLengthResolvesToWidth(): void
     {
         // CSS Values 5 §11 — `width: attr(data-w type(<length>))` reads the
