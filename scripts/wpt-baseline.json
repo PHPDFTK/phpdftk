@@ -1,26 +1,26 @@
 {
-  "_comment": "Per-bucket in-scope PASS-COUNT floor for the WPT regression gate (scripts/wpt-scoreboard.php). Gate on counts, not percentages: counts are stable while the corpus total drifts. `tolerance` absorbs rasterisation \u00b11 jitter. Refresh after intentional gains with: php scripts/wpt-scoreboard.php --update. Numbers are settler-OFF (deterministic, no Playwright dependency).",
+  "_comment": "Per-bucket in-scope PASS-COUNT floor for the WPT regression gate (scripts/wpt-scoreboard.php). Gate on counts, not percentages: counts are stable while the corpus total drifts. `tolerance` absorbs rasterisation ±1 jitter. Refresh after intentional gains with: php scripts/wpt-scoreboard.php --update. Numbers are settler-OFF (deterministic, no Playwright dependency) and rendered with the harness DEFAULT FONT (DejaVu Serif) so text-dependent reftests actually exercise text rather than passing blank. Set WPT_DEFAULT_FONT=none to reproduce the legacy font-less numbers.",
   "settler": "off",
   "tolerance": 2,
   "buckets": {
     "html": {
       "filter": "html/**",
-      "pass": 564,
+      "pass": 487,
       "inScopeTotal": 584
     },
     "css": {
       "filter": "css/**",
-      "pass": 15781,
+      "pass": 13577,
       "inScopeTotal": 21270
     },
     "svg": {
       "filter": "svg/**",
-      "pass": 164,
+      "pass": 159,
       "inScopeTotal": 174
     },
     "mathml": {
       "filter": "mathml/**",
-      "pass": 166,
+      "pass": 161,
       "inScopeTotal": 167
     }
   }

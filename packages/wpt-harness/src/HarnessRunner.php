@@ -45,6 +45,51 @@ final class HarnessRunner
     ) {}
 
     /**
+     * Bundled UA default font for text emission. Browsers render unstyled
+     * text in their default serif (Times), so the harness ships a real
+     * serif (DejaVu Serif) as the default `font-family` fallback — without
+     * it, text has zero advance/height and text-dependent reftests pass
+     * BLANK (test and reference both empty), silently hiding real
+     * text-layout gaps. Test AND reference render with the same font, so
+     * the comparison stays self-consistent; refs that hard-code Times pixel
+     * metrics use Ahem (loaded from the corpus) and are unaffected.
+     *
+     * Override the file via the `WPT_DEFAULT_FONT` env var (a .ttf/.otf/
+     * .woff path); set it to `none` to run font-less (the legacy mode).
+     * `false` = not yet resolved; `null` = resolved to "no font".
+     */
+    private \Phpdftk\FontParser\FontFaceData|null|false $harnessDefaultFont = false;
+
+    private function harnessDefaultFont(): ?\Phpdftk\FontParser\FontFaceData
+    {
+        if ($this->harnessDefaultFont !== false) {
+            return $this->harnessDefaultFont;
+        }
+        $env = getenv('WPT_DEFAULT_FONT');
+        if ($env === 'none') {
+            return $this->harnessDefaultFont = null;
+        }
+        $path = ($env !== false && $env !== '')
+            ? $env
+            : __DIR__ . '/../resources/fonts/DejaVuSerif.ttf';
+        if (!is_file($path)) {
+            return $this->harnessDefaultFont = null;
+        }
+        // Dispatch by container: .otf (CFF) / .woff / .woff2 have dedicated
+        // parsers; .ttf (TrueType glyf) is the default.
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        try {
+            return $this->harnessDefaultFont = match ($ext) {
+                'otf' => (new \Phpdftk\FontParser\OpenTypeParser($path))->parse(),
+                'woff' => (new \Phpdftk\FontParser\WoffParser($path))->parse(),
+                default => (new \Phpdftk\FontParser\TrueTypeParser($path))->parse(),
+            };
+        } catch (\Throwable) {
+            return $this->harnessDefaultFont = null;
+        }
+    }
+
+    /**
      * Run the harness corpus. Returns one {@see TestResult} per
      * test that was either rendered or classified.
      *
@@ -474,17 +519,19 @@ final class HarnessRunner
         // test directory. baseDir alone is too tight — the default
         // ResourceLoader sandbox is the same as baseDir, which
         // rejects any `..` walk.
-        $renderer = new \Phpdftk\HtmlToPdf\Renderer(
-            (new \Phpdftk\HtmlToPdf\RendererOptions())
-                ->withBaseDir(dirname($path))
-                ->withSandboxRoot($this->wptRoot)
-                // WPT test corpus is browser-targeted, so the vast
-                // majority of `@media` rules gate on `screen` rather
-                // than `print`. Match both so author CSS applies the
-                // way the test fixtures (and their references) expect.
-                ->withMatchingMediaTypes(['print', 'screen']),
-        );
-        $result = $renderer->render($html);
+        $options = (new \Phpdftk\HtmlToPdf\RendererOptions())
+            ->withBaseDir(dirname($path))
+            ->withSandboxRoot($this->wptRoot)
+            // WPT test corpus is browser-targeted, so the vast
+            // majority of `@media` rules gate on `screen` rather
+            // than `print`. Match both so author CSS applies the
+            // way the test fixtures (and their references) expect.
+            ->withMatchingMediaTypes(['print', 'screen']);
+        $defaultFont = $this->harnessDefaultFont();
+        if ($defaultFont !== null) {
+            $options = $options->withDefaultFont($defaultFont);
+        }
+        $result = (new \Phpdftk\HtmlToPdf\Renderer($options))->render($html);
         return $result->writer->toBytes();
     }
 
