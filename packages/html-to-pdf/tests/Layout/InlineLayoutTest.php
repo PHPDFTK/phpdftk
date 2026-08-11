@@ -444,6 +444,31 @@ final class InlineLayoutTest extends TestCase
         self::assertEqualsWithDelta(36.0, $p->lineBoxes[0]->height, 0.001);
     }
 
+    public function testTallInlineBlockGrowsLineBoxHeight(): void
+    {
+        $this->skipIfNoFont();
+        // CSS 2.1 §10.8 — an inline atomic / replaced box contributes its
+        // margin-box height to the line box. A 96px-tall inline-block next to
+        // a 10px-font text run must grow the line to at least 96px. Before the
+        // atomic-line-box fix the line was sized from the text font metrics
+        // alone (~12px) and the tall box overflowed upward into negative y.
+        $box = $this->buildTree(
+            '<html><body><p>' . "\u{1820}" . '<span class="atom"></span></p></body></html>',
+            'html, body, p { display: block; font-size: 10px; } '
+                . '.atom { display: inline-block; width: 20px; height: 96px; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $p = $this->find($box, 'p');
+        self::assertNotNull($p);
+        self::assertGreaterThanOrEqual(96.0, $p->lineBoxes[0]->height, 'line grows to contain the tall inline-block');
+        // The inline-block's own box is committed against the finalized line
+        // baseline, so its top sits at (not above) the line's top edge.
+        $atom = $this->find($box, 'span');
+        self::assertNotNull($atom);
+        self::assertGreaterThanOrEqual($p->geometry->y - 0.001, $atom->geometry->y, 'atomic top not above the line');
+        self::assertEqualsWithDelta(96.0, $atom->geometry->height, 0.001);
+    }
+
     public function testVerticalAlignSuperLiftsFragment(): void
     {
         $this->skipIfNoFont();

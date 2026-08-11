@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Phpdftk\HtmlToPdf\Layout;
 
 use Phpdftk\Css\Value\Color;
+use Phpdftk\HtmlToPdf\Box\AtomicInlineBox;
 use Phpdftk\Text\ShapedRun;
 
 /**
@@ -131,5 +132,18 @@ final readonly class InlineFragment
          * for horizontal-tb, so every non-vertical path is byte-identical.
          */
         public float $blockOffset = 0.0,
+        /**
+         * When non-null, this fragment stands in for an inline atomic /
+         * replaced box (`<img>`, inline-block, inline SVG). Its glyph run is
+         * empty (advance-only), so line-box sizing derives the fragment's
+         * ascent/descent from this box's committed margin-box height rather
+         * than the surrounding font metrics (CSS 2.1 §10.8 — an inline
+         * replaced/inline-block box contributes its margin-box height to the
+         * line, with the box's baseline at its bottom margin edge). The atomic
+         * box's own `geometry->y` is re-committed against the finalized line
+         * baseline in {@see InlineLayout::commitAtomicFragmentY}. Text
+         * fragments keep `null`, so their sizing path is unchanged.
+         */
+        public ?AtomicInlineBox $atomicBox = null,
     ) {}
 }

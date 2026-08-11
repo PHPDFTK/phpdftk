@@ -226,6 +226,7 @@ final class InlineLayout
                         : end($currentFragments)->x + end($currentFragments)->width;
                 }
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
+                $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
@@ -260,6 +261,7 @@ final class InlineLayout
                 (bool) $token['isWhitespace'],
                 $token['lineHeight'] ?? -1.0,
                 $token['verticalAlign'] ?? 'baseline',
+                atomicBox: $token['atomicBox'] ?? null,
             );
             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
             // Side-channel: AtomicInlineBox positions get committed back to
@@ -349,6 +351,7 @@ final class InlineLayout
             $atLineStart = false;
             if ($isMandatory) {
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
+                $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
                 $y += $effective;
                 $currentFragments = [];
@@ -361,6 +364,7 @@ final class InlineLayout
         }
         if ($currentFragments !== []) {
             [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
+            $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
             $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
             $y += $effective;
         }
@@ -1629,6 +1633,40 @@ final class InlineLayout
     }
 
     /**
+     * Re-commit each inline atomic / replaced fragment's block-axis position
+     * against the FINALIZED line baseline. The atomic side-channel in the
+     * token loop seeds `geometry->y` from the raw shaping-font ascent, but the
+     * true baseline is only known once {@see finalizeLine} has sized the line
+     * — a tall atomic grows the line and moves the baseline downward. CSS 2.1
+     * §10.8.1: a replaced / inline-block box aligns its bottom margin edge with
+     * the line baseline, as shifted by `vertical-align` (folded into the
+     * fragment's resolved `baselineShift` by finalizeLine). This overwrites the
+     * seed with the correct value; nothing reads the seed in between. Pure-text
+     * lines carry no atomic fragments, so this is a no-op for them.
+     *
+     * @param list<InlineFragment> $fragments
+     */
+    private function commitAtomicFragmentY(Box $parent, float $lineTop, float $lineBaseline, array $fragments): void
+    {
+        foreach ($fragments as $f) {
+            $atomic = $f->atomicBox;
+            if ($atomic === null) {
+                continue;
+            }
+            $g = $atomic->geometry;
+            // Border-box height from the committed geometry (content +
+            // padding + border); the margin box adds the vertical margins.
+            $outerHeight = $g->borderTop + $g->paddingTop + $g->height + $g->paddingBottom + $g->borderBottom;
+            // Margin-box bottom on the baseline (+ vertical-align shift); step
+            // up past bottom margin and the border box, then back down into the
+            // content box's top-left — mirrors the seed formula in the token
+            // loop but with the finalized baseline instead of the font ascent.
+            $g->y = $parent->geometry->y + $lineTop + $lineBaseline + $f->baselineShift
+                - $g->marginBottom - $outerHeight + $g->borderTop + $g->paddingTop;
+        }
+    }
+
+    /**
      * A fragment's ascent, descent, and their half-leading-expanded forms:
      * `[ascent, descent, expandedAscent, expandedDescent]`.
      *
@@ -1636,6 +1674,21 @@ final class InlineLayout
      */
     private function fragmentExtents(InlineFragment $f): array
     {
+        // CSS 2.1 §10.8 — an inline atomic / replaced box contributes its
+        // *margin-box height* to the line box, not the surrounding font's
+        // ascent/descent (its glyph run is empty). The box's baseline is its
+        // bottom margin edge (§10.8.1), so the whole margin box sits above the
+        // baseline: ascent = margin-box height, descent = 0. No half-leading —
+        // replaced boxes don't carry line-height leading. The geometry was
+        // already resolved by the atomic side-channel in the token loop before
+        // this line was finalized.
+        if ($f->atomicBox !== null) {
+            $g = $f->atomicBox->geometry;
+            $marginBox = $g->marginTop + $g->borderTop + $g->paddingTop + $g->height
+                + $g->paddingBottom + $g->borderBottom + $g->marginBottom;
+
+            return [$marginBox, 0.0, $marginBox, 0.0];
+        }
         $a = $this->fragmentAscent($f);
         $d = $this->fragmentDescent($f);
         $lh = $f->lineHeight >= 0.0 ? $f->lineHeight : ($a + $d);
@@ -1666,6 +1719,8 @@ final class InlineLayout
             $f->isWhitespace,
             $f->lineHeight,
             $f->verticalAlign,
+            $f->blockOffset,
+            $f->atomicBox,
         );
     }
 
