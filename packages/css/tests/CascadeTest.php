@@ -406,6 +406,25 @@ final class CascadeTest extends TestCase
         self::assertEqualsWithDelta(100.0, $margin->value, 0.001);
     }
 
+    public function testLhInFontSizeResolvesAgainstParentLineHeight(): void
+    {
+        // CSS Values 4 §6.1.1 — the `lh` unit in the `font-size` property
+        // resolves against the PARENT element's line-height (the element's
+        // own would be circular). The parent's used line-height arrives via
+        // the LengthContext's `lineHeight`; `font-size: 2lh` with a parent
+        // line-height of 50px must compute to 100px, NOT the 1.2×-font-size
+        // fallback the resolver uses when no line-height is threaded.
+        $sheet = $this->parser->parseStylesheet('aside { font-size: 2lh; }');
+        $values = $this->cascade->computeFor([$sheet], new FakeElement('aside'));
+        $this->cascade->resolveLengths(
+            $values,
+            new LengthContext(parentFontSize: 42.0, lineHeight: 50.0),
+        );
+        $fontSize = $values->get('font-size');
+        self::assertInstanceOf(Length::class, $fontSize);
+        self::assertEqualsWithDelta(100.0, $fontSize->value, 0.001);
+    }
+
     public function testRadialGradientLengthPositionResolvesToPx(): void
     {
         // The `at <position>` centre of a radial-gradient must be resolved

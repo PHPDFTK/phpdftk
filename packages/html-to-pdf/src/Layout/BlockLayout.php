@@ -6404,10 +6404,42 @@ final class BlockLayout
     private function lengthContextFor(CascadedValues $style, LengthContext $parent): LengthContext
     {
         $fontSize = $style->get('font-size');
+        $fontSizePx = $parent->currentFontSize;
+        $ctx = $parent;
         if ($fontSize instanceof Length) {
-            return $parent->withCurrentFontSize($fontSize->value);
+            $fontSizePx = $fontSize->value;
+            $ctx = $parent->withCurrentFontSize($fontSizePx);
         }
-        return $parent;
+        // CSS Values 4 §6.1.1 — thread THIS box's used line-height so a
+        // child's `lh` unit in `font-size` resolves against its parent's
+        // line-height (the child's own would be circular). Only explicit
+        // line-heights are threaded; `normal` / unresolved leave the child's
+        // `lh` on its existing 1.2 × font-size fallback.
+        $lineHeight = $this->usedLineHeightForContext($style, $fontSizePx);
+        if ($lineHeight !== null) {
+            $ctx = $ctx->withLineHeight($lineHeight);
+        }
+        return $ctx;
+    }
+
+    /**
+     * Resolve a box's used `line-height` to px for threading into its
+     * children's LengthContext (the `lh`-in-`font-size` basis). Returns
+     * null for `normal` / unresolved so the child's fallback is preserved.
+     */
+    private function usedLineHeightForContext(CascadedValues $style, float $fontSizePx): ?float
+    {
+        $lh = $style->get('line-height');
+        if ($lh instanceof Length) {
+            return $lh->value;
+        }
+        if ($lh instanceof \Phpdftk\Css\Value\Number) {
+            return $fontSizePx * $lh->value;
+        }
+        if ($lh instanceof Percentage) {
+            return $fontSizePx * ($lh->value / 100.0);
+        }
+        return null;
     }
 
     /**

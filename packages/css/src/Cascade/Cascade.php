@@ -2559,6 +2559,12 @@ final class Cascade
             rootFontSize: $context->rootFontSize,
             viewportWidth: $context->viewportWidth,
             viewportHeight: $context->viewportHeight,
+            // CSS Values 4 §6.1.1 — the `lh` unit in `font-size` resolves
+            // against the PARENT element's line-height (the element's own
+            // line-height would be circular). `$context->lineHeight` is the
+            // parent's used line-height. Without this the resolver saw
+            // lineHeight 0 and fell back to 1.2 × font-size.
+            lineHeight: $context->lineHeight,
         );
         if ($fontSize instanceof Length) {
             $currentFontSize = LengthResolver::toPx($fontSize, $emCtx);
