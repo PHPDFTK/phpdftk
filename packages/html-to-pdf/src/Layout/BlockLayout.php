@@ -8658,9 +8658,16 @@ final class BlockLayout
      */
     private function layoutAtomicAbsposChildren(AtomicInlineBox $atomic, LayoutContext $context): void
     {
-        $position = $atomic->style->get('position');
-        if (!($position instanceof Keyword)
-            || !in_array(strtolower($position->name), ['relative', 'absolute', 'fixed', 'sticky'], true)
+        // An inline-block is the containing block for its abspos / fixed
+        // descendants when it is `position`-ed OR when it establishes one
+        // via containment (CSS Contain §3.1 — contain: layout | paint |
+        // content | strict). Mirrors the block-level gate at ~1133
+        // (isPositioned || establishesAbsPosContainingBlock); without the
+        // containment arm, a `contain: paint` inline-block let its fixed /
+        // absolute descendants escape to the viewport instead of anchoring
+        // to it.
+        if (!$this->isPositioned($atomic->style)
+            && !$this->establishesAbsPosContainingBlock($atomic->style)
         ) {
             return;
         }

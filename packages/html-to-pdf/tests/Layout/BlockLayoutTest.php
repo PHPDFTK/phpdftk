@@ -712,6 +712,27 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $ap->geometry->height, 0.5);
     }
 
+    public function testContainPaintOnInlineBlockEstablishesAbsPosContainingBlock(): void
+    {
+        // CSS Contain §3.1 — an INLINE-BLOCK (AtomicInlineBox) with paint /
+        // layout / content / strict containment is also the containing block
+        // for its abspos / fixed descendants, not only when it is
+        // position-ed. Without the containment arm on the atomic abspos gate
+        // the child escaped to the viewport (contain-paint-010 leaked red).
+        $box = $this->buildTree(
+            '<html><body><div id="c"><div id="ap"></div></div></body></html>',
+            'html, body { display: block; }
+             #c { display: inline-block; contain: paint; width: 100px; height: 100px; }
+             #ap { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        // Fills #c's 100x100 padding box — not the 600x800 viewport.
+        self::assertEqualsWithDelta(100.0, $ap->geometry->width, 0.5);
+        self::assertEqualsWithDelta(100.0, $ap->geometry->height, 0.5);
+    }
+
     public function testContainLayoutDoesNotEstablishAbsPosCBForInternalTableBox(): void
     {
         // CSS Contain §2.1 — layout containment does NOT apply to internal
