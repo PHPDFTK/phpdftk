@@ -1879,13 +1879,16 @@ final class Renderer
     }
 
     /**
-     * The set of `format(...)` hints we can decode at Phase 1. OTF/CFF
-     * goes through `OpenTypeParser`; everything else (WOFF/WOFF2/EOT/
-     * SVG/TTC) requires decompression or extra parsers that haven't
-     * landed yet. Hints outside this set make the resolver skip the
-     * source without attempting a fetch.
+     * The set of `format(...)` hints we can decode. TrueType (glyf) goes
+     * through `TrueTypeParser`, OTF/CFF through `OpenTypeParser` (parseFontFace
+     * tries both), and WOFF 1.0 is transparently decompressed to its inner
+     * SFNT first. Everything else (WOFF2 — needs ext-brotli, EOT, SVG, TTC)
+     * needs decompression or parsers that haven't landed yet. Hints outside
+     * this set make the resolver skip the source without attempting a fetch.
      */
     private const SUPPORTED_FONT_FORMATS = [
+        'truetype',
+        'truetype-variations',
         'opentype',
         'opentype-variations',
         'woff',

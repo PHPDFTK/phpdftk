@@ -1767,6 +1767,39 @@ final class RendererTest extends TestCase
         );
     }
 
+    public function testFontFaceTruetypeFormatHintIsHonoured(): void
+    {
+        // CSS Fonts 4 §4.3 — a `format('truetype')` hint must NOT make the
+        // resolver skip the source: the renderer parses TrueType (glyf) via
+        // TrueTypeParser and CFF via OpenTypeParser (parseFontFace tries
+        // both). Before `truetype` was added to the supported-format set,
+        // `src: url(x.ttf) format('truetype')` — the single most common
+        // @font-face declaration in the wild — was dropped and the text
+        // rendered blank.
+        $latinPath = __DIR__ . '/../../../tests/fixtures/fonts/NotoSans-Regular.otf';
+        if (!is_file($latinPath)) {
+            self::markTestSkipped('Font fixture missing');
+        }
+        $b64 = base64_encode((string) file_get_contents($latinPath));
+        $latin = (new OpenTypeParser($latinPath))->parse();
+        $renderer = new Renderer((new RendererOptions())->withDefaultFont($latin));
+        $css = '@font-face { font-family: "TT"; '
+            . 'src: url(data:font/ttf;base64,' . $b64 . ") format('truetype'); }";
+        $writer = new PdfWriter(compressStreams: false);
+        $warnings = $renderer->renderInto(
+            $writer,
+            '<html><head><style>' . $css . '</style></head><body>'
+            . '<p style="font-family: TT">hi</p>'
+            . '</body></html>',
+        );
+        self::assertSame([], $warnings, 'truetype-hinted @font-face loads clean (not dropped)');
+        self::assertStringContainsString(
+            '/Subtype /Type0',
+            $writer->toBytes(),
+            'the truetype-hinted face registers as a composite font',
+        );
+    }
+
     public function testFontFaceWoffSourceDecompressesAndRegisters(): void
     {
         // Wrap a real OTF as WOFF and reference it via a `data:font/woff`

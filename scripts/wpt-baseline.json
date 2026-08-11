@@ -10,7 +10,7 @@
     },
     "css": {
       "filter": "css/**",
-      "pass": 15780,
+      "pass": 15781,
       "inScopeTotal": 21270
     },
     "svg": {
