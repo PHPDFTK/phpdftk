@@ -385,6 +385,18 @@ final class InlineLayout
         $lines = $this->applyTextOverflow($lines, $availableWidth, $parent, $shapingCtx, $letterSpacing);
 
         $lines = $this->applyTextAlign($lines, $availableWidth, $parent);
+        // text-align shifts each line's fragments; re-commit any atomic /
+        // replaced box's inline-axis geometry so an <img> / inline-block on a
+        // centred / right-aligned / justified line paints at the shifted
+        // position rather than the line's pre-alignment start. Horizontal
+        // writing modes only — in a vertical mode the inline axis is Y and the
+        // atomic's geometry is (re)placed by the transpose in
+        // applyVerticalLineShift below, so an X commit here would fight it.
+        if (!WritingMode::fromStyle($parent->style)->isVertical()) {
+            foreach ($lines as $line) {
+                $this->commitAtomicFragmentX($parent, $line->fragments);
+            }
+        }
         // CSS Writing Modes 4 §3 — for a vertical-mode block container
         // hosting an inline formatting context, lines should sit at the
         // block-start edge of the container's content area:
@@ -1254,7 +1266,7 @@ final class InlineLayout
     {
         $out = [];
         foreach ($fragments as $f) {
-            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign);
+            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox);
         }
         return $out;
     }
@@ -1286,7 +1298,7 @@ final class InlineLayout
             // visible fragment's right edge becomes — they aren't
             // shifted (they hang past the line edge).
             $shift = $i <= $lastVisible ? $i * $delta : $lastVisible * $delta;
-            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign);
+            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox);
         }
         return $out;
     }
@@ -1778,6 +1790,30 @@ final class InlineLayout
             // loop but with the finalized baseline instead of the font ascent.
             $g->y = $parent->geometry->y + $lineTop + $lineBaseline + $f->baselineShift
                 - $g->marginBottom - $outerHeight + $g->borderTop + $g->paddingTop;
+        }
+    }
+
+    /**
+     * Re-commit each inline atomic / replaced fragment's inline-axis position
+     * after `text-align` (and justify) have shifted the line's fragments. The
+     * token loop seeded the atomic box's `geometry->x` from the pre-alignment
+     * cursor, so a centred / right-aligned / justified line left the box
+     * behind at the line's start while its text shifted. This mirrors the
+     * seed formula in the token loop (content-box left = margin-box start +
+     * left margin + border + padding) but with the fragment's now-shifted
+     * `x`. Pure-text lines carry no atomic fragments, so this is a no-op.
+     *
+     * @param list<InlineFragment> $fragments
+     */
+    private function commitAtomicFragmentX(Box $parent, array $fragments): void
+    {
+        foreach ($fragments as $f) {
+            $atomic = $f->atomicBox;
+            if ($atomic === null) {
+                continue;
+            }
+            $g = $atomic->geometry;
+            $g->x = $parent->geometry->x + $f->x + $g->marginLeft + $g->borderLeft + $g->paddingLeft;
         }
     }
 

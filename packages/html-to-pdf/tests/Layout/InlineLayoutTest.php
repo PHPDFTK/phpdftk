@@ -1600,6 +1600,27 @@ final class InlineLayoutTest extends TestCase
         self::assertLessThanOrEqual(100.0 + 1.0, $first->totalWidth());
     }
 
+    public function testTextAlignCenterMovesAtomicInlineBoxGeometry(): void
+    {
+        $this->skipIfNoFont();
+        // text-align:center (and right/justify) must shift an inline atomic
+        // box's committed geometry, not only its text fragments — otherwise an
+        // <img>/inline-block paints at the line's pre-alignment start while
+        // the surrounding text is centred.
+        $box = $this->buildTree(
+            '<html><body><div id="c"><span class="ib"></span></div></body></html>',
+            'html, body, div { display: block; } #c { width: 200px; text-align: center; } '
+                . '.ib { display: inline-block; width: 20px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultContext(200.0));
+        $c = $this->find($box, 'div');
+        $ib = $this->find($box, 'span');
+        self::assertNotNull($c);
+        self::assertNotNull($ib);
+        // 20px box centred in 200px → left edge 90px in from the content-left.
+        self::assertEqualsWithDelta($c->geometry->x + 90.0, $ib->geometry->x, 2.0, 'centred inline-block box tracks the alignment shift');
+    }
+
     public function testParagraphEntirelyOnOnePageIsNotShifted(): void
     {
         // 4 lines × 20px = 80px paragraph at body-top → fits cleanly inside
