@@ -180,7 +180,7 @@ final class InlineLayout
         // CSS 2.1 §9.5.3 — line boxes shorten on the side(s) where a
         // float is currently active. Compute the per-line (left, right)
         // bounds against the float context each time we start a new line.
-        $bounds = $this->lineBounds($parent, $availableWidth, $context, 0.0);
+        $bounds = $this->lineBounds($parent, $availableWidth, $context, 0.0, $lineHeight);
         $lines = [];
         $currentFragments = [];
         // CSS Text 3 §5.5 — when in `pre-wrap` / `break-spaces`, trailing
@@ -231,7 +231,7 @@ final class InlineLayout
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
-                $bounds = $this->lineBounds($parent, $availableWidth, $context, $y);
+                $bounds = $this->lineBounds($parent, $availableWidth, $context, $y, $lineHeight);
                 $currentX = $bounds['left'];
                 $lineMaxRight = $bounds['right'];
                 $atLineStart = true;
@@ -356,7 +356,7 @@ final class InlineLayout
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
-                $bounds = $this->lineBounds($parent, $availableWidth, $context, $y);
+                $bounds = $this->lineBounds($parent, $availableWidth, $context, $y, $lineHeight);
                 $currentX = $bounds['left'];
                 $lineMaxRight = $bounds['right'];
                 $atLineStart = true;
@@ -682,13 +682,19 @@ final class InlineLayout
      * float overlapping the line, `left` rises; with a right float,
      * `right` falls.
      *
-     * Phase-1 simplification: samples at the line's top edge only.
-     * Browsers conceptually sample across the full line range and take
-     * the most-constrained bounds.
+     * CSS 2.1 §9.5 — a line box next to a float is shortened by the
+     * MOST-constrained intrusion over the line's full height, not just at
+     * its top edge. `$lineHeight` (the block's strut line-height, a lower
+     * bound on the actual line height) defines the vertical band; the float
+     * context is sampled at several points across `[relY, relY+lineHeight]`
+     * and the tightest left/right kept, so a float — or a CSS Shapes 1
+     * contour whose widest point sits below the line top — still narrows the
+     * line. With `$lineHeight` 0 (the default) this degrades to the old
+     * single-point sample at the top edge.
      *
      * @return array{left: float, right: float}
      */
-    private function lineBounds(Box $parent, float $availableWidth, LayoutContext $context, float $relY): array
+    private function lineBounds(Box $parent, float $availableWidth, LayoutContext $context, float $relY, float $lineHeight = 0.0): array
     {
         $floatCtx = $context->floatContext;
         if ($floatCtx === null) {
@@ -696,12 +702,19 @@ final class InlineLayout
         }
         $parentX = $parent->geometry->x;
         $parentY = $parent->geometry->y;
-        $absY = $parentY + $relY;
-        $absLeft = $floatCtx->leftEdgeAt($absY, $parentX);
-        $absRight = $floatCtx->rightEdgeAt($absY, $parentX + $availableWidth);
+        $absTop = $parentY + $relY;
+        $band = max(0.0, $lineHeight);
+        $samples = $band > 0.0 ? 5 : 1;
+        $maxLeft = $parentX;
+        $minRight = $parentX + $availableWidth;
+        for ($i = 0; $i < $samples; $i++) {
+            $y = $samples > 1 ? $absTop + $band * ($i / ($samples - 1)) : $absTop;
+            $maxLeft = max($maxLeft, $floatCtx->leftEdgeAt($y, $parentX));
+            $minRight = min($minRight, $floatCtx->rightEdgeAt($y, $parentX + $availableWidth));
+        }
         return [
-            'left' => max(0.0, $absLeft - $parentX),
-            'right' => max(0.0, $absRight - $parentX),
+            'left' => max(0.0, $maxLeft - $parentX),
+            'right' => max(0.0, $minRight - $parentX),
         ];
     }
 
