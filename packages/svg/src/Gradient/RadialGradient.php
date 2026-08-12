@@ -61,9 +61,18 @@ final class RadialGradient extends Gradient
         if ($raw === null) {
             return null;
         }
-        if (preg_match('/^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/', $raw, $m) !== 1) {
+        if (preg_match('/^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(%?)/', $raw, $m) !== 1) {
             return null;
         }
-        return (float) $m[1];
+        $value = (float) $m[1];
+        // SVG 2 §13.7.5 — a percentage in objectBoundingBox mode (the default
+        // gradientUnits) is a fraction of the bounding box, so `cx="50%"` ==
+        // `0.5`. Normalise to the fraction the GradientPainter bbox mapping
+        // expects (a `%` radius parsed as e.g. `50` blew the gradient far past
+        // the shape).
+        if ($m[2] === '%') {
+            $value /= 100.0;
+        }
+        return $value;
     }
 }

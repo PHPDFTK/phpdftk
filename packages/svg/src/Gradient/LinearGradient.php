@@ -46,9 +46,18 @@ final class LinearGradient extends Gradient
         if ($raw === null) {
             return null;
         }
-        if (preg_match('/^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/', $raw, $m) !== 1) {
+        if (preg_match('/^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(%?)/', $raw, $m) !== 1) {
             return null;
         }
-        return (float) $m[1];
+        $value = (float) $m[1];
+        // SVG 2 §13.6.5 — a percentage in objectBoundingBox mode (the default
+        // gradientUnits) is a fraction of the bounding box, so `100%` == `1`.
+        // Normalise to the [0, 1] fraction the GradientPainter bbox mapping
+        // expects; parsing `x2="100%"` as `100` stretched the axis 100x so the
+        // shape sampled a single stop (a solid colour).
+        if ($m[2] === '%') {
+            $value /= 100.0;
+        }
+        return $value;
     }
 }

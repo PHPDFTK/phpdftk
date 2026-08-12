@@ -134,6 +134,11 @@ final class Translator
      *   when the document's own width/height/viewBox don't yield
      *   useful dimensions. Set by `SvgRenderer::draw` when it
      *   synthesises a source rect from the destination.
+     * @param array{float, float, float, float, float, float}|null $baseMatrix
+     *   The SVG→page base transform the caller applied to `$stream`
+     *   (viewport scale + y-flip + placement); seeds the cumulative
+     *   matrix stack so gradient pattern `/Matrix` entries track the CTM.
+     *   Null (direct-render tests) seeds the identity.
      */
     public function paint(
         SvgDocument $document,
@@ -142,12 +147,17 @@ final class Translator
         ?PdfWriter $writer = null,
         bool $compensateTextFlip = false,
         ?array $effectiveViewport = null,
+        ?array $baseMatrix = null,
     ): void {
         $this->page = $page;
         $this->writer = $writer;
         $this->document = $document;
         $this->compensateTextFlip = $compensateTextFlip;
         $this->effectiveViewport = $effectiveViewport;
+        // Seed the cumulative-transform stack with the renderer's base matrix
+        // (viewport scale + y-flip + page placement) so gradient patterns can
+        // reconstruct the SVG→page mapping the caller applied to the stream.
+        $this->matrixStack = [$baseMatrix ?? [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]];
         $this->gradientPainter = $page !== null && $writer !== null
             ? new GradientPainter($writer, $page, $document)
             : null;
@@ -166,7 +176,9 @@ final class Translator
                 // correctly relative to the viewBox.
                 $stream->saveGraphicsState();
                 $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, -$viewBox[0], -$viewBox[1]);
+                $this->pushMatrix([1.0, 0.0, 0.0, 1.0, -$viewBox[0], -$viewBox[1]]);
                 $this->paintChildren($document, $stream);
+                $this->popMatrix();
                 $stream->restoreGraphicsState();
                 return;
             }
@@ -204,6 +216,19 @@ final class Translator
     private ?GradientPainter $gradientPainter = null;
     private ?FontResolver $fontResolver = null;
     private bool $compensateTextFlip = false;
+    /**
+     * Stack of cumulative affine transforms (outer→inner) mapping the CURRENT
+     * SVG user space to PDF page space — seeded in {@see paint()} with the
+     * renderer's base matrix (viewport scale + y-flip + placement) and grown
+     * by each `<svg>` viewport, element `transform`, and `<use>` translate as
+     * painting descends. Its top is threaded into gradient patterns whose
+     * `/Matrix` PDF resolves against DEFAULT page space (not the fill-time
+     * CTM), so without this a transformed or vertically-oriented gradient
+     * paints in the wrong place / orientation.
+     *
+     * @var non-empty-list<array{float, float, float, float, float, float}>
+     */
+    private array $matrixStack = [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]];
 
     private function paintChildren(Element $parent, ContentStream $stream): void
     {
@@ -373,6 +398,10 @@ final class Translator
                 $matrix[4],
                 $matrix[5],
             );
+            // Track the transform so gradient fills inside this element (and
+            // its children) anchor their pattern to the same CTM the geometry
+            // is painted under.
+            $this->pushMatrix($matrix);
         }
         if ($opacityGs !== null) {
             $stream->setGraphicsState($opacityGs);
@@ -387,6 +416,9 @@ final class Translator
             $stream->setGraphicsState($maskGs);
         }
         $this->dispatchElement($element, $stream);
+        if ($transform !== null) {
+            $this->popMatrix();
+        }
         $stream->restoreGraphicsState();
     }
 
@@ -649,6 +681,60 @@ final class Translator
      * makes the worst-case behaviour "no inverse applied" rather than
      * a divide-by-zero.
      *
+     * The top of {@see matrixStack} — the cumulative SVG→page transform in
+     * effect for the element currently being painted.
+     *
+     * @return array{float, float, float, float, float, float}
+     */
+    private function currentMatrix(): array
+    {
+        return $this->matrixStack[count($this->matrixStack) - 1];
+    }
+
+    /**
+     * Concatenate `$m` onto the current cumulative matrix (outer × inner, the
+     * same order a `cm` operator composes onto the CTM) and push the result.
+     * Callers must {@see popMatrix} when the corresponding graphics-state save
+     * is restored.
+     *
+     * @param array{float, float, float, float, float, float} $m
+     */
+    private function pushMatrix(array $m): void
+    {
+        $this->matrixStack[] = self::multiplyAffine($this->currentMatrix(), $m);
+    }
+
+    private function popMatrix(): void
+    {
+        if (count($this->matrixStack) > 1) {
+            array_pop($this->matrixStack);
+        }
+    }
+
+    /**
+     * Affine composition `m1 × m2` (m1 applied after m2), matching the PDF
+     * `cm` convention and {@see \Phpdftk\Svg\Value\Transform}.
+     *
+     * @param array{float, float, float, float, float, float} $m1
+     * @param array{float, float, float, float, float, float} $m2
+     * @return array{float, float, float, float, float, float}
+     */
+    private static function multiplyAffine(array $m1, array $m2): array
+    {
+        [$a1, $b1, $c1, $d1, $e1, $f1] = $m1;
+        [$a2, $b2, $c2, $d2, $e2, $f2] = $m2;
+
+        return [
+            $a1 * $a2 + $c1 * $b2,
+            $b1 * $a2 + $d1 * $b2,
+            $a1 * $c2 + $c1 * $d2,
+            $b1 * $c2 + $d1 * $d2,
+            $a1 * $e2 + $c1 * $f2 + $e1,
+            $b1 * $e2 + $d1 * $f2 + $f1,
+        ];
+    }
+
+    /**
      * @param array{float, float, float, float, float, float} $m
      * @return array{float, float, float, float, float, float}
      */
@@ -2283,7 +2369,7 @@ final class Translator
             return false;
         }
         if ($paint instanceof Url) {
-            return $this->gradientPainter?->applyAsFill($paint->id, $element, $stream) ?? false;
+            return $this->gradientPainter?->applyAsFill($paint->id, $element, $stream, $this->currentMatrix()) ?? false;
         }
         if ($paint instanceof SolidColor) {
             $this->setFillColor($stream, $paint->color);
@@ -2305,7 +2391,7 @@ final class Translator
             return false;
         }
         if ($paint instanceof Url) {
-            return $this->gradientPainter?->applyAsStroke($paint->id, $element, $stream) ?? false;
+            return $this->gradientPainter?->applyAsStroke($paint->id, $element, $stream, $this->currentMatrix()) ?? false;
         }
         if ($paint instanceof SolidColor) {
             $this->setStrokeColor($stream, $paint->color);

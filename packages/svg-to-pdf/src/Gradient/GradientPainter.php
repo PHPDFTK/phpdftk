@@ -70,9 +70,16 @@ final class GradientPainter
      * missing, empty, or otherwise unrenderable (caller must skip the
      * fill).
      */
-    public function applyAsFill(string $gradientId, Element $element, ContentStream $stream): bool
+    /**
+     * @param array{float, float, float, float, float, float} $currentMatrix
+     *        the cumulative SVG→page transform (renderer base × ancestor ×
+     *        element) the shape is painted under, baked into the pattern
+     *        `/Matrix` so the shading tracks the geometry (PDF resolves a
+     *        pattern matrix against default page space, not the fill CTM).
+     */
+    public function applyAsFill(string $gradientId, Element $element, ContentStream $stream, array $currentMatrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]): bool
     {
-        $pattern = $this->registerForElement($gradientId, $element);
+        $pattern = $this->registerForElement($gradientId, $element, $currentMatrix);
         if ($pattern === null) {
             return false;
         }
@@ -82,10 +89,14 @@ final class GradientPainter
         return true;
     }
 
-    /** Same shape as `applyAsFill` but for the stroke channel. */
-    public function applyAsStroke(string $gradientId, Element $element, ContentStream $stream): bool
+    /**
+     * Same shape as `applyAsFill` but for the stroke channel.
+     *
+     * @param array{float, float, float, float, float, float} $currentMatrix
+     */
+    public function applyAsStroke(string $gradientId, Element $element, ContentStream $stream, array $currentMatrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]): bool
     {
-        $pattern = $this->registerForElement($gradientId, $element);
+        $pattern = $this->registerForElement($gradientId, $element, $currentMatrix);
         if ($pattern === null) {
             return false;
         }
@@ -95,7 +106,10 @@ final class GradientPainter
         return true;
     }
 
-    private function registerForElement(string $gradientId, Element $element): ?ShadingPattern
+    /**
+     * @param array{float, float, float, float, float, float} $currentMatrix
+     */
+    private function registerForElement(string $gradientId, Element $element, array $currentMatrix): ?ShadingPattern
     {
         $gradient = $this->document->findById($gradientId);
         if (!$gradient instanceof Gradient) {
@@ -119,23 +133,30 @@ final class GradientPainter
             default => null,
         };
         if ($pattern !== null) {
-            self::applyGradientTransform($pattern, $gradient->gradientTransform());
+            self::applyPatternMatrix($pattern, $currentMatrix, $gradient->gradientTransform());
         }
         return $pattern;
     }
 
     /**
-     * Bake the SVG `gradientTransform` attribute into the PDF
-     * `ShadingPattern`'s `Matrix` entry. PDF pattern Matrix maps
-     * pattern space (where `Coords` live) to user space, which is
-     * exactly the SVG-2 §13.6.5 semantic for `gradientTransform`.
+     * Bake the pattern-space → page-space mapping into the `ShadingPattern`'s
+     * `/Matrix`. PDF resolves a pattern matrix against the page's DEFAULT
+     * user space (not the fill-time CTM), so it must carry the full transform
+     * the shape is painted under — the renderer base + ancestor + element
+     * CTM (`$currentMatrix`) composed with the SVG `gradientTransform`
+     * (SVG 2 §13.6.5). Omitted when the composite is the identity so simple
+     * page-space gradients stay byte-identical.
+     *
+     * @param array{float, float, float, float, float, float} $currentMatrix
      */
-    private static function applyGradientTransform(ShadingPattern $pattern, ?Transform $transform): void
+    private static function applyPatternMatrix(ShadingPattern $pattern, array $currentMatrix, ?Transform $gradientTransform): void
     {
-        if ($transform === null) {
+        $matrix = $gradientTransform === null
+            ? $currentMatrix
+            : self::multiplyAffine($currentMatrix, $gradientTransform->toMatrix());
+        if (self::isIdentity($matrix)) {
             return;
         }
-        $matrix = $transform->toMatrix();
         $pattern->matrix = new PdfArray([
             new PdfNumber($matrix[0]),
             new PdfNumber($matrix[1]),
@@ -144,6 +165,38 @@ final class GradientPainter
             new PdfNumber($matrix[4]),
             new PdfNumber($matrix[5]),
         ]);
+    }
+
+    /**
+     * Affine composition `m1 × m2` (m1 applied after m2), matching the PDF
+     * `cm` convention.
+     *
+     * @param array{float, float, float, float, float, float} $m1
+     * @param array{float, float, float, float, float, float} $m2
+     * @return array{float, float, float, float, float, float}
+     */
+    private static function multiplyAffine(array $m1, array $m2): array
+    {
+        [$a1, $b1, $c1, $d1, $e1, $f1] = $m1;
+        [$a2, $b2, $c2, $d2, $e2, $f2] = $m2;
+
+        return [
+            $a1 * $a2 + $c1 * $b2,
+            $b1 * $a2 + $d1 * $b2,
+            $a1 * $c2 + $c1 * $d2,
+            $b1 * $c2 + $d1 * $d2,
+            $a1 * $e2 + $c1 * $f2 + $e1,
+            $b1 * $e2 + $d1 * $f2 + $f1,
+        ];
+    }
+
+    /**
+     * @param array{float, float, float, float, float, float} $m
+     */
+    private static function isIdentity(array $m): bool
+    {
+        return abs($m[0] - 1.0) < 1e-9 && abs($m[1]) < 1e-9 && abs($m[2]) < 1e-9
+            && abs($m[3] - 1.0) < 1e-9 && abs($m[4]) < 1e-9 && abs($m[5]) < 1e-9;
     }
 
     /**

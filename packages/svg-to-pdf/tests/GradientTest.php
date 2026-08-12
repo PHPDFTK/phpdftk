@@ -225,6 +225,58 @@ final class GradientTest extends TestCase
         );
     }
 
+    public function testRendererBaseMatrixIsBakedIntoGradientPatternMatrix(): void
+    {
+        // A PDF pattern's /Matrix is resolved against DEFAULT page space, not
+        // the fill-time CTM, so the renderer's base transform (viewport scale
+        // + y-flip + placement) must be baked into it — otherwise a vertical
+        // or placed gradient paints in the wrong orientation / location. Here
+        // a base [1 0 0 -1 0 200] (y-flip, page height 200) must land in the
+        // pattern /Matrix even with no gradientTransform.
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage();
+        $stream = $writer->addContentStream($page);
+        $doc = $this->svgParser->parse(
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            . '<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" '
+            . 'x1="0" y1="0" x2="0" y2="100">'
+            . '<stop offset="0" stop-color="red"/>'
+            . '<stop offset="1" stop-color="blue"/>'
+            . '</linearGradient></defs>'
+            . '<rect width="100" height="100" fill="url(#g)"/>'
+            . '</svg>',
+        );
+        $this->translator->paint($doc, $stream, $page, $writer, baseMatrix: [1.0, 0.0, 0.0, -1.0, 0.0, 200.0]);
+        $bytes = $writer->toBytes();
+        self::assertMatchesRegularExpression('!/Matrix \[[^]]*-1[^]]*200[^]]*\]!', $bytes);
+    }
+
+    public function testGradientTransformComposesWithBaseMatrix(): void
+    {
+        // gradientTransform composes ON TOP of the base matrix (base ×
+        // gradientTransform), so a y-flip base plus a rotate no longer emits
+        // the bare rotate matrix.
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage();
+        $stream = $writer->addContentStream($page);
+        $doc = $this->svgParser->parse(
+            '<svg xmlns="http://www.w3.org/2000/svg">'
+            . '<defs><linearGradient id="g" gradientUnits="userSpaceOnUse" '
+            . 'x1="0" y1="0" x2="100" y2="0" gradientTransform="rotate(45)">'
+            . '<stop offset="0" stop-color="red"/>'
+            . '<stop offset="1" stop-color="blue"/>'
+            . '</linearGradient></defs>'
+            . '<rect width="100" height="50" fill="url(#g)"/>'
+            . '</svg>',
+        );
+        $this->translator->paint($doc, $stream, $page, $writer, baseMatrix: [1.0, 0.0, 0.0, -1.0, 0.0, 200.0]);
+        $bytes = $writer->toBytes();
+        // base [1 0 0 -1 0 200] × rotate(45) carries the base placement into
+        // the translation terms: the matrix ends with `0 200`, not the bare
+        // rotate's `0 0`, proving the compose (not just the gradientTransform).
+        self::assertMatchesRegularExpression('!/Matrix \[ 0\.707\d+ [^]]* 0 200 \]!', $bytes);
+    }
+
     public function testGradientTransformAbsentEmitsNoMatrixEntry(): void
     {
         // No `gradientTransform` → no `/Matrix` in the pattern dict

@@ -170,14 +170,15 @@ final class SvgRenderer
             $stream->fill();
             $stream->restoreGraphicsState();
         }
-        $stream->concatMatrix(
+        $baseMatrix = [
             $scaleX,
             0.0,
             0.0,
             -$scaleY,
             $x + $offsetX - $srcMinX * $scaleX,
             $y + $offsetY + $effectiveH + $srcMinY * $scaleY,
-        );
+        ];
+        $stream->concatMatrix(...$baseMatrix);
         // When the source rect was synthesised from the destination
         // (SVG had no viewBox and no parseable fixed dims), the
         // Translator's `currentViewport` would otherwise fall back to
@@ -196,6 +197,7 @@ final class SvgRenderer
             $this->writer,
             compensateTextFlip: true,
             effectiveViewport: $effectiveViewport,
+            baseMatrix: $baseMatrix,
         );
         $stream->restoreGraphicsState();
     }
@@ -337,14 +339,15 @@ final class SvgRenderer
                 }
                 // Same derivation as SvgRenderer::draw with x=y=0:
                 // map source-rect top-left to (offsetX, offsetY + effectiveH).
-                $stream->concatMatrix(
+                $baseMatrix = [
                     $scaleX,
                     0.0,
                     0.0,
                     -$scaleY,
                     $offsetX - $srcMinX2 * $scaleX,
                     $offsetY + $effectiveH + $srcMinY2 * $scaleY,
-                );
+                ];
+                $stream->concatMatrix(...$baseMatrix);
                 $translator = $resourceLoader !== null
                     ? new Translator($resourceLoader)
                     : new Translator();
@@ -354,6 +357,7 @@ final class SvgRenderer
                     $resourceHost,
                     $writer,
                     compensateTextFlip: true,
+                    baseMatrix: $baseMatrix,
                 );
                 $stream->restoreGraphicsState();
             },
