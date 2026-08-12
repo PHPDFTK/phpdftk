@@ -367,6 +367,17 @@ final class PropertyRegistry
         // ELLIPSIS.
         $r->register($initial('text-overflow', new Keyword('clip')));
 
+        // CSS Overflow 4 line-clamp — clamps a block container's inline
+        // content to N line boxes, dropping the remainder and marking the
+        // last retained line with a block ellipsis. `line-clamp` is the
+        // standard property; `-webkit-line-clamp` is the legacy alias that
+        // only takes effect with the legacy `display: -webkit-box` +
+        // `-webkit-box-orient: vertical` pairing (which we also register so
+        // the layout gate can detect it). None of these inherit.
+        $r->register($initial('line-clamp', new Keyword('none')));
+        $r->register($initial('-webkit-line-clamp', new Keyword('none')));
+        $r->register($initial('-webkit-box-orient', new Keyword('horizontal')));
+
         // CSS 2.1 §11.1.2 `clip` — clips an absolutely-positioned element
         // (and its descendants) to a `rect(top, right, bottom, left)`
         // region relative to its border box. Deprecated in favour of

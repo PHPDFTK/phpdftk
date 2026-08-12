@@ -369,6 +369,16 @@ final class InlineLayout
             $y += $effective;
         }
 
+        // CSS Overflow 4 line-clamp: keep only the first N line boxes, mark
+        // the last retained one with a block ellipsis, and shrink the block's
+        // height to those lines. Runs before text-overflow so a clamped line
+        // that also overflows horizontally isn't given two ellipses, and
+        // before text-align so alignment sees the retained rect.
+        $clamp = $this->lineClampCount($parent);
+        if ($clamp !== null && count($lines) > $clamp) {
+            [$lines, $y] = $this->applyLineClamp($lines, $clamp, $availableWidth, $shapingCtx, $letterSpacing);
+        }
+
         // CSS UI 3 §6.2: `text-overflow: ellipsis` truncates each line's
         // tail when its content exceeds the available width. Runs before
         // text-align so the alignment math operates on the truncated rect.
@@ -717,55 +727,147 @@ final class InlineLayout
         ) {
             return $lines;
         }
+        $out = [];
+        foreach ($lines as $line) {
+            // `force: false` — only lines whose content actually overflows the
+            // available width get an ellipsis (CSS UI 3 §6.2).
+            $out[] = $this->appendEllipsisToLine($line, $availableWidth, $shapingCtx, $letterSpacing, false);
+        }
+        return $out;
+    }
+
+    /**
+     * Append a U+2026 ellipsis to the end of a single line, trimming the
+     * trailing content so the ellipsis fits within `$availableWidth`. When
+     * `$force` is false the line is returned untouched unless its content
+     * exceeds the width (the `text-overflow: ellipsis` contract); when true
+     * the ellipsis is added regardless of overflow (the line-clamp
+     * block-ellipsis, required on the last retained line even if it fits).
+     */
+    private function appendEllipsisToLine(
+        LineBox $line,
+        float $availableWidth,
+        ShapingContext $shapingCtx,
+        float $letterSpacing,
+        bool $force,
+    ): LineBox {
+        if (!$force && $line->totalWidth() <= $availableWidth) {
+            return $line;
+        }
         $ellipsis = $this->shaper->shapeRun("\u{2026}", $shapingCtx);
         if ($ellipsis->glyphs === []) {
-            return $lines;
+            return $line;
         }
         if ($letterSpacing !== 0.0) {
             $ellipsis = $this->applyLetterSpacing($ellipsis, $letterSpacing);
         }
         $ellipsisWidth = $ellipsis->totalAdvance;
 
-        $out = [];
-        foreach ($lines as $line) {
-            if ($line->totalWidth() <= $availableWidth) {
-                $out[] = $line;
-                continue;
+        // Drop fragments from the end until the remaining content + ellipsis
+        // fits, then trim glyphs off the trailing fragment if it still
+        // overflows. Per CSS UI 3 §6.2 the ellipsis sits immediately adjacent
+        // to the last visible glyph.
+        $fragments = $line->fragments;
+        $cutoff = $availableWidth - $ellipsisWidth;
+        while ($fragments !== []) {
+            $last = $fragments[array_key_last($fragments)];
+            if ($last->x + $last->width <= $cutoff) {
+                break;
             }
-            // Drop fragments from the end until the remaining content +
-            // ellipsis fits, then trim glyphs off the trailing fragment
-            // if it still overflows. Per CSS UI 3 §6.2 the ellipsis sits
-            // immediately adjacent to the last visible glyph.
-            $fragments = $line->fragments;
-            $cutoff = $availableWidth - $ellipsisWidth;
-            while ($fragments !== []) {
-                $last = $fragments[array_key_last($fragments)];
-                if ($last->x + $last->width <= $cutoff) {
-                    break;
-                }
-                // Try a per-glyph trim of the trailing fragment before
-                // discarding it whole — `ppppp` overflowing `400px /
-                // 100px-per-glyph` keeps `ppp` + ellipsis, not just an
-                // orphan ellipsis at x = 0.
-                $trimmed = $this->trimFragmentToFit($last, $cutoff);
-                if ($trimmed !== null) {
-                    $fragments[array_key_last($fragments)] = $trimmed;
-                    break;
-                }
-                array_pop($fragments);
+            // Try a per-glyph trim of the trailing fragment before discarding
+            // it whole — `ppppp` overflowing `400px / 100px-per-glyph` keeps
+            // `ppp` + ellipsis, not just an orphan ellipsis at x = 0.
+            $trimmed = $this->trimFragmentToFit($last, $cutoff);
+            if ($trimmed !== null) {
+                $fragments[array_key_last($fragments)] = $trimmed;
+                break;
             }
-            if ($fragments === []) {
-                // Nothing fits before the ellipsis; emit just the ellipsis
-                // at x = 0 so the user sees something.
-                $fragments[] = new InlineFragment(0.0, $ellipsisWidth, $ellipsis);
-            } else {
-                $last = $fragments[array_key_last($fragments)];
-                $tail = $last->x + $last->width;
-                $fragments[] = new InlineFragment($tail, $ellipsisWidth, $ellipsis);
-            }
-            $out[] = new LineBox($line->y, $line->height, $fragments, $line->baseline);
+            array_pop($fragments);
         }
-        return $out;
+        if ($fragments === []) {
+            // Nothing fits before the ellipsis; emit just the ellipsis at
+            // x = 0 so the user sees something.
+            $fragments[] = new InlineFragment(0.0, $ellipsisWidth, $ellipsis);
+        } else {
+            $last = $fragments[array_key_last($fragments)];
+            $tail = $last->x + $last->width;
+            $fragments[] = new InlineFragment($tail, $ellipsisWidth, $ellipsis);
+        }
+
+        return new LineBox($line->y, $line->height, $fragments, $line->baseline);
+    }
+
+    /**
+     * The effective `line-clamp` count for a block, or null when the block is
+     * not clamped. The standard `line-clamp: <integer>` applies to any block;
+     * the legacy `-webkit-line-clamp: <integer>` only takes effect under the
+     * legacy `display: -webkit-box` / `-webkit-box-orient: vertical` pairing
+     * (CSS Overflow 4 Appendix; WPT asserts it is otherwise inert).
+     */
+    private function lineClampCount(Box $box): ?int
+    {
+        $value = $box->style->get('line-clamp');
+        if ($value instanceof \Phpdftk\Css\Value\Integer && $value->value > 0) {
+            return $value->value;
+        }
+        $legacy = $box->style->get('-webkit-line-clamp');
+        if ($legacy instanceof \Phpdftk\Css\Value\Integer
+            && $legacy->value > 0
+            && $this->legacyWebkitClampApplies($box)
+        ) {
+            return $legacy->value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the legacy `-webkit-line-clamp` gate is satisfied: the box must
+     * be a legacy `-webkit-box` / `-webkit-inline-box` with a vertical
+     * `-webkit-box-orient`.
+     */
+    private function legacyWebkitClampApplies(Box $box): bool
+    {
+        $display = $box->style->get('display');
+        if (!($display instanceof \Phpdftk\Css\Value\Keyword)) {
+            return false;
+        }
+        $d = strtolower($display->name);
+        if ($d !== '-webkit-box' && $d !== '-webkit-inline-box') {
+            return false;
+        }
+        $orient = $box->style->get('-webkit-box-orient');
+
+        return $orient instanceof \Phpdftk\Css\Value\Keyword
+            && in_array(strtolower($orient->name), ['vertical', 'block-axis'], true);
+    }
+
+    /**
+     * Clamp the line list to `$maxLines`: keep the first N lines, mark the
+     * last retained line with a forced block ellipsis, and return the reduced
+     * line list together with the new block-axis extent (so the block shrinks
+     * to exactly the retained lines). Caller guarantees `count($lines) >
+     * $maxLines >= 1`.
+     *
+     * @param list<LineBox> $lines
+     * @return array{list<LineBox>, float}
+     */
+    private function applyLineClamp(
+        array $lines,
+        int $maxLines,
+        float $availableWidth,
+        ShapingContext $shapingCtx,
+        float $letterSpacing,
+    ): array {
+        $kept = array_slice($lines, 0, $maxLines);
+        $lastIdx = array_key_last($kept);
+        $kept[$lastIdx] = $this->appendEllipsisToLine($kept[$lastIdx], $availableWidth, $shapingCtx, $letterSpacing, true);
+        $height = 0.0;
+        foreach ($kept as $line) {
+            $height = max($height, $line->y + $line->height);
+        }
+
+        return [$kept, $height];
     }
 
     /**

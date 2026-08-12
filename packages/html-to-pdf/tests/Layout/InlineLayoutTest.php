@@ -444,6 +444,50 @@ final class InlineLayoutTest extends TestCase
         self::assertEqualsWithDelta(36.0, $p->lineBoxes[0]->height, 0.001);
     }
 
+    public function testLineClampLimitsLineCountAndShrinksHeight(): void
+    {
+        $this->skipIfNoFont();
+        // CSS Overflow 4 — `line-clamp: 2` keeps only the first two line
+        // boxes and shrinks the block to them; the identical unclamped block
+        // keeps every wrapped line and is taller.
+        $text = str_repeat("\u{1820} ", 80);
+        $clamped = $this->buildTree(
+            '<html><body><div id="c">' . $text . '</div></body></html>',
+            'html, body { display: block; } #c { display: block; width: 100px; line-clamp: 2; }',
+        );
+        $this->layout->layout($clamped, $this->defaultContext());
+        $c = $this->find($clamped, 'div');
+        self::assertNotNull($c);
+        self::assertSame(2, count($c->lineBoxes), 'clamped to exactly 2 lines');
+
+        $unclamped = $this->buildTree(
+            '<html><body><div id="c">' . $text . '</div></body></html>',
+            'html, body { display: block; } #c { display: block; width: 100px; }',
+        );
+        $this->layout->layout($unclamped, $this->defaultContext());
+        $u = $this->find($unclamped, 'div');
+        self::assertNotNull($u);
+        self::assertGreaterThan(2, count($u->lineBoxes), 'unclamped keeps all wrapped lines');
+        self::assertGreaterThan($c->geometry->height, $u->geometry->height, 'clamp shrinks the block height');
+    }
+
+    public function testWebkitLineClampInertWithoutLegacyBox(): void
+    {
+        $this->skipIfNoFont();
+        // `-webkit-line-clamp` is inert without the legacy `display:-webkit-box`
+        // + `-webkit-box-orient: vertical` pairing (WPT asserts this), so a
+        // plain block keeps all its wrapped lines.
+        $text = str_repeat("\u{1820} ", 80);
+        $box = $this->buildTree(
+            '<html><body><div id="c">' . $text . '</div></body></html>',
+            'html, body { display: block; } #c { display: block; width: 100px; -webkit-line-clamp: 2; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $c = $this->find($box, 'div');
+        self::assertNotNull($c);
+        self::assertGreaterThan(2, count($c->lineBoxes), 'webkit-line-clamp inert without legacy -webkit-box');
+    }
+
     public function testTallInlineBlockGrowsLineBoxHeight(): void
     {
         $this->skipIfNoFont();
