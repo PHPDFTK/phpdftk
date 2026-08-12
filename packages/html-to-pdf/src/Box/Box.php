@@ -51,6 +51,21 @@ abstract class Box
      */
     public ?MultiColumnLayout $multiColumn = null;
 
+    /**
+     * True when this box is an out-of-flow (abs-pos / fixed) box whose
+     * computed `display` was inline-level BEFORE the CSS Display §2.7
+     * blockification that rewrites out-of-flow displays to `block` (set by
+     * {@see \Phpdftk\HtmlToPdf\Box\BoxGenerator}). It preserves the
+     * discriminator the cascade otherwise loses, so the static-position
+     * recovery in {@see \Phpdftk\HtmlToPdf\Layout\BlockLayout} can apply the
+     * CSS 2.1 §10.6.4 inline-continuation static position (end/top of the
+     * previous sibling's last line box) ONLY to boxes that would have laid
+     * out inline in normal flow. A box whose static display was block-level
+     * (this flag false) uses the ordinary block-flow static position
+     * (container inline-start / next block position) instead.
+     */
+    public bool $wasInlineLevel = false;
+
     public function __construct(
         public readonly ?Element $element,
         public readonly CascadedValues $style,

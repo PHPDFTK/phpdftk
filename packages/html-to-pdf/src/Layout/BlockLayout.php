@@ -7747,21 +7747,28 @@ final class BlockLayout
                 // Static-X origin mirrors static-Y: an inline-level abspos with
                 // no left/right anchor starts at the inline END of the
                 // preceding inline content (`text<span abspos>`), not the
-                // container's inline-start.
+                // container's inline-start. The inline-continuation recovery
+                // applies ONLY when the box's static-flow display was
+                // inline-level (`$child->wasInlineLevel`); a block-level
+                // abspos (the ubiquitous `<div style="position:absolute">`
+                // overlay following a `<p>`) takes the ordinary block-flow
+                // static position — the container's inline-start `$originX` —
+                // per CSS 2.1 §10.3.7. Without this gate the block overlay
+                // wrongly lands at the previous paragraph's line end.
                 $staticX = $hasLeftAnchor
                     ? $originX
-                    : ($this->inlineStaticPositionX($prevInFlowChild) ?? $originX);
+                    : (($child->wasInlineLevel ? $this->inlineStaticPositionX($prevInFlowChild) : null) ?? $originX);
                 $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $staticX;
                 // Static-Y origin: the positioned-ancestor edge when the
                 // box has a top/bottom anchor, otherwise the in-flow
                 // static position. For an inline-level abspos that follows
                 // inline content (the `text<span style=position:absolute>`
                 // pattern), that static position is the TOP of the last
-                // line of that content — not `$cursorY` (the bottom of the
-                // whole inline formatting context).
+                // line of that content — not `$cursorY`. A block-level abspos
+                // uses `$cursorY` (its next block-flow position) directly.
                 $staticY = $hasTopAnchor
                     ? $cursorY
-                    : ($this->inlineStaticPositionY($prevInFlowChild) ?? $cursorY);
+                    : (($child->wasInlineLevel ? $this->inlineStaticPositionY($prevInFlowChild) : null) ?? $cursorY);
                 $absOriginY = ($pa !== null && $hasTopAnchor) ? $pa->originY : $staticY;
                 // CSS 2.1 §10.3.7 / §10.6.4 — when both opposing edge
                 // anchors are set (left+right or top+bottom) AND the
@@ -8083,12 +8090,16 @@ final class BlockLayout
                 // horizontal stacker's inlineStaticPositionX/Y recovery — the
                 // fix that lands a static `<span style=position:absolute>`
                 // after the vertical text rather than at the container corner.
+                // As in the horizontal stacker, the inline-continuation
+                // recovery applies only to boxes whose static-flow display was
+                // inline-level; a block-level abspos uses the raw block cursor
+                // / container inline-start.
                 $absOriginX = ($pa !== null && $hasLeftAnchor)
                     ? $pa->originX
-                    : ($this->inlineStaticBlockPositionVertical($prevInFlowChild) ?? $cursorX);
+                    : (($child->wasInlineLevel ? $this->inlineStaticBlockPositionVertical($prevInFlowChild) : null) ?? $cursorX);
                 $absOriginY = ($pa !== null && $hasTopAnchor)
                     ? $pa->originY
-                    : ($this->inlineStaticInlineEndVertical($prevInFlowChild) ?? $originY);
+                    : (($child->wasInlineLevel ? $this->inlineStaticInlineEndVertical($prevInFlowChild) : null) ?? $originY);
                 $this->applyAbsoluteCornerAnchorSize($child, $absCb);
                 $absLayoutCtx = $absCb->withOrigin($absOriginX, $absOriginY);
                 $this->layoutBox($child, $absLayoutCtx);

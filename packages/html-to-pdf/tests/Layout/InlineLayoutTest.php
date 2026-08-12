@@ -444,6 +444,31 @@ final class InlineLayoutTest extends TestCase
         self::assertEqualsWithDelta(36.0, $p->lineBoxes[0]->height, 0.001);
     }
 
+    public function testBlockLevelAbsposUsesBlockStaticPositionNotInlineEnd(): void
+    {
+        $this->skipIfNoFont();
+        // CSS 2.1 §10.3.7 — a BLOCK-level absolutely-positioned box with
+        // all-auto insets takes the block-flow static position (the
+        // container's inline-start), NOT the inline-continuation position at
+        // the end of the preceding paragraph's last line. That inline
+        // recovery must apply only to originally-inline-level abspos boxes.
+        // With a default font the preceding <p> now has line boxes, which
+        // previously mis-triggered the recovery for block-level overlays.
+        $box = $this->buildTree(
+            '<html><body><p>' . str_repeat("\u{1820} ", 12) . '</p>'
+                . '<div id="ap"></div></body></html>',
+            'html, body, p { display: block; } '
+                . '#ap { display: block; position: absolute; width: 20px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $body = $this->find($box, 'body');
+        $ap = $this->find($box, 'div');
+        self::assertNotNull($body);
+        self::assertNotNull($ap);
+        self::assertFalse($ap->wasInlineLevel, 'block-level abspos is not flagged inline');
+        self::assertEqualsWithDelta($body->geometry->x, $ap->geometry->x, 1.0, 'block abspos sits at the container inline-start, not the paragraph text end');
+    }
+
     public function testLineClampLimitsLineCountAndShrinksHeight(): void
     {
         $this->skipIfNoFont();

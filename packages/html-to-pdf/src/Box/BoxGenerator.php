@@ -212,10 +212,17 @@ final class BoxGenerator
         // doing so regresses `mathml/presentation-markup/spaces/
         // space-3` (which uses `<math style="position: absolute;
         // top: 0; left: 0">`).
+        $wasInlineLevelOutOfFlow = false;
         if (in_array($display, ['inline', 'inline-block', 'inline-flex', 'inline-grid', 'inline-table'], true)
             && $this->isOutOfFlow($values)
             && !$this->isForeignContentRoot($element)
         ) {
+            // Remember the pre-blockification level so the abs-pos
+            // static-position recovery can distinguish an originally
+            // inline-level box (inline-continuation static position) from an
+            // originally block-level one (block-flow static position). The
+            // cascade's `display` is about to be overwritten to `block`.
+            $wasInlineLevelOutOfFlow = true;
             $values->set('display', new Keyword('block'));
             $display = 'block';
         }
@@ -331,7 +338,9 @@ final class BoxGenerator
         // paint-clip it. This must precede the `<br>`/replaced-element
         // shortcuts so those elements' contents are hidden too.
         if ($contentVisibilityHidden) {
-            return $this->makeBox($element, $values, $display);
+            $hiddenBox = $this->makeBox($element, $values, $display);
+            $hiddenBox->wasInlineLevel = $wasInlineLevelOutOfFlow;
+            return $hiddenBox;
         }
 
         // HTML `<br>` produces a sentinel line-break box — a hard break
@@ -492,6 +501,7 @@ final class BoxGenerator
         }
 
         $box = $this->makeBox($element, $values, $display);
+        $box->wasInlineLevel = $wasInlineLevelOutOfFlow;
 
         // Walk children, building child boxes. Text nodes become TextBoxes.
         // `::before` is generated content prepended to the element's own
