@@ -572,6 +572,43 @@ final class InlineLayoutTest extends TestCase
         self::assertGreaterThan(0.0, $dropped->baselineShift, 'sub shifts below baseline');
     }
 
+    public function testFlexAlignItemsBaselineAlignsItemBaselines(): void
+    {
+        $this->skipIfNoFont();
+        // CSS Flexbox 1 §8.3 — `align-items: baseline` on a row flex container
+        // aligns items on their first baselines. Two items with different
+        // padding-top (→ different baseline offsets) must end with their text
+        // baselines at the SAME layout-Y (the shorter-offset item shifts down).
+        $box = $this->buildTree(
+            '<html><body><div id="f">'
+            . '<div id="a">' . "\u{1820}" . '</div>'
+            . '<div id="b">' . "\u{1820}" . '</div>'
+            . '</div></body></html>',
+            'html, body { display: block; } '
+            . '#f { display: flex; align-items: baseline; } '
+            . '#a { padding-top: 30px; } #b { padding-top: 5px; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $f = $this->find($box, 'div');
+        self::assertNotNull($f);
+        self::assertGreaterThanOrEqual(2, count($f->children));
+        $a = $f->children[0];
+        $b = $f->children[1];
+        self::assertNotSame([], $a->lineBoxes);
+        self::assertNotSame([], $b->lineBoxes);
+        $baselineA = $a->geometry->y + $a->lineBoxes[0]->y + $a->lineBoxes[0]->baseline;
+        $baselineB = $b->geometry->y + $b->lineBoxes[0]->y + $b->lineBoxes[0]->baseline;
+        self::assertEqualsWithDelta($baselineA, $baselineB, 1.0, 'baseline flex items share a common baseline');
+        // The alignment is genuinely baseline-driven, not top-aligned: the
+        // smaller-padding item's BORDER-box top is pushed down so its baseline
+        // meets the larger-padding item's (whose border-box sits at the line
+        // start). (Their content-tops happen to coincide here because the 25px
+        // border-box shift exactly offsets the 25px padding difference.)
+        $aBorderTop = $a->geometry->y - $a->geometry->paddingTop - $a->geometry->borderTop;
+        $bBorderTop = $b->geometry->y - $b->geometry->paddingTop - $b->geometry->borderTop;
+        self::assertGreaterThan($aBorderTop + 1.0, $bBorderTop, 'shorter-offset item shifted down for baseline alignment');
+    }
+
     public function testWordBreakBreakAllSplitsAtEveryCodepoint(): void
     {
         $this->skipIfNoFont();

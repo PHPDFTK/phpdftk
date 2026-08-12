@@ -3078,14 +3078,41 @@ final class BlockLayout
             $lineSlacks[$lineIdx] = max(0.0, $containerMain - $lineUsed);
         }
 
-        // Per-line cross extents (max of item cross sizes within line).
+        // Per-line cross extents (max of item cross sizes within line). CSS
+        // Flexbox 1 §8.3: items aligned to `baseline` on a horizontal (row)
+        // line share a common baseline — the line's baseline is the greatest
+        // above-baseline extent among them, and the line's cross size must
+        // also fit the greatest below-baseline extent, so a line can be taller
+        // than any single item's cross size.
         $lineCrosses = [];
+        $lineBaselines = [];
         foreach ($lines as $lineIdx => $indices) {
-            $maxCross = 0.0;
+            $maxNonBaselineCross = 0.0;
+            $lineBaseline = 0.0;
+            $maxBaselineAfter = 0.0;
+            $hasBaseline = false;
             foreach ($indices as $i) {
-                $maxCross = max($maxCross, $itemCrosses[$i]);
+                $child = $children[$i];
+                [$itemAlign] = $this->resolveFlexItemAlign($style, $child, $alignItems);
+                $before = null;
+                if (!$isColumn && $itemAlign === 'baseline') {
+                    $before = $this->flexBaselineAbove($child);
+                }
+                if ($before !== null) {
+                    $lineBaseline = max($lineBaseline, $before);
+                    $maxBaselineAfter = max($maxBaselineAfter, $itemCrosses[$i] - $before);
+                    $hasBaseline = true;
+                } else {
+                    // Non-baseline items — and baseline items with no reliable
+                    // baseline (e.g. a multicol container) — contribute their
+                    // full cross size and keep their default alignment.
+                    $maxNonBaselineCross = max($maxNonBaselineCross, $itemCrosses[$i]);
+                }
             }
-            $lineCrosses[$lineIdx] = $maxCross;
+            $lineCrosses[$lineIdx] = $hasBaseline
+                ? max($maxNonBaselineCross, $lineBaseline + $maxBaselineAfter)
+                : $maxNonBaselineCross;
+            $lineBaselines[$lineIdx] = $hasBaseline ? $lineBaseline : null;
         }
 
         // Container cross size: declared if available; otherwise sum
@@ -3219,22 +3246,7 @@ final class BlockLayout
                 // carry a `safe`/`unsafe` overflow keyword (a ValueList, e.g.
                 // `safe center`); unwrap it. `auto`/`normal` map to the
                 // container's align-items / to `stretch` respectively.
-                [$alignSelf, $selfSafe] = $this->flexAlignValue($child->style, 'align-self');
-                if ($alignSelf === 'auto') {
-                    // Only `auto` defers to the container's align-items.
-                    [$effectiveAlign, $safeAlign] = $this->flexAlignValue($style, 'align-items');
-                    if ($effectiveAlign === 'auto') {
-                        $effectiveAlign = $alignItems;
-                    }
-                } else {
-                    $effectiveAlign = $alignSelf;
-                    $safeAlign = $selfSafe;
-                }
-                // `normal` (and a leftover `auto`) behaves as `stretch` on a
-                // flex item (CSS Box Alignment 3 §4.1).
-                if ($effectiveAlign === 'normal' || $effectiveAlign === 'auto') {
-                    $effectiveAlign = 'stretch';
-                }
+                [$effectiveAlign, $safeAlign] = $this->resolveFlexItemAlign($style, $child, $alignItems);
                 $crossSlack = $lineCross - $itemCross;
                 $alignedCrossInLine = 0.0;
                 switch ($effectiveAlign) {
@@ -3248,6 +3260,19 @@ final class BlockLayout
                         // axis; for horizontal-tb LTR that is physical start /
                         // end (the vertical-wm nuance is deferred).
                         $alignedCrossInLine = $crossSlack;
+                        break;
+                    case 'baseline':
+                        // CSS Flexbox 1 §8.3 — place the item so its first
+                        // baseline sits on the line's shared baseline (row /
+                        // horizontal-tb only). Items with no reliable baseline
+                        // (flexBaselineAbove null — e.g. a multicol container)
+                        // keep flex-start, as does the column axis (deferred).
+                        if (!$isColumn && ($lineBaselines[$lineIdx] ?? null) !== null) {
+                            $before = $this->flexBaselineAbove($child);
+                            if ($before !== null) {
+                                $alignedCrossInLine = $lineBaselines[$lineIdx] - $before;
+                            }
+                        }
                         break;
                     case 'stretch':
                         // Stretch to fill the *line's* cross extent
@@ -5906,6 +5931,89 @@ final class BlockLayout
             }
         }
         return ['auto', false];
+    }
+
+    /**
+     * The effective (used) flex alignment for a child: `align-self` (falling
+     * back to the container's `align-items` when `auto`), with `normal` / a
+     * leftover `auto` mapped to `stretch` per CSS Box Alignment 3 §4.1.
+     * Returns `[align, safe]` where `safe` is the overflow-safety flag.
+     *
+     * @return array{string, bool}
+     */
+    private function resolveFlexItemAlign(CascadedValues $containerStyle, Box $child, string $containerAlignItems): array
+    {
+        [$alignSelf, $selfSafe] = $this->flexAlignValue($child->style, 'align-self');
+        if ($alignSelf === 'auto') {
+            [$effectiveAlign, $safeAlign] = $this->flexAlignValue($containerStyle, 'align-items');
+            if ($effectiveAlign === 'auto') {
+                $effectiveAlign = $containerAlignItems;
+            }
+        } else {
+            $effectiveAlign = $alignSelf;
+            $safeAlign = $selfSafe;
+        }
+        if ($effectiveAlign === 'normal' || $effectiveAlign === 'auto') {
+            $effectiveAlign = 'stretch';
+        }
+
+        return [$effectiveAlign, $safeAlign];
+    }
+
+    /**
+     * The distance from a box's MARGIN-box top to its first baseline (CSS Box
+     * Alignment 3 §9 / CSS2 §10.8), for flex / grid `align-*: baseline`, or
+     * null when the box has no reliably-computable natural baseline. Rather
+     * than synthesize a baseline for such boxes — which would require
+     * per-formatting-context baseline export (e.g. a multi-column container's
+     * "highest column baseline") — callers EXCLUDE them from baseline
+     * participation and leave them at their default (start) alignment. That
+     * keeps the common case (text / block items) exact without inventing a
+     * wrong baseline for the deferred cases.
+     */
+    private function flexBaselineAbove(Box $box): ?float
+    {
+        $baselineY = $this->firstBaselineAbsoluteY($box);
+        if ($baselineY === null) {
+            return null;
+        }
+        $g = $box->geometry;
+        // geometry->y is the content-box top; the margin-box top sits
+        // padding + border + margin above it.
+        $marginBoxTopY = $g->y - $g->paddingTop - $g->borderTop - $g->marginTop;
+
+        return $baselineY - $marginBoxTopY;
+    }
+
+    /**
+     * The absolute layout-Y of a box's first baseline — its first in-flow line
+     * box's baseline, recursing into the first in-flow block child — or null
+     * when the box has no natural baseline: empty / atomic content, or a
+     * multi-column container (whose children hold pre-slice column positions
+     * that don't reflect the visual baseline; proper column baseline export is
+     * a follow-up).
+     */
+    private function firstBaselineAbsoluteY(Box $box): ?float
+    {
+        if ($box->multiColumn !== null) {
+            return null;
+        }
+        if ($box->lineBoxes !== []) {
+            $line = $box->lineBoxes[0];
+
+            return $box->geometry->y + $line->y + $line->baseline;
+        }
+        foreach ($box->children as $child) {
+            if ($this->isOutOfFlow($child)) {
+                continue;
+            }
+            $baseline = $this->firstBaselineAbsoluteY($child);
+            if ($baseline !== null) {
+                return $baseline;
+            }
+        }
+
+        return null;
     }
 
     /**
