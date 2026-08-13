@@ -6,6 +6,7 @@ namespace Phpdftk\HtmlToPdf\Box;
 
 use Phpdftk\Css\Cascade\Cascade;
 use Phpdftk\Css\Cascade\CascadedValues;
+use Phpdftk\Css\Cascade\WritingMode;
 use Phpdftk\Css\Sheet\Stylesheet;
 use Phpdftk\Css\Value\Keyword;
 use Phpdftk\Html\Dom\Document;
@@ -1786,6 +1787,12 @@ final class BoxGenerator
         $float = $values->get('float');
         if ($float instanceof Keyword) {
             $name = strtolower($float->name);
+            // CSS Logical 1 §4.1: resolve `inline-start` / `inline-end` to a
+            // physical side so a logical float is blockified + pulled out of
+            // flow exactly when it resolves to left/right (horizontal mode).
+            if ($name === 'inline-start' || $name === 'inline-end') {
+                $name = WritingMode::fromStyle($values)->physicalEdge($name);
+            }
             if ($name === 'left' || $name === 'right') {
                 return true;
             }

@@ -266,6 +266,60 @@ final class BlockLayoutTest extends TestCase
         );
     }
 
+    public function testLogicalFloatInlineStartAndEndResolveToPhysicalSides(): void
+    {
+        // CSS Logical 1 §4.1 — `float: inline-start` / `inline-end` resolve to
+        // physical left/right per the box's writing-mode + direction. In the
+        // default horizontal-tb LTR flow, inline-start floats to the left edge
+        // and inline-end to the right edge of the containing block.
+        $box = $this->buildTree(
+            '<html><body><div id="cb">'
+            . '<div id="s"></div><div id="e"></div></div></body></html>',
+            'html, body { display: block; }
+             #cb { width: 300px; }
+             #s { float: inline-start; width: 50px; height: 20px; }
+             #e { float: inline-end; width: 50px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cb = $this->findById($box, 'cb');
+        $s = $this->findById($box, 's');
+        $e = $this->findById($box, 'e');
+        self::assertNotNull($cb);
+        self::assertNotNull($s);
+        self::assertNotNull($e);
+        // inline-start → left edge of the CB.
+        self::assertEqualsWithDelta($cb->geometry->x, $s->geometry->x, 0.5);
+        // inline-end → right edge: box right aligns with the CB right edge.
+        self::assertEqualsWithDelta(
+            $cb->geometry->x + $cb->geometry->width,
+            $e->geometry->x + $e->geometry->width,
+            0.5,
+        );
+    }
+
+    public function testLogicalFloatInlineStartFollowsRtlDirection(): void
+    {
+        // CSS Logical 1 §4.1 — in RTL, `float: inline-start` resolves to the
+        // physical RIGHT edge (the opposite of LTR), proving the normalization
+        // honours `direction`, not a hard-coded left.
+        $box = $this->buildTree(
+            '<html><body><div id="cb"><div id="s"></div></div></body></html>',
+            'html, body { display: block; }
+             #cb { width: 300px; direction: rtl; }
+             #s { float: inline-start; width: 50px; height: 20px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $cb = $this->findById($box, 'cb');
+        $s = $this->findById($box, 's');
+        self::assertNotNull($cb);
+        self::assertNotNull($s);
+        self::assertEqualsWithDelta(
+            $cb->geometry->x + $cb->geometry->width,
+            $s->geometry->x + $s->geometry->width,
+            0.5,
+        );
+    }
+
     public function testTableFlexItemNotShrunkBelowMinContent(): void
     {
         // CSS Tables 3 §4 — a `display: table` flex item is not shrunk below

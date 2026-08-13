@@ -1592,6 +1592,14 @@ final class BlockLayout
             return null;
         }
         $lower = strtolower($value->name);
+        // CSS Logical 1 §4.1: `inline-start` / `inline-end` resolve to a
+        // physical side per the box's own writing-mode + direction. In a
+        // horizontal mode they map to left/right; in a vertical mode they
+        // map to top/bottom, which the CSS2 float model cannot place, so
+        // those fall through to `null` (unfloated) as before.
+        if ($lower === 'inline-start' || $lower === 'inline-end') {
+            $lower = WritingMode::fromStyle($box->style)->physicalEdge($lower);
+        }
         return $lower === 'left' || $lower === 'right' ? $lower : null;
     }
 
@@ -1606,6 +1614,12 @@ final class BlockLayout
             return null;
         }
         $lower = strtolower($value->name);
+        // CSS Logical 1 §4.1: normalize `inline-start` / `inline-end` to a
+        // physical side (horizontal mode → left/right). Vertical-mode logical
+        // clears map to top/bottom, which the CSS2 clear model ignores.
+        if ($lower === 'inline-start' || $lower === 'inline-end') {
+            $lower = WritingMode::fromStyle($box->style)->physicalEdge($lower);
+        }
         return in_array($lower, ['left', 'right', 'both'], true) ? $lower : null;
     }
 
