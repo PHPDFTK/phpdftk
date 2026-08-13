@@ -8,7 +8,10 @@ use Phpdftk\Css\Cascade\Cascade;
 use Phpdftk\Css\Cascade\CascadedValues;
 use Phpdftk\Css\Cascade\WritingMode;
 use Phpdftk\Css\Sheet\Stylesheet;
+use Phpdftk\Css\Value\Color;
 use Phpdftk\Css\Value\Keyword;
+use Phpdftk\Css\Value\Length;
+use Phpdftk\Css\Value\LengthUnit;
 use Phpdftk\Html\Dom\Document;
 use Phpdftk\Html\Dom\Element;
 use Phpdftk\Html\Dom\Text;
@@ -575,7 +578,17 @@ final class BoxGenerator
         if (($box instanceof InlineBox || $box instanceof AtomicInlineBox)
             && $splitsAroundBlock
         ) {
-            $promoted = new AnonymousBlockBox($element, $values);
+            // Only a NON-atomic inline (`display: inline`) splits around a
+            // block into an ANONYMOUS wrapper whose box-decoration is dropped
+            // (CSS 2.1 §9.2.1.1). An atomic inline-block is itself a block
+            // container: its border / padding / margin / background apply to
+            // the inline-block box as usual, so keep its cascade verbatim.
+            $promoted = new AnonymousBlockBox(
+                $element,
+                $box instanceof InlineBox
+                    ? $this->blockInInlineWrapperValues($values)
+                    : $values,
+            );
             $inlineGroup = [];
             foreach ($rawChildren as $child) {
                 if ($this->isInlineLevel($child)) {
@@ -1767,6 +1780,33 @@ final class BoxGenerator
             return 'svg';
         }
         return null;
+    }
+
+    /**
+     * CSS 2.1 §9.2.1.1 — the anonymous block box that wraps a block split
+     * out of an inline is anonymous: the inline's own border / padding /
+     * margin / background belong to the inline FRAGMENTS around the block,
+     * not to the wrapper (which would otherwise paint a full-width border /
+     * background band across the block). Clone the split inline's cascade
+     * and neutralise those box-decoration longhands while preserving
+     * everything else — notably `position` (so `position: relative` on the
+     * inline still shifts the block half) and the originating `$element`
+     * (the caller keeps it for `<a>` link rects).
+     */
+    private function blockInInlineWrapperValues(CascadedValues $values): CascadedValues
+    {
+        $reset = clone $values;
+        $none = new Keyword('none');
+        $zero = new Length(0.0, LengthUnit::Px);
+        foreach (['top', 'right', 'bottom', 'left'] as $side) {
+            $reset->set("border-$side-style", $none);
+            $reset->set("border-$side-width", $zero);
+            $reset->set("padding-$side", $zero);
+            $reset->set("margin-$side", $zero);
+        }
+        $reset->set('background-color', new Color(0.0, 0.0, 0.0, 0.0));
+        $reset->set('background-image', $none);
+        return $reset;
     }
 
     /**

@@ -273,6 +273,75 @@ final class BoxGeneratorTest extends TestCase
         self::assertSame('hello', $firstText->text);
     }
 
+    public function testBlockInInlineWrapperResetsInlineBoxDecoration(): void
+    {
+        // CSS 2.1 §9.2.1.1 — a <span> carrying border / padding / margin /
+        // background that contains a display:block child splits around the
+        // block into an anonymous block wrapper. The wrapper must NOT carry
+        // the inline's box-decoration (which would paint a full-width border /
+        // background band across the block) but MUST preserve position so
+        // `position: relative` on the inline still shifts the block half.
+        $sheet = $this->css->parseStylesheet(<<<CSS
+            html, body { display: block; }
+            span { display: inline; }
+        CSS);
+        $doc = $this->html->parseDocument(
+            '<html><body><span style="border: 5px solid blue; padding: 10px;'
+            . ' margin: 4px; background-color: red; position: relative">'
+            . '<span style="display: block">x</span></span></body></html>',
+        );
+        $box = $this->generator->generate($doc, [$sheet]);
+        $body = $this->findFirstByTag($box, 'body');
+        self::assertNotNull($body);
+        $wrapper = $body->children[0];
+        self::assertInstanceOf(AnonymousBlockBox::class, $wrapper);
+        // Box-decoration neutralised on the wrapper.
+        $topStyle = $wrapper->style->get('border-top-style');
+        self::assertInstanceOf(Keyword::class, $topStyle);
+        self::assertSame('none', strtolower($topStyle->name));
+        $padTop = $wrapper->style->get('padding-top');
+        self::assertInstanceOf(\Phpdftk\Css\Value\Length::class, $padTop);
+        self::assertSame(0.0, $padTop->value);
+        $marginTop = $wrapper->style->get('margin-top');
+        self::assertInstanceOf(\Phpdftk\Css\Value\Length::class, $marginTop);
+        self::assertSame(0.0, $marginTop->value);
+        $bg = $wrapper->style->get('background-color');
+        self::assertTrue(
+            !($bg instanceof \Phpdftk\Css\Value\Color) || $bg->a <= 0.0,
+            'wrapper background-color is transparent',
+        );
+        // position preserved (relpos coupling with the block half).
+        $pos = $wrapper->style->get('position');
+        self::assertInstanceOf(Keyword::class, $pos);
+        self::assertSame('relative', strtolower($pos->name));
+    }
+
+    public function testInlineBlockWithBlockChildKeepsBoxDecoration(): void
+    {
+        // Narrowing guard for the block-in-inline wrapper reset: an atomic
+        // `display: inline-block` containing a block child is itself a block
+        // CONTAINER (not a split non-atomic inline), so its border / padding /
+        // background apply as usual and must NOT be reset (CSS 2.1 §9.2.1.1
+        // splitting applies only to non-atomic inlines).
+        $sheet = $this->css->parseStylesheet(<<<CSS
+            html, body { display: block; }
+            span { display: inline; }
+        CSS);
+        $doc = $this->html->parseDocument(
+            '<html><body><span style="display: inline-block;'
+            . ' border: 5px solid blue"><span style="display: block">x</span>'
+            . '</span></body></html>',
+        );
+        $box = $this->generator->generate($doc, [$sheet]);
+        $body = $this->findFirstByTag($box, 'body');
+        self::assertNotNull($body);
+        $wrapper = $body->children[0];
+        self::assertInstanceOf(AnonymousBlockBox::class, $wrapper);
+        $topStyle = $wrapper->style->get('border-top-style');
+        self::assertInstanceOf(Keyword::class, $topStyle);
+        self::assertSame('solid', strtolower($topStyle->name), 'inline-block keeps its border');
+    }
+
     public function testPureInlineParentSkipsAnonymousWrapping(): void
     {
         // <p> with only inline children should NOT generate anonymous block
