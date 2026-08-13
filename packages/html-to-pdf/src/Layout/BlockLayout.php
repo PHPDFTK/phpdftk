@@ -3829,6 +3829,13 @@ final class BlockLayout
             $box->gridContentBottom = $geo->y + $rowOffsets[$rowCount];
         }
 
+        // CSS Box Alignment 3 §9 — grid items with `align-self: baseline`
+        // that share a row align on a common baseline. Collect them (and the
+        // per-row baseline) during placement, then apply the block-axis shift
+        // in a second pass once the whole row is laid out.
+        $gridBaselineItems = [];
+        /** @var array<int, float> $gridRowBaselines */
+        $gridRowBaselines = [];
         foreach ($placements as $p) {
             // Skip items that didn't successfully place.
             if ($p['row'] < 0 || $p['col'] < 0) {
@@ -3849,10 +3856,14 @@ final class BlockLayout
             //   `end`   — align to cell's main-end
             //   `center` — centered
             //   `stretch` — fill the cell
+            //   `baseline` — deferred to the row-baseline pass below
             $justify = $this->gridSelfKeyword($p['box'], 'justify-self');
             $alignS = $this->gridSelfKeyword($p['box'], 'align-self');
+            $isBaseline = $this->gridItemIsBaseline($p['box'], $style);
             $isStretchX = $justify === 'stretch';
-            $isStretchY = $alignS === 'stretch';
+            // A baseline item is not stretched — it keeps its natural block
+            // size so its baseline can be aligned.
+            $isStretchY = $alignS === 'stretch' && !$isBaseline;
 
             $childCtx = $context
                 ->withContainingBlock($cellWidth, $cellHeight)
@@ -3926,15 +3937,36 @@ final class BlockLayout
                 }
             }
             if (!$isStretchY) {
-                $slackY = $cellHeight - $childOuterHeight;
-                $shiftY = match ($alignS) {
-                    'end' => $slackY,
-                    'center' => $slackY / 2,
-                    default => 0.0,
-                };
-                if ($shiftY !== 0.0) {
-                    $this->shiftSubtree($p['box'], $shiftY, 0.0);
+                $before = $isBaseline ? $this->flexBaselineAbove($p['box']) : null;
+                if ($before !== null) {
+                    // Defer the block-axis placement to the row-baseline pass;
+                    // `$before` is the item's margin-box-top → baseline offset
+                    // (its margin-box top currently sits at the cell top).
+                    $gridRowBaselines[$p['row']] = max($gridRowBaselines[$p['row']] ?? 0.0, $before);
+                    $gridBaselineItems[] = ['box' => $p['box'], 'row' => $p['row'], 'before' => $before];
+                } else {
+                    // `start` / `end` / `center` (and a baseline item with no
+                    // reliable baseline, which keeps `start`).
+                    $slackY = $cellHeight - $childOuterHeight;
+                    $shiftY = match ($alignS) {
+                        'end' => $slackY,
+                        'center' => $slackY / 2,
+                        default => 0.0,
+                    };
+                    if ($shiftY !== 0.0) {
+                        $this->shiftSubtree($p['box'], $shiftY, 0.0);
+                    }
                 }
+            }
+        }
+
+        // Row-baseline pass: shift each baseline item down so its baseline
+        // meets its row's shared baseline (the greatest above-baseline offset
+        // among the row's baseline items).
+        foreach ($gridBaselineItems as $bi) {
+            $shiftY = $gridRowBaselines[$bi['row']] - $bi['before'];
+            if ($shiftY !== 0.0) {
+                $this->shiftSubtree($bi['box'], $shiftY, 0.0);
             }
         }
 
@@ -6014,6 +6046,24 @@ final class BlockLayout
         }
 
         return null;
+    }
+
+    /**
+     * Whether a grid item uses `baseline` block-axis self-alignment:
+     * `align-self: baseline`, or `align-self: auto` / `normal` inheriting a
+     * container `align-items: baseline` (CSS Box Alignment 3 §4.2). Scoped to
+     * detection so the non-baseline path keeps its existing resolution
+     * (`gridSelfKeyword`), which does not otherwise defer `auto` to the
+     * container — changing that broadly is a separate, riskier fix.
+     */
+    private function gridItemIsBaseline(Box $child, CascadedValues $containerStyle): bool
+    {
+        [$self] = $this->flexAlignValue($child->style, 'align-self');
+        if ($self === 'auto' || $self === 'normal') {
+            [$self] = $this->flexAlignValue($containerStyle, 'align-items');
+        }
+
+        return $self === 'baseline';
     }
 
     /**

@@ -609,6 +609,41 @@ final class InlineLayoutTest extends TestCase
         self::assertGreaterThan($aBorderTop + 1.0, $bBorderTop, 'shorter-offset item shifted down for baseline alignment');
     }
 
+    public function testGridAlignItemsBaselineAlignsItemBaselines(): void
+    {
+        $this->skipIfNoFont();
+        // CSS Box Alignment 3 §9 — grid `align-items: baseline` aligns items
+        // that share a row on their first baselines. Two items in one row with
+        // different padding-top must end with their text baselines at the same
+        // layout-Y.
+        $box = $this->buildTree(
+            '<html><body><div id="g">'
+            . '<div id="a">' . "\u{1820}" . '</div>'
+            . '<div id="b">' . "\u{1820}" . '</div>'
+            . '</div></body></html>',
+            'html, body { display: block; } '
+            . '#g { display: grid; grid-template-columns: auto auto; align-items: baseline; } '
+            . '#a, #b { display: block; } '
+            . '#a { padding-top: 30px; } #b { padding-top: 5px; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $g = $this->find($box, 'div');
+        self::assertNotNull($g);
+        self::assertGreaterThanOrEqual(2, count($g->children));
+        $a = $g->children[0];
+        $b = $g->children[1];
+        self::assertNotSame([], $a->lineBoxes);
+        self::assertNotSame([], $b->lineBoxes);
+        $baselineA = $a->geometry->y + $a->lineBoxes[0]->y + $a->lineBoxes[0]->baseline;
+        $baselineB = $b->geometry->y + $b->lineBoxes[0]->y + $b->lineBoxes[0]->baseline;
+        self::assertEqualsWithDelta($baselineA, $baselineB, 1.0, 'baseline grid items in a row share a common baseline');
+        // Genuinely baseline-driven: the smaller-padding item's border-box top
+        // is pushed down so its baseline meets the larger-padding item's.
+        $aBorderTop = $a->geometry->y - $a->geometry->paddingTop - $a->geometry->borderTop;
+        $bBorderTop = $b->geometry->y - $b->geometry->paddingTop - $b->geometry->borderTop;
+        self::assertGreaterThan($aBorderTop + 1.0, $bBorderTop, 'shorter-offset grid item shifted down for baseline alignment');
+    }
+
     public function testWordBreakBreakAllSplitsAtEveryCodepoint(): void
     {
         $this->skipIfNoFont();
