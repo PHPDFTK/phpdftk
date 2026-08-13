@@ -4093,6 +4093,67 @@ final class PainterTest extends TestCase
         self::assertStringContainsString('/ShadingType 3', $writer->generate());
     }
 
+    public function testImageSetBareStringUnwrapsToImageXObject(): void
+    {
+        // CSS Images 4 §6 — a bare <string> option, `image-set("<url>" 1x)`,
+        // is equivalent to `url("<url>")`. The selected StringValue must paint
+        // the raster image (a `Do` XObject); previously it was dropped by the
+        // background-layer instanceof gate and the box rendered blank.
+        $png = 'data:image/png;base64,' . base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { width: 100px; height: 100px;
+                   background-image: image-set("' . $png . '" 1x); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('Do', $opcodes, 'image-set bare string paints an image XObject');
+    }
+
+    public function testLegacyClipRectWhitespaceFormEmitsClip(): void
+    {
+        // CSS 2.1 §11.1.2 — the legacy `clip` property accepts a rect() with
+        // WHITESPACE-separated edges: `clip: rect(50px 150px 150px 50px)`. That
+        // form parses to a RectShape (vs the comma form's CssFunction) and must
+        // still clip the absolutely-positioned box — a `W` clip + `re` clip
+        // rectangle. Previously the RectShape was dropped (box left unclipped).
+        $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; }
+             div { position: absolute; width: 100px; height: 100px;
+                   background-color: green;
+                   clip: rect(50px 150px 150px 50px); }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        self::assertNotNull($root);
+        $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('W', $opcodes, 'legacy whitespace clip rect emits a clip (W)');
+        self::assertContains('re', $opcodes, 'legacy whitespace clip rect emits the clip rectangle');
+    }
+
     public function testGradientStopsPadEndsToSpanFullRange(): void
     {
         // CSS Images 3 §3.5.1 — before the first stop the gradient is the

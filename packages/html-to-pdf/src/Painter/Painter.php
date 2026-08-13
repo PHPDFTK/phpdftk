@@ -2271,10 +2271,24 @@ final class Painter
     private function resolveClipRect(Box $box): ?array
     {
         $clip = $box->style->get('clip');
-        if (!($clip instanceof \Phpdftk\Css\Value\CssFunction)
-            || strtolower($clip->name) !== 'rect'
-            || count($clip->arguments) !== 4
+        $edges = null;
+        if ($clip instanceof \Phpdftk\Css\Value\CssFunction
+            && strtolower($clip->name) === 'rect'
+            && count($clip->arguments) === 4
         ) {
+            // Comma-separated legacy form: `clip: rect(t, r, b, l)`.
+            $edges = $clip->arguments;
+        } elseif ($clip instanceof \Phpdftk\Css\Value\RectShape
+            && count($clip->edges) === 4
+        ) {
+            // Whitespace-separated legacy form: `clip: rect(t r b l)` parses
+            // to a RectShape (the CSS Shapes 2 `rect()` grammar) whose edges
+            // carry the same top/right/bottom/left border-box-origin semantics
+            // as the comma form (CSS 2.1 §11.1.2). `round <radius>` never
+            // appears on the legacy `clip` property, so it is ignored.
+            $edges = $clip->edges;
+        }
+        if ($edges === null) {
             return null;
         }
         $position = $box->style->get('position');
@@ -2293,7 +2307,7 @@ final class Painter
         $borderBoxH = $g->borderTop + $g->paddingTop + $g->height
             + $g->paddingBottom + $g->borderBottom;
         // rect(top, right, bottom, left); `auto` → border edge.
-        [$topV, $rightV, $bottomV, $leftV] = $clip->arguments;
+        [$topV, $rightV, $bottomV, $leftV] = $edges;
         $top = $this->clipEdgePx($topV, 0.0);
         $right = $this->clipEdgePx($rightV, $borderBoxW);
         $bottom = $this->clipEdgePx($bottomV, $borderBoxH);
@@ -4484,6 +4498,15 @@ final class Painter
     {
         if ($value instanceof \Phpdftk\Css\Value\ImageSet) {
             $value = $this->selectImageSetOption($value);
+        }
+        // A bare-string `image-set()` option — `image-set("/img.png" 1x)` —
+        // selects a StringValue whose <string> is equivalent to url() per
+        // CSS Images 4 §6. Map it to a Url so it paints like the wrapped form.
+        // (A StringValue can only reach here via the image-set unwrap above;
+        // a top-level `background-image: "string"` is invalid and never yields
+        // a bare StringValue layer.)
+        if ($value instanceof \Phpdftk\Css\Value\StringValue) {
+            $value = new \Phpdftk\Css\Value\Url($value->value);
         }
         if ($value instanceof \Phpdftk\Css\Value\Url
             || $value instanceof \Phpdftk\Css\Value\LinearGradient
