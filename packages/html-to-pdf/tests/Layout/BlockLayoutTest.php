@@ -320,6 +320,42 @@ final class BlockLayoutTest extends TestCase
         );
     }
 
+    public function testContainSizeBlockStretchesToContainingBlock(): void
+    {
+        // CSS Sizing 4 §6.1 — `contain: size` substitutes the
+        // contain-intrinsic-size into a box's INTRINSIC (min/max-content)
+        // contributions, NOT into a normal in-flow auto-width block, which
+        // still stretches to fill its containing block. Without a
+        // contain-intrinsic-width the block used to collapse to ~0; it must
+        // fill the CB width (600 from the default context).
+        $box = $this->buildTree(
+            '<html><body><div id="c"></div></body></html>',
+            'html, body { display: block; }
+             #c { display: block; contain: size; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $c = $this->findById($box, 'c');
+        self::assertNotNull($c);
+        self::assertEqualsWithDelta(600.0, $c->geometry->width, 1.0);
+    }
+
+    public function testContainSizeFloatStillShrinkWraps(): void
+    {
+        // Negative control for the gate: a shrink-to-fit box (float) with
+        // `contain: size` and no contain-intrinsic-width takes the contained
+        // width (0), NOT the CB-stretch — the substitution cap must still
+        // apply to shrink-to-fit boxes.
+        $box = $this->buildTree(
+            '<html><body><div id="f"></div></body></html>',
+            'html, body { display: block; }
+             #f { float: left; contain: size; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(0.0, $f->geometry->width, 0.5);
+    }
+
     public function testTableFlexItemNotShrunkBelowMinContent(): void
     {
         // CSS Tables 3 §4 — a `display: table` flex item is not shrunk below

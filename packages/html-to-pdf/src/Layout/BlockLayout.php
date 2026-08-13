@@ -759,10 +759,13 @@ final class BlockLayout
             // the starting content width is the intrinsic-size
             // override rather than the containing-block-derived
             // stretch fill. Caveat: only applies when the box's
-            // layout is bounded by an intrinsic-sized parent —
-            // for a CB-stretched auto-width box (the default),
-            // browsers still fill to the parent. Mirror that by
-            // capping the substitution to the CB-stretch maximum.
+            // layout is bounded by an intrinsic-sized parent (a
+            // shrink-to-fit context). A normal CB-stretched auto-width
+            // block (the default) still fills its containing block even
+            // under `contain: size`: CSS Sizing 4 §6.1 substitutes the
+            // contain-intrinsic-size into the box's INTRINSIC (min/max-
+            // content) contributions, not a stretch-fit width — so the
+            // substitution cap below is gated on blockNeedsShrinkToFit().
             $containedWidth = $this->resolveContainIntrinsicWidth($style);
             $contentWidth = max(
                 0.0,
@@ -770,27 +773,32 @@ final class BlockLayout
                     - $geo->borderLeft - $geo->borderRight
                     - $geo->paddingLeft - $geo->paddingRight,
             );
-            if ($containedWidth !== null) {
-                $contentWidth = min($contentWidth, $containedWidth);
-            } elseif ($this->blockNeedsShrinkToFit($box, $style, $context)) {
-                // CSS 2.1 §10.3.5 (floats) and §10.3.7 (abspos with
-                // both insets `auto`): when `width: auto`, the box
-                // shrink-to-fits — content-box width is
-                // `min(max-content, max(min-content, available))`.
-                // Phase-1 always stretched to the CB which mis-sized
-                // floats with no explicit width (e.g. a
-                // `float: left; aspect-ratio: 1/1` div containing a
-                // 100 px child filled the viewport instead of
-                // collapsing to a 100×100 square).
-                $mm = $this->measureContentMinMax($box, $context);
-                $contentWidth = min($mm['max'], max($mm['min'], $contentWidth));
-                // CSS 2.1 §17.5.2 — once an auto-width table's used width is
-                // computed it is a *resolved* width, so §10.3.3 auto-margin
-                // distribution (`margin: 0 auto` centring) applies. Clear
-                // the auto flag so the centring block below runs. (Floats /
-                // abspos are excluded there by their own guards.)
-                if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
-                    $widthAuto = false;
+            if ($this->blockNeedsShrinkToFit($box, $style, $context)) {
+                if ($containedWidth !== null) {
+                    // A shrink-to-fit box with `contain: size` takes the
+                    // contain-intrinsic-width as its content contribution,
+                    // capped at the CB-stretch maximum.
+                    $contentWidth = min($contentWidth, $containedWidth);
+                } else {
+                    // CSS 2.1 §10.3.5 (floats) and §10.3.7 (abspos with
+                    // both insets `auto`): when `width: auto`, the box
+                    // shrink-to-fits — content-box width is
+                    // `min(max-content, max(min-content, available))`.
+                    // Phase-1 always stretched to the CB which mis-sized
+                    // floats with no explicit width (e.g. a
+                    // `float: left; aspect-ratio: 1/1` div containing a
+                    // 100 px child filled the viewport instead of
+                    // collapsing to a 100×100 square).
+                    $mm = $this->measureContentMinMax($box, $context);
+                    $contentWidth = min($mm['max'], max($mm['min'], $contentWidth));
+                    // CSS 2.1 §17.5.2 — once an auto-width table's used width is
+                    // computed it is a *resolved* width, so §10.3.3 auto-margin
+                    // distribution (`margin: 0 auto` centring) applies. Clear
+                    // the auto flag so the centring block below runs. (Floats /
+                    // abspos are excluded there by their own guards.)
+                    if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+                        $widthAuto = false;
+                    }
                 }
             }
         } elseif ($widthKeyword !== null) {
