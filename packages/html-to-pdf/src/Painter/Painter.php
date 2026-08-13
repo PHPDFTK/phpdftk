@@ -3662,7 +3662,14 @@ final class Painter
         $runs = [];
         foreach ($line->fragments as $fragment) {
             $bg = $fragment->backgroundColor;
-            if ($bg === null) {
+            // A fully transparent background paints nothing — the CSS
+            // `background-color` initial is `transparent` (rgba(0,0,0,0)),
+            // which every inline box computes and propagates to its
+            // fragments, so without this guard a plain nested inline (or
+            // generated counter/marker content) fills an opaque BLACK rect
+            // over its own text. Mirrors the alpha guards already at
+            // paintBoxShadow and boxHasPaintableBackground.
+            if ($bg === null || $bg->a <= 0.0) {
                 continue;
             }
             $last = $runs === [] ? null : $runs[array_key_last($runs)];

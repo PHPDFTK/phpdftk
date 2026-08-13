@@ -4154,6 +4154,79 @@ final class PainterTest extends TestCase
         self::assertContains('re', $opcodes, 'legacy whitespace clip rect emits the clip rectangle');
     }
 
+    public function testTransparentInlineBackgroundEmitsNoFillRect(): void
+    {
+        // The `background-color` initial is `transparent` (rgba(0,0,0,0)),
+        // which every inline box computes and propagates to its text
+        // fragments — so a nested inline used to fill an opaque BLACK rect
+        // over its own glyphs. Reproduces the letter-spacing-nesting bug
+        // (needs a real font so the run yields sized fragments); with the
+        // alpha guard the transparent fragments paint no rectangle at all.
+        $fontPath = __DIR__ . '/../../../../tests/fixtures/fonts/NotoSansMongolian-Regular.otf';
+        if (!is_file($fontPath)) {
+            self::markTestSkipped('Mongolian fixture font missing');
+        }
+        $otd = (new \Phpdftk\FontParser\OpenTypeParser($fontPath))->parse();
+        $g = "\u{1820}";
+        $doc = $this->html->parseDocument(
+            '<html><body><div>' . $g
+            . '<span style="letter-spacing: 10px">' . $g . $g . '</span>'
+            . $g . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; } div { font-size: 30px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $ctx = new LayoutContext(600, 800, 0, 0, new LengthContext(), defaultFont: $otd);
+        $this->layout->layout($root, $ctx);
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $registered = $writer->addOpenTypeFont($otd, [], $page);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, $registered))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertNotContains('re', $opcodes, 'transparent inline background paints no rectangle');
+    }
+
+    public function testOpaqueInlineBackgroundStillFillsRect(): void
+    {
+        // Positive control for the transparent guard: an inline whose
+        // background-color is OPAQUE still fills its rect in its colour.
+        $fontPath = __DIR__ . '/../../../../tests/fixtures/fonts/NotoSansMongolian-Regular.otf';
+        if (!is_file($fontPath)) {
+            self::markTestSkipped('Mongolian fixture font missing');
+        }
+        $otd = (new \Phpdftk\FontParser\OpenTypeParser($fontPath))->parse();
+        $g = "\u{1820}";
+        $doc = $this->html->parseDocument(
+            '<html><body><div>' . $g
+            . '<span style="background-color: red">' . $g . $g . '</span>'
+            . $g . '</div></body></html>',
+        );
+        $sheet = $this->css->parseStylesheet(
+            'html, body, div { display: block; } div { font-size: 30px; }',
+            Origin::UserAgent,
+        );
+        $root = $this->generator->generate($doc, [$sheet]);
+        $ctx = new LayoutContext(600, 800, 0, 0, new LengthContext(), defaultFont: $otd);
+        $this->layout->layout($root, $ctx);
+        $writer = new PdfWriter(compressStreams: false);
+        $page = $writer->addPage(612, 792);
+        $registered = $writer->addOpenTypeFont($otd, [], $page);
+        $stream = $writer->addContentStream($page);
+        (new Painter(792.0, $registered))->paint($root, $stream);
+
+        $opcodes = $this->operatorTokens($stream->getOperators());
+        self::assertContains('re', $opcodes, 'opaque inline background fills its rect');
+        self::assertContains(
+            '1 0 0 rg',
+            array_map('rtrim', $stream->getOperators()),
+            'opaque inline background fills in its own colour (red)',
+        );
+    }
+
     public function testGradientStopsPadEndsToSpanFullRange(): void
     {
         // CSS Images 3 §3.5.1 — before the first stop the gradient is the
