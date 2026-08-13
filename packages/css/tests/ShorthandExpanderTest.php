@@ -76,6 +76,54 @@ final class ShorthandExpanderTest extends TestCase
         }
     }
 
+    public function testGridTemplateSlashFormExpandsToRowsAndColumns(): void
+    {
+        // CSS Grid Layout 2 §7.4 — `grid-template: <rows> / <columns>`
+        // expands to the two track-list longhands (previously the whole
+        // shorthand was dropped, degenerating the grid to a single
+        // implicit row/column).
+        $out = $this->expander->expand('grid-template', $this->value('150px 100px / 200px 300px'));
+        self::assertArrayHasKey('grid-template-rows', $out);
+        self::assertArrayHasKey('grid-template-columns', $out);
+        self::assertSame('150px 100px', $out['grid-template-rows']->toCss());
+        self::assertSame('200px 300px', $out['grid-template-columns']->toCss());
+        self::assertSame('none', strtolower($out['grid-template-areas']->name ?? ''));
+    }
+
+    public function testGridTemplateNoneResetsAllThree(): void
+    {
+        $out = $this->expander->expand('grid-template', $this->value('none'));
+        foreach (['grid-template-rows', 'grid-template-columns', 'grid-template-areas'] as $longhand) {
+            self::assertArrayHasKey($longhand, $out);
+            self::assertSame('none', strtolower($out[$longhand]->name));
+        }
+    }
+
+    public function testGridShorthandExpandsTemplateAndResetsImplicitLonghands(): void
+    {
+        // CSS Grid Layout 2 §7.8 — the `grid` shorthand sets the template
+        // longhands AND resets the implicit-grid longhands to their
+        // initials. (Definite track lists only — intrinsic forms defer.)
+        $out = $this->expander->expand('grid', $this->value('10px 1fr / 100px 100px'));
+        self::assertSame('10px fr(1)', $out['grid-template-rows']->toCss());
+        self::assertSame('100px 100px', $out['grid-template-columns']->toCss());
+        self::assertSame('row', strtolower($out['grid-auto-flow']->name));
+        self::assertSame('auto', strtolower($out['grid-auto-rows']->name));
+        self::assertSame('auto', strtolower($out['grid-auto-columns']->name));
+    }
+
+    public function testGridTemplateAreasFormIsDeferredNotDropped(): void
+    {
+        // The template-areas string form is not modelled yet: expansion
+        // returns no longhands (left for the cascade to ignore) rather
+        // than silently mapping the strings onto track lists.
+        $out = $this->expander->expand('grid-template', $this->value('"a b" "c d" / 1fr 1fr'));
+        self::assertArrayNotHasKey('grid-template-columns', $out);
+        // The `grid` auto-flow form is likewise deferred.
+        $autoFlow = $this->expander->expand('grid', $this->value('auto-flow 100px / 200px'));
+        self::assertArrayNotHasKey('grid-template-rows', $autoFlow);
+    }
+
     public function testBorderSideInitialDistributesToItsLonghands(): void
     {
         $out = $this->expander->expand('border-top', $this->value('initial'));

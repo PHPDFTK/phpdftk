@@ -3480,6 +3480,31 @@ final class RendererTest extends TestCase
         self::assertGreaterThanOrEqual(5, $rgCount, 'multiple rg operators present');
     }
 
+    public function testGridShorthandEndToEndProducesValidPdf(): void
+    {
+        // Integration: a grid defined purely via the `grid` shorthand
+        // (`<rows> / <columns>`) must expand to grid-template-rows /
+        // grid-template-columns and lay the cells into the declared
+        // tracks — previously the shorthand was dropped and the grid
+        // degenerated to a single implicit row/column.
+        $renderer = new Renderer();
+        $writer = new PdfWriter(compressStreams: false);
+        $html = '<html><head><style>'
+            . '.grid { display: grid; grid: 40pt 40pt / 60pt 60pt; gap: 6pt; }'
+            . '.cell { background-color: #cccccc; }'
+            . '</style></head><body>'
+            . '<div class="grid">'
+            . '<div class="cell"></div><div class="cell"></div>'
+            . '<div class="cell"></div><div class="cell"></div>'
+            . '</div></body></html>';
+        $renderer->renderInto($writer, $html);
+        $bytes = $writer->toBytes();
+        self::assertStringStartsWith('%PDF-', $bytes);
+        // Four grey cells laid into the 2x2 track grid.
+        $rgCount = preg_match_all('~0\.8 0\.8 0\.8 rg~', $bytes);
+        self::assertGreaterThanOrEqual(4, $rgCount, 'four grid cells painted');
+    }
+
     public function testGridAdvancedFeaturesEndToEndProducesValidPdf(): void
     {
         // Integration: exercise fr + repeat + span + justify-self in

@@ -111,6 +111,8 @@ final class ShorthandExpander
             'grid-column' => $this->expandGridLine($value, 'column'),
             'grid-row' => $this->expandGridLine($value, 'row'),
             'grid-area' => $this->expandGridArea($value),
+            'grid-template' => $this->expandGridTemplate($value),
+            'grid' => $this->expandGrid($value),
             // CSS Box Alignment 3 §8 — `place-*` shorthands. Single
             // value applies to both axes; two values map first →
             // align (block-axis), second → justify (inline-axis).
@@ -318,6 +320,127 @@ final class ShorthandExpander
             'grid-row-end' => $vs[2] ?? $autoKey,
             'grid-column-end' => $vs[3] ?? $autoKey,
         ];
+    }
+
+    /**
+     * CSS Grid Layout 2 §7.4 — `grid-template` shorthand. Handles the
+     * `none` and `<'grid-template-rows'> / <'grid-template-columns'>`
+     * forms (the common track-list case). The `<line-names>? <string>
+     * …` template-areas form is left unexpanded (returns `[]`) so the
+     * cascade ignores it rather than dropping the columns silently —
+     * area-string layout isn't modelled yet.
+     *
+     * @return array<string, Value>
+     */
+    private function expandGridTemplate(Value $value): array
+    {
+        $none = new \Phpdftk\Css\Value\Keyword('none');
+        if ($value instanceof \Phpdftk\Css\Value\Keyword
+            && strtolower($value->name) === 'none'
+        ) {
+            return [
+                'grid-template-rows' => $none,
+                'grid-template-columns' => $none,
+                'grid-template-areas' => $none,
+            ];
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList
+            && $value->separator === \Phpdftk\Css\Value\ListSeparator::Slash
+            && count($value->values) === 2
+            && $this->gridTrackListIsDefinite($value->values[0])
+            && $this->gridTrackListIsDefinite($value->values[1])
+        ) {
+            return [
+                'grid-template-rows' => $value->values[0],
+                'grid-template-columns' => $value->values[1],
+                'grid-template-areas' => $none,
+            ];
+        }
+        return [];
+    }
+
+    /**
+     * CSS Grid Layout 2 §7.8 — `grid` shorthand. Delegates the plain
+     * `<'grid-template'>` forms to {@see expandGridTemplate()} and, per
+     * spec, resets the implicit-grid longhands (`grid-auto-flow` /
+     * `grid-auto-rows` / `grid-auto-columns`) to their initial values.
+     * The `[ auto-flow && dense? ] …` forms are deferred (returns `[]`).
+     *
+     * @return array<string, Value>
+     */
+    private function expandGrid(Value $value): array
+    {
+        if ($value instanceof \Phpdftk\Css\Value\ValueList
+            && $this->gridHasAutoFlow($value)
+        ) {
+            return [];
+        }
+        $template = $this->expandGridTemplate($value);
+        if ($template === []) {
+            return [];
+        }
+        $template['grid-auto-flow'] = new \Phpdftk\Css\Value\Keyword('row');
+        $template['grid-auto-rows'] = new \Phpdftk\Css\Value\Keyword('auto');
+        $template['grid-auto-columns'] = new \Phpdftk\Css\Value\Keyword('auto');
+        return $template;
+    }
+
+    /**
+     * Whether one axis of a grid template is a list of only DEFINITE
+     * track sizes — `<length>`, `<percentage>`, or `<flex>` (`fr`).
+     * These size the same whether or not the grid container has a
+     * definite size, so expanding them to the longhands is always safe.
+     *
+     * Intrinsic forms (`auto` / `min-content` / `max-content` /
+     * `minmax()` / `fit-content()` / `repeat()`), `subgrid`, `masonry`,
+     * and template-area `<string>`s are NOT definite: they need the
+     * content-sizing / auto-flow track machinery that the current grid
+     * layout only partly models, so the shorthand is left unexpanded
+     * (the grid keeps its working auto-placement fallback) rather than
+     * pinned to a track list that would collapse.
+     */
+    private function gridTrackListIsDefinite(Value $value): bool
+    {
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($value->values as $inner) {
+                if (!$this->gridTrackListIsDefinite($inner)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Length
+            || $value instanceof \Phpdftk\Css\Value\Percentage
+        ) {
+            return true;
+        }
+        return $value instanceof \Phpdftk\Css\Value\CssFunction
+            && strtolower($value->name) === 'fr';
+    }
+
+    /**
+     * Whether a `grid` shorthand value uses the `auto-flow` form on
+     * either axis (deferred — needs auto-flow direction modelling).
+     */
+    private function gridHasAutoFlow(\Phpdftk\Css\Value\ValueList $value): bool
+    {
+        foreach ($value->values as $operand) {
+            if ($operand instanceof \Phpdftk\Css\Value\Keyword
+                && strtolower($operand->name) === 'auto-flow'
+            ) {
+                return true;
+            }
+            if ($operand instanceof \Phpdftk\Css\Value\ValueList) {
+                foreach ($operand->values as $inner) {
+                    if ($inner instanceof \Phpdftk\Css\Value\Keyword
+                        && strtolower($inner->name) === 'auto-flow'
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
