@@ -716,20 +716,26 @@ final class BlockLayout
             && $context->parentWritingMode->isVertical()
             ? $context->containingBlockHeight
             : $cbWidth;
+        // CSS 2.1 §8.3 / §8.4 — margin and padding do not apply to the
+        // internal table boxes. When they don't apply, the declared value
+        // is ignored (resolves to 0) so a stray margin/padding on a
+        // table-row-group / -row / -cell etc. never displaces §17 layout.
+        $marginApplies = $this->marginAppliesToDisplay($style);
+        $paddingApplies = $this->paddingAppliesToDisplay($style);
         $marginTopValue = $style->get('margin-top');
         $marginRightValue = $style->get('margin-right');
         $marginBottomValue = $style->get('margin-bottom');
         $marginLeftValue = $style->get('margin-left');
-        $marginLeftAuto = $this->isAuto($marginLeftValue);
-        $marginRightAuto = $this->isAuto($marginRightValue);
-        $geo->marginTop = $this->isAuto($marginTopValue) ? 0.0 : $this->resolveLength($marginTopValue, $cbInlineSize);
-        $geo->marginRight = $marginRightAuto ? 0.0 : $this->resolveLength($marginRightValue, $cbInlineSize);
-        $geo->marginBottom = $this->isAuto($marginBottomValue) ? 0.0 : $this->resolveLength($marginBottomValue, $cbInlineSize);
-        $geo->marginLeft = $marginLeftAuto ? 0.0 : $this->resolveLength($marginLeftValue, $cbInlineSize);
-        $geo->paddingTop = $this->resolveLength($style->get('padding-top'), $cbInlineSize);
-        $geo->paddingRight = $this->resolveLength($style->get('padding-right'), $cbInlineSize);
-        $geo->paddingBottom = $this->resolveLength($style->get('padding-bottom'), $cbInlineSize);
-        $geo->paddingLeft = $this->resolveLength($style->get('padding-left'), $cbInlineSize);
+        $marginLeftAuto = $marginApplies && $this->isAuto($marginLeftValue);
+        $marginRightAuto = $marginApplies && $this->isAuto($marginRightValue);
+        $geo->marginTop = !$marginApplies || $this->isAuto($marginTopValue) ? 0.0 : $this->resolveLength($marginTopValue, $cbInlineSize);
+        $geo->marginRight = !$marginApplies || $this->isAuto($marginRightValue) ? 0.0 : $this->resolveLength($marginRightValue, $cbInlineSize);
+        $geo->marginBottom = !$marginApplies || $this->isAuto($marginBottomValue) ? 0.0 : $this->resolveLength($marginBottomValue, $cbInlineSize);
+        $geo->marginLeft = !$marginApplies || $this->isAuto($marginLeftValue) ? 0.0 : $this->resolveLength($marginLeftValue, $cbInlineSize);
+        $geo->paddingTop = $paddingApplies ? $this->resolveLength($style->get('padding-top'), $cbInlineSize) : 0.0;
+        $geo->paddingRight = $paddingApplies ? $this->resolveLength($style->get('padding-right'), $cbInlineSize) : 0.0;
+        $geo->paddingBottom = $paddingApplies ? $this->resolveLength($style->get('padding-bottom'), $cbInlineSize) : 0.0;
+        $geo->paddingLeft = $paddingApplies ? $this->resolveLength($style->get('padding-left'), $cbInlineSize) : 0.0;
         $geo->borderTop = $this->resolveBorderWidth($style, 'top');
         $geo->borderRight = $this->resolveBorderWidth($style, 'right');
         $geo->borderBottom = $this->resolveBorderWidth($style, 'bottom');
@@ -7197,6 +7203,56 @@ final class BlockLayout
      * column/column-groups. It DOES apply to table cells and tables.
      */
     private function widthAppliesToDisplay(\Phpdftk\Css\Cascade\CascadedValues $style): bool
+    {
+        $display = $style->get('display');
+        if (!($display instanceof Keyword)) {
+            return true;
+        }
+        return match (strtolower($display->name)) {
+            'table-row-group',
+            'table-header-group',
+            'table-footer-group',
+            'table-row',
+            'table-column',
+            'table-column-group' => false,
+            default => true,
+        };
+    }
+
+    /**
+     * CSS 2.1 §8.3 — the margin properties apply to all elements except
+     * elements with a table display type OTHER THAN table-caption, table,
+     * and inline-table. So margin does NOT apply to the internal table
+     * boxes: table-row-group / -header-group / -footer-group / -row /
+     * -column / -column-group / -cell. Authors who set a margin on those
+     * boxes must have it ignored (§17 lays them out via border-spacing,
+     * not margins).
+     */
+    private function marginAppliesToDisplay(\Phpdftk\Css\Cascade\CascadedValues $style): bool
+    {
+        $display = $style->get('display');
+        if (!($display instanceof Keyword)) {
+            return true;
+        }
+        return match (strtolower($display->name)) {
+            'table-row-group',
+            'table-header-group',
+            'table-footer-group',
+            'table-row',
+            'table-column',
+            'table-column-group',
+            'table-cell' => false,
+            default => true,
+        };
+    }
+
+    /**
+     * CSS 2.1 §8.4 — the padding properties apply to all elements except
+     * table-row-group / -header-group / -footer-group / -row /
+     * -column-group / -column. Unlike margin, padding DOES apply to
+     * table-cell (and table-caption / table / inline-table).
+     */
+    private function paddingAppliesToDisplay(\Phpdftk\Css\Cascade\CascadedValues $style): bool
     {
         $display = $style->get('display');
         if (!($display instanceof Keyword)) {

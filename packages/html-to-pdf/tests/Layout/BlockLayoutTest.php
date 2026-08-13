@@ -116,6 +116,56 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(96.0, $cell->geometry->width, 1.0);
     }
 
+    public function testMarginDoesNotApplyToInternalTableBoxes(): void
+    {
+        // CSS 2.1 §8.3 — margin does not apply to internal table boxes.
+        // A `margin: 50px` on a table-row-group / -row / -cell must be
+        // ignored so it never displaces §17 table layout.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="rg"><div id="r">'
+                . '<div id="cell"></div></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #rg { display: table-row-group; margin: 50px; }
+             #r { display: table-row; margin: 40px; }
+             #cell { display: table-cell; margin: 30px; height: 40px; width: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        foreach (['rg', 'r', 'cell'] as $id) {
+            $b = $this->findById($box, $id);
+            self::assertNotNull($b);
+            self::assertSame(0.0, $b->geometry->marginTop, "$id margin-top");
+            self::assertSame(0.0, $b->geometry->marginLeft, "$id margin-left");
+            self::assertSame(0.0, $b->geometry->marginRight, "$id margin-right");
+            self::assertSame(0.0, $b->geometry->marginBottom, "$id margin-bottom");
+        }
+    }
+
+    public function testPaddingDoesNotApplyToTableRowGroupButAppliesToCell(): void
+    {
+        // CSS 2.1 §8.4 — padding does not apply to table-row-group /
+        // -row (and the other group/column boxes) but DOES apply to
+        // table-cell.
+        $box = $this->buildTree(
+            '<html><body><div id="t"><div id="rg"><div id="r">'
+                . '<div id="cell"></div></div></div></div></body></html>',
+            'html, body { display: block; }
+             #t { display: table; }
+             #rg { display: table-row-group; padding: 20px; }
+             #r { display: table-row; padding: 15px; }
+             #cell { display: table-cell; padding: 10px; height: 40px; width: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $rg = $this->findById($box, 'rg');
+        $cell = $this->findById($box, 'cell');
+        self::assertNotNull($rg);
+        self::assertNotNull($cell);
+        self::assertSame(0.0, $rg->geometry->paddingLeft, 'row-group padding ignored');
+        self::assertSame(0.0, $rg->geometry->paddingTop, 'row-group padding ignored');
+        self::assertSame(10.0, $cell->geometry->paddingLeft, 'cell padding applies');
+        self::assertSame(10.0, $cell->geometry->paddingTop, 'cell padding applies');
+    }
+
     public function testInFlowPercentHeightIndefiniteThroughAutoAncestors(): void
     {
         // CSS 2.1 §10.5 — an in-flow `height: %` against an auto-height
