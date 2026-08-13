@@ -5927,9 +5927,19 @@ final class Painter
                 case 'center': default: break;
             }
         } else {
-            // Two-value form: first is x, second is y.
+            // Two-value form. Per CSS Backgrounds 3 §3.6 the components may
+            // appear in either axis order: `left`/`right` always bind X and
+            // `top`/`bottom` always bind Y, so `top center` and `center left`
+            // must be read axis-first, not positionally. Swap when the first
+            // component is a vertical keyword or the second is a horizontal
+            // keyword; the common `<x> <y>` order stays byte-identical.
             $xItem = $items[0] ?? null;
             $yItem = $items[1] ?? null;
+            if ($this->isVerticalPositionKeyword($xItem)
+                || $this->isHorizontalPositionKeyword($yItem)
+            ) {
+                [$xItem, $yItem] = [$yItem, $xItem];
+            }
             // CSS Backgrounds 3 §3.6 — when the author specifies exactly
             // ONE value (e.g. `background-position: 25%` or `-0px`), the
             // second value is `center` (50%), not the unspecified initial
@@ -6048,6 +6058,29 @@ final class Painter
      * `<percentage>` values come through as-is.
      *
      * @return array{percent: ?float, length: ?float}
+     */
+    /**
+     * True for the horizontal-axis `background-position` keywords
+     * (`left` / `right`), which bind the X axis regardless of order.
+     */
+    private function isHorizontalPositionKeyword(?\Phpdftk\Css\Value\Value $v): bool
+    {
+        return $v instanceof \Phpdftk\Css\Value\Keyword
+            && in_array(strtolower($v->name), ['left', 'right'], true);
+    }
+
+    /**
+     * True for the vertical-axis `background-position` keywords
+     * (`top` / `bottom`), which bind the Y axis regardless of order.
+     */
+    private function isVerticalPositionKeyword(?\Phpdftk\Css\Value\Value $v): bool
+    {
+        return $v instanceof \Phpdftk\Css\Value\Keyword
+            && in_array(strtolower($v->name), ['top', 'bottom'], true);
+    }
+
+    /**
+     * @return array{percent: float|null, length: float|null}
      */
     private function axisOffsetFromValue(
         ?\Phpdftk\Css\Value\Value $value,

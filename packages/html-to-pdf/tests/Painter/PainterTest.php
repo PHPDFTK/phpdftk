@@ -4154,6 +4154,49 @@ final class PainterTest extends TestCase
         self::assertContains('re', $opcodes, 'legacy whitespace clip rect emits the clip rectangle');
     }
 
+    public function testBackgroundPositionTwoKeywordAxisOrderIsCommutative(): void
+    {
+        // CSS Backgrounds 3 §3.6 — two-keyword `background-position` binds by
+        // axis identity, not order: `top center` (vertical-first) must place
+        // the image identically to `center top` (horizontal-first). Guards the
+        // positional mis-assignment that put `top center` at the top-LEFT.
+        $png = 'data:image/png;base64,' . base64_encode(hex2bin(
+            '89504E470D0A1A0A0000000D49484452000000040000000408060000'
+            . '00A9F1CE7000000019744558745469746C6500496D6167652067656E657261746564206279204'
+            . '7494D502E64C84E6500000010494441541857636060601800000001000001D72E1D7900000000'
+            . '49454E44AE426082',
+        ));
+        $render = function (string $pos) use ($png): array {
+            $doc = $this->html->parseDocument('<html><body><div></div></body></html>');
+            $sheet = $this->css->parseStylesheet(
+                'html, body, div { display: block; }
+                 div { width: 200px; height: 200px; background-repeat: no-repeat;
+                       background-image: url("' . $png . '");
+                       background-position: ' . $pos . '; }',
+                Origin::UserAgent,
+            );
+            $root = $this->generator->generate($doc, [$sheet]);
+            self::assertNotNull($root);
+            $this->layout->layout($root, new LayoutContext(600, 800, 0, 0, new LengthContext()));
+            $writer = new PdfWriter(compressStreams: false);
+            $page = $writer->addPage(612, 792);
+            $stream = $writer->addContentStream($page);
+            (new Painter(792.0, page: $page, writer: $writer))->paint($root, $stream);
+            return $stream->getOperators();
+        };
+        self::assertSame(
+            $render('center top'),
+            $render('top center'),
+            '`top center` places the image identically to `center top`',
+        );
+        // And the swap does not disturb the canonical horizontal-first order.
+        self::assertSame(
+            $render('left bottom'),
+            $render('bottom left'),
+            '`bottom left` places the image identically to `left bottom`',
+        );
+    }
+
     public function testTransparentInlineBackgroundEmitsNoFillRect(): void
     {
         // The `background-color` initial is `transparent` (rgba(0,0,0,0)),
