@@ -834,7 +834,11 @@ final class BlockLayoutTest extends TestCase
         // (which would be inset a further 25px by the wrapper's padding).
         $box = $this->buildTree(
             '<html><body><div id="rel"><div id="rg"><div id="ap"></div></div></div></body></html>',
-            'html, body { display: block; }
+            // `div { display: block }` is required: without it #rel defaults to
+            // display:inline and, splitting around the block #rg, becomes an
+            // anonymous block-in-inline wrapper whose margin/padding no longer
+            // apply to the wrapper — unrelated to what this test exercises.
+            'html, body, div { display: block; }
              #rel { position: relative; width: 100px; height: 100px;
                     margin-left: 50px; padding: 25px; box-sizing: border-box; }
              #rg { display: table-row-group; contain: layout; }
@@ -3825,11 +3829,14 @@ final class BlockLayoutTest extends TestCase
 
     public function testContentVisibilityHiddenSizesFromContainIntrinsicSize(): void
     {
-        // CSS Containment 2 §4 — a content-visibility:hidden box is
-        // size-contained: its auto width/height come from
-        // `contain-intrinsic-size` (not its skipped contents). Here the
-        // element has a huge child but no explicit size, so it sizes to the
-        // 111×222 intrinsic size, not the child's 500px.
+        // CSS Sizing 4 §6.1 / CSS Containment — a content-visibility:hidden
+        // box is size-contained: its contents are skipped and their size
+        // contribution is replaced by `contain-intrinsic-size`. That intrinsic
+        // size feeds the box's CONTENT-BASED sizes, so auto HEIGHT resolves to
+        // the intrinsic 222px. But a normal in-flow block's auto WIDTH still
+        // stretches to fill its containing block (the intrinsic width only
+        // feeds shrink-to-fit contexts), so #cv fills the 600px body width —
+        // not the 111px intrinsic width, and not the skipped child's 500px.
         $box = $this->buildTree(
             '<html><body><div id="cv"><div id="big"></div></div></body></html>',
             'html, body, div { display: block; }
@@ -3840,7 +3847,7 @@ final class BlockLayoutTest extends TestCase
         $cv = $this->findById($box, 'cv');
         self::assertNotNull($cv);
         self::assertSame([], $cv->children, 'contents are skipped');
-        self::assertEqualsWithDelta(111.0, $cv->geometry->width, 0.001, 'auto width from contain-intrinsic-size');
+        self::assertEqualsWithDelta(600.0, $cv->geometry->width, 0.001, 'auto width stretches to the containing block');
         self::assertEqualsWithDelta(222.0, $cv->geometry->height, 0.001, 'auto height from contain-intrinsic-size');
     }
 
