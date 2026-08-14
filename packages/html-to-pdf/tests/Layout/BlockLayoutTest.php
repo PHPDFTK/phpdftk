@@ -166,6 +166,27 @@ final class BlockLayoutTest extends TestCase
         self::assertSame(10.0, $cell->geometry->paddingTop, 'cell padding applies');
     }
 
+    public function testNonReplacedFlexItemAutomaticMinimumIsContentNotTransferred(): void
+    {
+        // CSS Flexbox 1 §4.5 — the transferred size suggestion (definite
+        // cross size × aspect ratio) exists only for a REPLACED item. A
+        // non-replaced row flex item with aspect-ratio:1/2, height:100px,
+        // flex-basis:0 and a 100px-wide child must floor its automatic
+        // minimum at the content size suggestion (100px), not the 50px the
+        // ratio would transfer from the cross size. (WPT flex-aspect-ratio-002.)
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"><div id="c"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; }
+             #it { aspect-ratio: 1 / 2; height: 100px; flex-basis: 0; }
+             #c { width: 100px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
+    }
+
     public function testInFlowPercentHeightIndefiniteThroughAutoAncestors(): void
     {
         // CSS 2.1 §10.5 — an in-flow `height: %` against an auto-height

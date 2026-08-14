@@ -5670,7 +5670,13 @@ final class BlockLayout
                     $auto = $contentSuggestion;
                     if ($specified !== null) {
                         $auto = min($auto, $specified);
-                    } elseif ($transferred !== null && $transferred > 0.0) {
+                    } elseif ($transferred !== null && $transferred > 0.0
+                        && $this->isReplacedElement($children[$i])
+                    ) {
+                        // §4.5 — the transferred size suggestion (cross ×
+                        // ratio) only exists for a replaced item; a
+                        // non-replaced item keeps its content-derived
+                        // automatic minimum unclamped by the ratio.
                         $auto = min($auto, $transferred);
                     }
                     if ($maxInner !== null && $maxInner > 0.0) {
@@ -6682,6 +6688,28 @@ final class BlockLayout
      *    double-counted) and free of the basis substitution that
      *    would otherwise read back e.g. a `flex-basis: 100%` size.
      */
+    /**
+     * A replaced element carries an intrinsic size / aspect ratio from its
+     * content (image, video, canvas, embedded document, SVG, …). Only such
+     * elements have a CSS Flexbox 1 §4.5 "transferred size suggestion"; a
+     * non-replaced element with the `aspect-ratio` property does not, so its
+     * automatic minimum is content-derived. Detection is by element name —
+     * the box model does not otherwise flag replacedness.
+     */
+    private function isReplacedElement(Box $item): bool
+    {
+        $element = $item->element;
+        if ($element === null) {
+            return false;
+        }
+        return match (strtolower($element->localName)) {
+            'img', 'canvas', 'video', 'audio', 'object', 'embed',
+            'iframe', 'svg', 'svg:svg', 'math', 'input', 'textarea',
+            'select', 'progress', 'meter' => true,
+            default => false,
+        };
+    }
+
     private function flexItemContentMainMin(
         Box $item,
         bool $isColumn,
@@ -6689,15 +6717,17 @@ final class BlockLayout
         ?float $transferred,
         float $contentBlock,
     ): float {
-        // Any item with a usable aspect ratio (definite cross size)
-        // derives its main-axis min-content size from the ratio — the
-        // transferred size (cross × ratio) — regardless of box type or
-        // whether it has content. This is §4.5's "content size
-        // suggestion ... clamped, if it has an aspect ratio, by the
-        // cross size converted through the ratio".
-        if ($transferred !== null && $transferred > 0.0) {
-            return $transferred;
-        }
+        // CSS Flexbox 1 §4.5 — the content size suggestion is the item's
+        // real main-axis min-content size. For an item with a preferred
+        // aspect ratio and a definite cross size, that min-content is
+        // floored by the ratio-transferred cross size: the aspect ratio
+        // makes the main size track the cross even at min-content. So an
+        // empty ratio box with a definite cross is at least cross × ratio
+        // (WPT flex-aspect-ratio-053/054), while a ratio box whose in-flow
+        // content is larger keeps that larger content min (002/004). The
+        // SEPARATE "transferred size suggestion" that CAPS the automatic
+        // minimum (min(content, transferred)) exists only for replaced
+        // items and is applied by the caller, not here.
         if ($isColumn) {
             // When `height` is auto, the captured pre-basis content
             // height IS the content block size (line-box aware, and
@@ -6709,21 +6739,26 @@ final class BlockLayout
             // stays line-aware; an empty item contributes 0 and the
             // specified-size suggestion caps the rest via `min`).
             if ($this->isAuto($item->style->get('height'))) {
-                return max(0.0, $contentBlock);
-            }
-            $sum = 0.0;
-            foreach ($item->children as $child) {
-                if ($this->isOutOfFlow($child)) {
-                    continue;
+                $realMin = max(0.0, $contentBlock);
+            } else {
+                $sum = 0.0;
+                foreach ($item->children as $child) {
+                    if ($this->isOutOfFlow($child)) {
+                        continue;
+                    }
+                    $sum += $child->geometry->outerHeight();
                 }
-                $sum += $child->geometry->outerHeight();
+                $realMin = $sum;
             }
-            return $sum;
+        } elseif ($item instanceof AtomicInlineBox || $item instanceof TextBox) {
+            $realMin = $item->geometry->width;
+        } else {
+            $realMin = $this->measureContentMinMax($item, $itemCtx)['min'];
         }
-        if ($item instanceof AtomicInlineBox || $item instanceof TextBox) {
-            return $item->geometry->width;
+        if ($transferred !== null && $transferred > 0.0) {
+            return max($realMin, $transferred);
         }
-        return $this->measureContentMinMax($item, $itemCtx)['min'];
+        return $realMin;
     }
 
     /**
