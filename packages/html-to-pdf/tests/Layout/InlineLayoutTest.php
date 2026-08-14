@@ -128,6 +128,46 @@ final class InlineLayoutTest extends TestCase
         self::assertEqualsWithDelta(20.0, $img->geometry->height, 0.5);
     }
 
+    public function testShapedPathReplacedPercentHeightDerivesAutoWidthViaRatio(): void
+    {
+        // CSS 2.1 §10.3.2 + §10.5 — an auto-width replaced element with a
+        // percentage height and an intrinsic aspect ratio, inside a
+        // definite-height block, resolves its height against that block and
+        // transfers it through the ratio to derive the width. Exercised on
+        // the SHAPED path (font present) — the no-font atomic-only path
+        // already handled this, but the shaped path used to leave an
+        // auto-width atomic at content-width 0 (rendering nothing).
+        $box = $this->buildTree(
+            '<html><body><div class="host"><img src="x.png"></div></body></html>',
+            'html, body { display: block; }'
+            . ' .host { display: block; height: 100px; }'
+            . ' img { display: inline-block; height: 100%; aspect-ratio: 1 / 1; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $img = $this->find($box, 'img');
+        self::assertNotNull($img);
+        self::assertEqualsWithDelta(100.0, $img->geometry->height, 0.5);
+        self::assertEqualsWithDelta(100.0, $img->geometry->width, 0.5);
+    }
+
+    public function testShapedPathReplacedExplicitHeightDerivesAutoWidthViaRatio(): void
+    {
+        // A definite (explicit-length) height on an auto-width replaced
+        // element transfers through a non-square intrinsic ratio: height
+        // 50px × ratio 2 → width 100px, on the shaped path.
+        $box = $this->buildTree(
+            '<html><body><div class="host"><img src="x.png"></div></body></html>',
+            'html, body { display: block; }'
+            . ' .host { display: block; }'
+            . ' img { display: inline-block; height: 50px; aspect-ratio: 2 / 1; }',
+        );
+        $this->layout->layout($box, $this->defaultContext());
+        $img = $this->find($box, 'img');
+        self::assertNotNull($img);
+        self::assertEqualsWithDelta(50.0, $img->geometry->height, 0.5);
+        self::assertEqualsWithDelta(100.0, $img->geometry->width, 0.5);
+    }
+
     public function testNoFontAtomicsWrapToNextLineWhenOverflowing(): void
     {
         // CSS 2.1 §9.4.2 — atomic inline boxes (here inline-blocks) that

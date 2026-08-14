@@ -281,9 +281,18 @@ final class InlineLayout
                 // unset keeps the square-replaced-element default
                 // (img with intrinsic ratio) the existing tests rely on.
                 $heightValue = $atomic->style->get('height');
-                $declaredHeight = $heightValue instanceof Length
-                    ? $heightValue->value
-                    : 0.0;
+                // CSS 2.1 §10.5 — a percentage block size resolves only
+                // against a definite containing-block height; otherwise it
+                // stays auto (0 here) and the box squares to its width. An
+                // explicit length / `0` is always definite.
+                $declaredHeight = match (true) {
+                    $heightValue instanceof Length => $heightValue->value,
+                    $heightValue instanceof \Phpdftk\Css\Value\Integer => (float) $heightValue->value,
+                    $heightValue instanceof \Phpdftk\Css\Value\Percentage
+                        && $this->currentCbHeightDefinite && $this->currentCbHeight > 0.0
+                        => $this->currentCbHeight * ($heightValue->value / 100.0),
+                    default => 0.0,
+                };
                 $atomicPadTop = self::atomicLength($atomic->style->get('padding-top'));
                 $atomicPadBottom = self::atomicLength($atomic->style->get('padding-bottom'));
                 $atomicBorderTop = self::atomicBorderWidth($atomic->style, 'top');
@@ -1507,13 +1516,26 @@ final class InlineLayout
                     $atomicOuterWidth = $declaredWidth + $horizontalInset;
                 }
             } else {
-                // No declared width (e.g. `width: auto`) — defer to
-                // intrinsic sizing the painter or downstream layout
-                // resolves. Outer = content = 0 so the line-breaker
-                // doesn't allocate any space; the painter falls back
-                // to its own intrinsic-size path.
-                $atomicContentWidth = 0.0;
-                $atomicOuterWidth = $horizontalInset;
+                // `width: auto`: CSS 2.1 §10.3.2 — a replaced element with a
+                // definite height and an intrinsic aspect ratio derives its
+                // width from height × ratio. Resolve the definite content
+                // height (an explicit length, or a percentage against a
+                // definite CB height) and transfer it through the ratio, so
+                // the shaped path sizes an auto-width `<img height="100%">`
+                // the same way layoutAtomicOnly() does. Without a definite
+                // height or a ratio, defer to the painter's intrinsic
+                // fallback (content = 0, no allocated advance).
+                $definiteHeight = $this->atomicDefiniteContentHeight($box);
+                $ratio = self::atomicAspectRatio($box->style);
+                if ($definiteHeight !== null && $definiteHeight > 0.0
+                    && $ratio !== null && $ratio > 0.0
+                ) {
+                    $atomicContentWidth = $definiteHeight * $ratio;
+                    $atomicOuterWidth = $atomicContentWidth + $horizontalInset;
+                } else {
+                    $atomicContentWidth = 0.0;
+                    $atomicOuterWidth = $horizontalInset;
+                }
             }
             $tokens[] = [
                 'shapedRun' => new ShapedRun(
@@ -2671,6 +2693,42 @@ final class InlineLayout
         $value = $style->get('box-sizing');
         return $value instanceof \Phpdftk\Css\Value\Keyword
             && strtolower($value->name) === 'border-box';
+    }
+
+    /**
+     * Resolve an atomic replaced box's DEFINITE content-box height, or
+     * null when the height is auto / indefinite. An explicit length (or
+     * `0`) is definite; a percentage is definite only against a definite
+     * containing-block height (CSS 2.1 §10.5). Under `box-sizing:
+     * border-box` the declared value includes the padding + border, so
+     * the content height is the declared value minus the vertical inset.
+     * Mirrors the height resolution in layoutAtomicOnly() so the shaped
+     * path can transfer a definite height through the intrinsic ratio to
+     * derive an auto width (§10.3.2).
+     */
+    private function atomicDefiniteContentHeight(AtomicInlineBox $box): ?float
+    {
+        $heightValue = $box->style->get('height');
+        $declared = match (true) {
+            $heightValue instanceof Length => $heightValue->value,
+            $heightValue instanceof \Phpdftk\Css\Value\Integer => (float) $heightValue->value,
+            $heightValue instanceof \Phpdftk\Css\Value\Percentage
+                && $this->currentCbHeightDefinite && $this->currentCbHeight > 0.0
+                => $this->currentCbHeight * ($heightValue->value / 100.0),
+            default => null,
+        };
+        if ($declared === null) {
+            return null;
+        }
+        $declared = max(0.0, $declared);
+        if (!self::atomicIsBorderBoxSizing($box->style)) {
+            return $declared;
+        }
+        $inset = self::atomicLength($box->style->get('padding-top'))
+            + self::atomicLength($box->style->get('padding-bottom'))
+            + self::atomicBorderWidth($box->style, 'top')
+            + self::atomicBorderWidth($box->style, 'bottom');
+        return max(0.0, $declared - $inset);
     }
 
     /**
