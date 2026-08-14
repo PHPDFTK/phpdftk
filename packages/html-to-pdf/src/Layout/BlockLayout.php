@@ -2954,7 +2954,12 @@ final class BlockLayout
                 $transferred = $this->aspectRatioTransfer(
                     $child->style,
                     $isColumn,
-                    $cbWidth,
+                    // A COLUMN item's cross axis is width: its `width: %`
+                    // resolves against the flex container's content width
+                    // ($geo->width), NOT the outer CB. Passing $cbWidth
+                    // here transferred a page-width cross size through the
+                    // ratio (flex-aspect-ratio-048/052).
+                    $geo->width,
                     $itemCbHeight,
                 );
                 if ($transferred !== null) {
@@ -2969,9 +2974,14 @@ final class BlockLayout
             }
             // Constrain layout containing-block to the hypothetical
             // main size so layoutBlock's `width: auto` fill doesn't
-            // stretch the item to the whole container.
+            // stretch the item to the whole container. Keep the CB
+            // HEIGHT at the flex container's content height ($itemCbHeight)
+            // — a row item's `height: %` (cross axis) resolves against the
+            // flex container, NOT the outer CB. Passing the outer $cbHeight
+            // here made `height: 100%` on a definite-height flex container
+            // resolve against the page (flex-aspect-ratio-047/051).
             if (!$isColumn && $basis !== null && $mainIsAuto) {
-                $childCtx = $itemCtx->withContainingBlock($basis, $cbHeight);
+                $childCtx = $itemCtx->withContainingBlock($basis, $itemCbHeight);
             }
             // Remember the exact context each item was laid out with, so a
             // cross-stretched nested flex container can be re-laid-out with
@@ -3079,8 +3089,14 @@ final class BlockLayout
                 $isColumn,
                 $containerMain,
                 $gap,
-                $cbWidth,
-                $cbHeight,
+                // The flex container's content box is the CB against which a
+                // flex item's `%` min/max sizes and aspect-ratio transfers
+                // resolve — NOT the outer CB. Using $cbWidth/$cbHeight here
+                // made a definite-size container's `%`-sized item transfer a
+                // page-sized minimum through its aspect ratio
+                // (flex-aspect-ratio-047/051 for height, 048/052 for width).
+                $geo->width,
+                $itemCbHeight,
                 $itemCtx,
                 $itemContentBlock,
             );

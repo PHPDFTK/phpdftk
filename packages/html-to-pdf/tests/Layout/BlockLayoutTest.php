@@ -187,6 +187,51 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
     }
 
+    public function testRowFlexItemPercentHeightTransfersMainAgainstContainer(): void
+    {
+        // CSS Sizing 4 §4.2 / Flexbox 1 §9.9 — a ROW flex item's
+        // `height: %` (its cross axis) resolves against the FLEX
+        // CONTAINER's content height, not the outer containing block.
+        // With a definite-height container and `aspect-ratio: 1`, the
+        // item's auto main (width) transfers from that cross height:
+        // 100% × 100px = 100 → 100px square, even though the container's
+        // own width is 0. Resolving the % against the 800px outer CB used
+        // to balloon the item to page size. (WPT flex-aspect-ratio-047.)
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; width: 0px; height: 100px; }
+             #it { aspect-ratio: 1; height: 100%; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
+        self::assertEqualsWithDelta(100.0, $it->geometry->height, 1.0);
+    }
+
+    public function testColumnFlexItemPercentWidthTransfersMainAgainstContainer(): void
+    {
+        // Column analog: a COLUMN flex item's `width: %` (its cross axis)
+        // resolves against the flex container's content width, not the
+        // outer CB. A definite-width container with `aspect-ratio: 1`
+        // transfers the cross width (100% × 100px = 100) to the auto main
+        // (height) → 100px square, even though the container's height is 0.
+        // Resolving the % against the 600px outer CB used to balloon it.
+        // (WPT flex-aspect-ratio-048.)
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; flex-direction: column; width: 100px; height: 0px; }
+             #it { aspect-ratio: 1; width: 100%; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
+        self::assertEqualsWithDelta(100.0, $it->geometry->height, 1.0);
+    }
+
     public function testInFlowPercentHeightIndefiniteThroughAutoAncestors(): void
     {
         // CSS 2.1 §10.5 — an in-flow `height: %` against an auto-height
