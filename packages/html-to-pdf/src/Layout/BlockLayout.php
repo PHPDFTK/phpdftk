@@ -2929,6 +2929,11 @@ final class BlockLayout
         $itemContentBlock = [];
         $basisCbMain = $isColumn ? $itemCbHeight : $geo->width;
         $mainProp = $isColumn ? 'height' : 'width';
+        // Resolved here (not just at the alignment phase below) so the item
+        // loop can decide a COLUMN item's cross (width) sizing: an item whose
+        // cross alignment is not `stretch` is fit-content in the cross axis,
+        // not container-filling (CSS Flexbox 1 §9.4 step 11 / §7.2.1).
+        $containerAlignItems = $this->flexKeyword($style, 'align-items', 'stretch');
         foreach ($children as $child) {
             $this->cascade->resolveLengths($child->style, $this->boxLengthContext($child, $itemCtx));
             // CSS Flexbox 1 §9.2 — the flex base size: explicit
@@ -2982,6 +2987,30 @@ final class BlockLayout
             // resolve against the page (flex-aspect-ratio-047/051).
             if (!$isColumn && $basis !== null && $mainIsAuto) {
                 $childCtx = $itemCtx->withContainingBlock($basis, $itemCbHeight);
+            }
+            // CSS Flexbox 1 §7.2.1 / §9.4 — a flex item whose cross alignment
+            // is not `stretch` uses its FIT-CONTENT cross size, not the
+            // container's full cross extent. For a COLUMN item the cross axis
+            // is width, so an `align-items/self` other than stretch with an
+            // `auto` width must lay out shrink-to-fit (max-content clamped by
+            // available), NOT fill $geo->width. Without this, a non-stretch
+            // column item balloons to the container width and (with an
+            // aspect-ratio) derives an oversized main — the item covers the
+            // whole container instead of hugging its content
+            // (flex-aspect-ratio-034/036/037). `stretch` keeps the existing
+            // fill path (it is stretched to the line cross below anyway).
+            if ($isColumn && $this->isAuto($child->style->get('width'))) {
+                [$itemCrossAlign] = $this->resolveFlexItemAlign($style, $child, $containerAlignItems);
+                // An auto margin in the cross axis (§4.2) also opts the item
+                // out of stretch — the margin absorbs the free space instead —
+                // so such an item is likewise fit-content.
+                $autoCrossMargin = $this->isAuto($child->style->get('margin-left'))
+                    || $this->isAuto($child->style->get('margin-right'));
+                if ($itemCrossAlign !== 'stretch' || $autoCrossMargin) {
+                    $mm = $this->measureMinMaxContent($child, $itemCtx);
+                    $fitContentWidth = min($mm['max'], max($mm['min'], $geo->width));
+                    $childCtx = $itemCtx->withContainingBlock($fitContentWidth, $itemCbHeight);
+                }
             }
             // Remember the exact context each item was laid out with, so a
             // cross-stretched nested flex container can be re-laid-out with
@@ -3320,9 +3349,16 @@ final class BlockLayout
                         break;
                     case 'stretch':
                         // Stretch to fill the *line's* cross extent
-                        // when the item's cross dimension is auto.
+                        // when the item's cross dimension is auto — UNLESS the
+                        // item has an auto margin in the cross axis, which
+                        // opts out of stretch and absorbs the free space
+                        // itself (§4.2, handled below).
                         $crossProp = $isColumn ? 'width' : 'height';
-                        if ($this->isAuto($child->style->get($crossProp)) && $crossSlack > 0.0) {
+                        $crossMarginStartProp = $isColumn ? 'margin-left' : 'margin-top';
+                        $crossMarginEndProp = $isColumn ? 'margin-right' : 'margin-bottom';
+                        $stretchAutoMargin = $this->isAuto($child->style->get($crossMarginStartProp))
+                            || $this->isAuto($child->style->get($crossMarginEndProp));
+                        if (!$stretchAutoMargin && $this->isAuto($child->style->get($crossProp)) && $crossSlack > 0.0) {
                             if ($isColumn) {
                                 $childGeo->width = $lineCross - $childGeo->marginLeft - $childGeo->marginRight
                                     - $childGeo->borderLeft - $childGeo->borderRight
@@ -3358,6 +3394,22 @@ final class BlockLayout
                         }
                         break;
                         // 'flex-start' / 'start' → no in-line shift.
+                }
+                // CSS Flexbox 1 §4.2 / §8.1 — auto margins in the CROSS axis
+                // absorb positive free space and OVERRIDE align-self. Both
+                // cross margins auto centres the item; a single auto margin
+                // pushes it to the opposite edge. (Main-axis auto margins are
+                // a separate concern handled during flexible-length resolution.)
+                $crossStartAuto = $this->isAuto($child->style->get($isColumn ? 'margin-left' : 'margin-top'));
+                $crossEndAuto = $this->isAuto($child->style->get($isColumn ? 'margin-right' : 'margin-bottom'));
+                if (($crossStartAuto || $crossEndAuto) && $crossSlack > 0.0) {
+                    if ($crossStartAuto && $crossEndAuto) {
+                        $alignedCrossInLine = $crossSlack / 2.0;
+                    } elseif ($crossStartAuto) {
+                        $alignedCrossInLine = $crossSlack;
+                    } else {
+                        $alignedCrossInLine = 0.0;
+                    }
                 }
                 // CSS Box Alignment 3 §4.4 — `safe` alignment falls back to
                 // `start` when the item overflows its line (negative slack), so

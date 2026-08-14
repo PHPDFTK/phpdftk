@@ -210,6 +210,67 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $it->geometry->height, 1.0);
     }
 
+    public function testNonStretchColumnFlexItemCrossIsFitContentNotFill(): void
+    {
+        // CSS Flexbox 1 §7.2.1 — a flex item whose cross alignment is not
+        // `stretch` uses its FIT-CONTENT cross size. For a column flex item
+        // (cross axis = width) under `align-items: start`, an `auto` width
+        // must shrink-to-fit its content (a 100px-wide child), NOT fill the
+        // container. With `aspect-ratio: 1` the fitted 100px width then
+        // derives a 100px height → a 100px square hugging its content, not a
+        // container-filling block. (WPT flex-aspect-ratio-037.)
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"><div id="c"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; flex-direction: column; align-items: flex-start; }
+             #it { aspect-ratio: 1 / 1; }
+             #c { width: 100px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
+        self::assertEqualsWithDelta(100.0, $it->geometry->height, 1.0);
+    }
+
+    public function testColumnFlexItemAutoCrossMarginsCentre(): void
+    {
+        // CSS Flexbox 1 §4.2 — an auto margin in the cross axis absorbs free
+        // space and overrides align-self. A column flex item (cross = width)
+        // with `margin: 0 auto` is fit-content and centred in the container's
+        // cross extent, not stretched. In a 200px-wide container an item that
+        // fits its 100px child sits at x=50 (centred). (WPT auto-margins-003.)
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"><div id="c"></div></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; flex-direction: column; width: 200px; }
+             #it { margin: 0 auto; }
+             #c { width: 100px; height: 10px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(100.0, $it->geometry->width, 1.0);
+        self::assertEqualsWithDelta(50.0, $it->geometry->x, 1.0);
+    }
+
+    public function testStretchColumnFlexItemStillFillsCross(): void
+    {
+        // The fit-content path must NOT touch the default `align-items:
+        // stretch`: a column item with `auto` width under stretch fills the
+        // container's cross extent (here 200px), unchanged.
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; flex-direction: column; width: 200px; }
+             #it { height: 30px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $it = $this->findById($box, 'it');
+        self::assertNotNull($it);
+        self::assertEqualsWithDelta(200.0, $it->geometry->width, 1.0);
+    }
+
     public function testColumnFlexItemPercentWidthTransfersMainAgainstContainer(): void
     {
         // Column analog: a COLUMN flex item's `width: %` (its cross axis)
