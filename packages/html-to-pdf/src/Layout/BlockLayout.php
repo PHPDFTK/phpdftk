@@ -2360,7 +2360,15 @@ final class BlockLayout
         $top = $style->get('top');
         $bottom = $style->get('bottom');
         $borderBox = $this->isBorderBoxSizing($style);
-        if ($this->isAuto($style->get('width'))
+        // `width: stretch` shares the fill-available semantics with `auto`
+        // (CSS Sizing 4 §6.3), so when both left+right insets are set it
+        // fills the slack too — mirroring the `height` branch below.
+        // Content keywords (min/max/fit-content) express a children-derived
+        // size and stay on the regular path.
+        $widthValue = $style->get('width');
+        $shouldFillSlackWidth = $this->isAuto($widthValue)
+            || $this->sizingKeywordName($widthValue) === 'stretch';
+        if ($shouldFillSlackWidth
             && !$this->isAuto($left)
             && !$this->isAuto($right)
         ) {
@@ -6270,12 +6278,19 @@ final class BlockLayout
             $inFlowChildren[] = $child;
             $mm = $this->measureMinMaxContent($child, $childCtx);
             $childStyle = $child->style;
-            $mbpx = $this->resolveLength($childStyle->get('margin-left'), $context->containingBlockWidth)
-                + $this->resolveLength($childStyle->get('margin-right'), $context->containingBlockWidth)
+            // CSS Sizing 3 §5.1 — when a child contributes to the
+            // container's intrinsic (min/max-content) width, its percentage
+            // margins and padding resolve to ZERO (including `%` terms
+            // inside a `calc()`), not against the containing block.
+            // Otherwise a flex item with `margin-left: 50%` (or
+            // `calc(10% + 100px)`) inflates the container's intrinsic width
+            // by a fraction of the CB.
+            $mbpx = $this->resolveIntrinsicInlineLength($childStyle->get('margin-left'))
+                + $this->resolveIntrinsicInlineLength($childStyle->get('margin-right'))
                 + $this->resolveBorderWidth($childStyle, 'left')
                 + $this->resolveBorderWidth($childStyle, 'right')
-                + $this->resolveLength($childStyle->get('padding-left'), $context->containingBlockWidth)
-                + $this->resolveLength($childStyle->get('padding-right'), $context->containingBlockWidth);
+                + $this->resolveIntrinsicInlineLength($childStyle->get('padding-left'))
+                + $this->resolveIntrinsicInlineLength($childStyle->get('padding-right'));
             $contribMin = $mm['min'];
             $contribMax = $mm['max'];
             if (!$isColumn) {
@@ -6587,6 +6602,37 @@ final class BlockLayout
         if ($minHeight > 0.0 && $geo->height < $minHeight) {
             $geo->height = $minHeight;
         }
+    }
+
+    /**
+     * CSS Sizing 3 §5.1 — resolve a margin / padding value for an
+     * intrinsic-size contribution: percentages (including any `%` term
+     * inside a `calc()`) resolve to ZERO; fixed lengths pass through. Used
+     * when a child's outer inline size feeds a container's min/max-content
+     * width, so `margin-left: 50%` / `calc(10% + 100px)` add 0 / 100px
+     * rather than a fraction of the (as-yet-unknown) containing block.
+     */
+    private function resolveIntrinsicInlineLength(?\Phpdftk\Css\Value\Value $value): float
+    {
+        if ($value === null) {
+            return 0.0;
+        }
+        if ($value instanceof Length) {
+            return \Phpdftk\Css\Cascade\LengthResolver::clampPx($value->value);
+        }
+        if ($value instanceof Percentage) {
+            return 0.0;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Calc) {
+            $px = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate(
+                $value,
+                new \Phpdftk\Css\Cascade\LengthContext(percentagesAsZero: true),
+            );
+            if (!is_nan($px)) {
+                return \Phpdftk\Css\Cascade\LengthResolver::clampPx($px);
+            }
+        }
+        return 0.0;
     }
 
     private function resolveLength(?\Phpdftk\Css\Value\Value $value, float $percentageBasis): float

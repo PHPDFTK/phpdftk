@@ -67,6 +67,24 @@ final class CalcEvaluatorTest extends TestCase
         self::assertNan(self::evalExpr($e, 0.0));
     }
 
+    public function testPercentagesAsZeroResolvesPercentToZeroKeepingFixedTerms(): void
+    {
+        // CSS Sizing 3 §5.1 — in an intrinsic-size contribution a percentage
+        // resolves to ZERO (not NaN), so `calc(10% + 100px)` folds to 100px
+        // while `50%` folds to 0. The flag is distinct from a 0 basis, which
+        // still defers as NaN.
+        $ctx = new LengthContext(percentagesAsZero: true);
+        $calcSum = new CalcBinary(
+            new CalcLeaf(new Percentage(10.0)),
+            CalcOp::Add,
+            new CalcLeaf(new Length(100.0, LengthUnit::Px)),
+        );
+        self::assertEqualsWithDelta(100.0, CalcEvaluator::eval($calcSum, $ctx), 0.001);
+        self::assertSame(0.0, CalcEvaluator::eval(new CalcLeaf(new Percentage(50.0)), $ctx));
+        // Without the flag, a 0 basis still defers as NaN (unchanged).
+        self::assertNan(self::evalExpr(new CalcLeaf(new Percentage(50.0)), 0.0));
+    }
+
     public function testNanOperandPropagatesThroughBinary(): void
     {
         // left is an unresolvable percentage; the sum must stay NAN, not

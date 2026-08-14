@@ -86,6 +86,12 @@ final class CalcEvaluator
             return LengthResolver::toPx($value, $ctx);
         }
         if ($value instanceof Percentage) {
+            // CSS Sizing 3 §5.1 — in an intrinsic-size contribution a
+            // percentage resolves to zero (keeping any sibling fixed terms
+            // of the calc intact, e.g. `calc(10% + 100px)` → 100px).
+            if ($ctx->percentagesAsZero) {
+                return 0.0;
+            }
             // Percentage requires a basis. Zero basis = unknown to us;
             // defer by returning NAN so the caller can leave the Calc
             // untouched (e.g. background-position-percent resolves at

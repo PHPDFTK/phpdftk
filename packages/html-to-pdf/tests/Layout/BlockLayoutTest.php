@@ -80,6 +80,43 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta($cb->geometry->y + 100.0, $ap->geometry->y, 0.5);
     }
 
+    public function testFlexIntrinsicWidthTreatsPercentMarginAsZero(): void
+    {
+        // CSS Sizing 3 §5.1 — a flex item's percentage margin (incl. the
+        // `%` term of a calc()) contributes ZERO to the container's
+        // intrinsic (min-content) width. An empty item with
+        // `margin-left: calc(10% + 100px)` makes a `width: min-content`
+        // container exactly 100px (the fixed term), not 100 + 10%×CB.
+        $box = $this->buildTree(
+            '<html><body><div id="f"><div id="it"></div></div></body></html>',
+            'html, body { display: block; }
+             #f { display: flex; width: min-content; height: 100px; }
+             #it { margin-left: calc(10% + 100px); }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $f = $this->findById($box, 'f');
+        self::assertNotNull($f);
+        self::assertEqualsWithDelta(100.0, $f->geometry->width, 0.5);
+    }
+
+    public function testAbsposWidthStretchFillsSlackBetweenInsets(): void
+    {
+        // CSS Sizing 4 §6.3 — `width: stretch` on an abs-pos box with both
+        // left+right insets fills the slack just like `auto`
+        // (width = CB − left − right). Mirrors the height branch, which
+        // already handled stretch.
+        $box = $this->buildTree(
+            '<html><body><div id="cb"><div id="ap"></div></div></body></html>',
+            'html, body { display: block; }
+             #cb { position: relative; width: 300px; height: 300px; }
+             #ap { position: absolute; left: 50px; right: 50px; width: stretch; height: 100px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $ap = $this->findById($box, 'ap');
+        self::assertNotNull($ap);
+        self::assertEqualsWithDelta(200.0, $ap->geometry->width, 0.5);
+    }
+
     public function testTableOwnMinWidthShrinkWraps(): void
     {
         // An auto table whose only cell is empty still shrink-wraps to the

@@ -69,6 +69,15 @@ final readonly class LengthContext
          * back to the `normal` approximation (`currentFontSize × 1.2`).
          */
         public float $lineHeight = 0.0,
+        /**
+         * CSS Sizing 3 §5.1 — when computing a box's intrinsic-size
+         * contribution, percentage padding / margin (and any `%` term
+         * inside a `calc()`) resolve to ZERO rather than deferring against
+         * an unknown basis. Set true only by intrinsic-sizing callers; the
+         * default keeps the normal "zero basis = unknown → NaN" behaviour so
+         * ordinary percentage resolution is untouched.
+         */
+        public bool $percentagesAsZero = false,
     ) {}
 
     public function withCurrentFontSize(float $px): self
@@ -86,6 +95,7 @@ final readonly class LengthContext
             $this->containerInlineSize,
             $this->containerBlockSize,
             $this->lineHeight,
+            $this->percentagesAsZero,
         );
     }
 
@@ -104,6 +114,7 @@ final readonly class LengthContext
             $this->containerInlineSize,
             $this->containerBlockSize,
             $this->lineHeight,
+            $this->percentagesAsZero,
         );
     }
 
@@ -122,6 +133,7 @@ final readonly class LengthContext
             $this->containerInlineSize,
             $this->containerBlockSize,
             $this->lineHeight,
+            $this->percentagesAsZero,
         );
     }
 
@@ -140,6 +152,7 @@ final readonly class LengthContext
             $inlineSize,
             $blockSize,
             $this->lineHeight,
+            $this->percentagesAsZero,
         );
     }
 
@@ -158,6 +171,7 @@ final readonly class LengthContext
             $this->containerInlineSize,
             $this->containerBlockSize,
             $px,
+            $this->percentagesAsZero,
         );
     }
 }
