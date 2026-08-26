@@ -2331,10 +2331,12 @@ final class BlockLayoutTest extends TestCase
         self::assertNull($section->multiColumn);
     }
 
-    public function testMultiColumnIgnoredOnInlineOnlyChildren(): void
+    public function testMultiColumnAppliesToInlineOnlyChildren(): void
     {
-        // `<section>` has only an inline child — multi-column doesn't
-        // apply because there are no block-level fragmentainers to split.
+        // CSS Multi-column 1 §2 — a container with only inline children
+        // still establishes a multi-column formatting context. There are
+        // no block children to hand to the fragmentainers, so the unit of
+        // fragmentation is the LINE BOX instead.
         $box = $this->buildTree(
             '<html><body><section>inline text</section></body></html>',
             'html, body, section { display: block; }
@@ -2343,7 +2345,63 @@ final class BlockLayoutTest extends TestCase
         $this->layout->layout($box, $this->defaultCtx);
         $section = $this->find($box, 'section');
         self::assertNotNull($section);
-        self::assertNull($section->multiColumn);
+        self::assertNotNull($section->multiColumn);
+        self::assertSame(2, $section->multiColumn->columnCount);
+    }
+
+    public function testMultiColumnDistributesInlineLinesAcrossColumns(): void
+    {
+        // Six words at 20px in 100px-wide columns → one word per line, six
+        // lines, two per column over three columns. Needs a real font: with
+        // no font resolver the inline pass produces no fragments to place.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><section>aaaa bbbb cccc dddd eeee ffff</section></body></html>',
+            'html, body, section { display: block; }
+             section { width: 300px; column-count: 3; column-gap: 0;
+                       font-family: noto; font-size: 20px; line-height: 20px; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        self::assertNotNull($section->multiColumn);
+        self::assertSame(3, $section->multiColumn->columnCount);
+        self::assertGreaterThan(1, count($section->lineBoxes), 'content produced several lines');
+
+        // Every column restarts at the container's top, so the distinct
+        // line-box tops number fewer than the lines themselves.
+        $tops = [];
+        foreach ($section->lineBoxes as $line) {
+            $tops[(string) round($line->y, 3)] = true;
+        }
+        self::assertLessThan(
+            count($section->lineBoxes),
+            count($tops),
+            'lines restart their block position in each column',
+        );
+
+        // Fragments spread across the full container width rather than
+        // staying inside the first column measure.
+        $rightmost = 0.0;
+        foreach ($section->lineBoxes as $line) {
+            foreach ($line->fragments as $fragment) {
+                $rightmost = max($rightmost, $fragment->x);
+            }
+        }
+        self::assertGreaterThan(
+            $section->multiColumn->columnWidth,
+            $rightmost,
+            'later columns are offset past the first column',
+        );
     }
 
     public function testMultiColumnIgnoredOnTable(): void

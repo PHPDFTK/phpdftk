@@ -7713,9 +7713,10 @@ final class BlockLayout
     /**
      * `column-count` or `column-width` (or both) non-`auto` → this box
      * establishes a multi-column formatting context (CSS Multi-column 1 §2).
-     * Honoured only on block-container parents whose children are all
-     * block-level: tables, inline-only blocks, and replaced elements are
-     * skipped at Phase 1.
+     * Honoured on block containers whose children are block-level AND on
+     * those whose children are all inline-level — an inline-only container
+     * fragments its LINE BOXES across the columns
+     * ({@see layoutMultiColumnInline}). Tables are still skipped.
      */
     private function isMultiColumnContainer(Box $box): bool
     {
@@ -7725,14 +7726,38 @@ final class BlockLayout
         ) {
             return false;
         }
-        if ($this->allInlineLevel($box->children)) {
-            return false;
-        }
         $count = $box->style->get('column-count');
         $width = $box->style->get('column-width');
         $countSet = !$this->isAuto($count);
         $widthSet = $width instanceof Length;
-        return $countSet || $widthSet;
+        if (!$countSet && !$widthSet) {
+            return false;
+        }
+        // Inline-only containers fragment their LINE BOXES
+        // ({@see layoutMultiColumnInline}), which the balance path models
+        // but the slice/wrap paths do not. Anything that needs slicing —
+        // `column-fill: auto`, `column-wrap`, an explicit `column-height` —
+        // and any vertical writing mode (where `InlineLayout` has already
+        // transposed lines onto the other axis, so line height is no longer
+        // the block extent) stays on the pre-existing plain-inline path
+        // rather than taking a column path that cannot represent it.
+        if ($this->allInlineLevel($box->children)) {
+            if (WritingMode::fromStyle($box->style)->isVertical()) {
+                return false;
+            }
+            $fill = $box->style->get('column-fill');
+            if ($fill instanceof Keyword && strtolower($fill->name) === 'auto') {
+                return false;
+            }
+            $wrap = $box->style->get('column-wrap');
+            if ($wrap instanceof Keyword && strtolower($wrap->name) === 'wrap') {
+                return false;
+            }
+            if (!$this->isAuto($box->style->get('column-height'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -7775,6 +7800,12 @@ final class BlockLayout
             ruleStyle: $this->resolveColumnRuleStyle($box->style),
             ruleColor: $this->resolveColumnRuleColor($box->style),
         );
+
+        // An inline-only container has no block children to distribute;
+        // its LINE BOXES are the fragments that fill the columns.
+        if ($this->allInlineLevel($box->children)) {
+            return $this->layoutMultiColumnInline($box, $childContext, $count, $columnWidth, $gap);
+        }
 
         // Single-column degenerate case — fall back to normal block stacking.
         if ($count === 1) {
@@ -7825,6 +7856,188 @@ final class BlockLayout
             $geo->y,
             allowFragment: true,
         );
+    }
+
+    /**
+     * CSS Multi-column 1 §3 — lay out a multi-column container whose
+     * children are all inline-level.
+     *
+     * There are no block children to hand to `layoutColumnarRun`, so the
+     * fragmentation unit is the LINE BOX: run the inline formatting
+     * context once at the COLUMN measure (so lines break at the column
+     * width, not the container width), then distribute the resulting
+     * lines across the columns and translate each line into its column.
+     *
+     * Line boxes are positioned relative to the container's content
+     * origin — the painter draws at `box.geometry.x + fragment.x` and
+     * `box.geometry.y + line.y` — so moving a line into column `i` is a
+     * horizontal shift of every fragment by `i * (columnWidth + gap)`
+     * plus a rewrite of `line.y` to the line's offset within its column.
+     *
+     * Scope limits of this increment, all of which need the column
+     * fragmentation model rather than a wider redistribution pass:
+     *  - Columns always progress left-to-right. Under `direction: rtl` the
+     *    inline pass aligns text correctly within each column, but the
+     *    columns themselves should fill right-to-left.
+     *  - Rewriting `line.y` discards the page-break adjustments
+     *    `layoutInlineChildren` just applied, so a container that straddles
+     *    a page boundary can pull a line back onto the break. Balancing
+     *    also has no notion of legal break points, so `widows` / `orphans`
+     *    do not constrain the split.
+     *  - `column-rule` still paints `columnCount - 1` rules even when
+     *    balancing leaves trailing columns empty; the spec only draws a
+     *    rule between two columns that both have content.
+     */
+    private function layoutMultiColumnInline(
+        Box $box,
+        LayoutContext $childContext,
+        int $count,
+        float $columnWidth,
+        float $gap,
+    ): float {
+        $geo = $box->geometry;
+
+        // Break lines at the column measure. `layoutInlineChildren` reads
+        // the parent's used width, so narrow it for the duration of the
+        // call and restore it afterwards — the container itself keeps its
+        // full width for painting and for its own box geometry.
+        $fullWidth = $geo->width;
+        $geo->width = $columnWidth;
+        $height = $this->layoutInlineChildren(
+            $box,
+            $childContext->withContainingBlock(
+                $columnWidth,
+                $childContext->containingBlockHeight,
+            ),
+        );
+        $geo->width = $fullWidth;
+
+        $lines = $box->lineBoxes;
+        if ($count < 2 || $lines === []) {
+            return $height;
+        }
+        // An over-constrained container (huge gap, or more columns than fit)
+        // can compute a zero column measure, and a non-positive width makes
+        // the inline pass return no lines at all — the text would silently
+        // vanish. Fall back to a single full-width column instead.
+        if ($columnWidth <= 0.0) {
+            $geo->width = $fullWidth;
+            $box->multiColumn = null;
+            return $this->layoutInlineChildren($box, $childContext);
+        }
+
+        $columns = $this->balanceLinesIntoColumns($lines, $count);
+
+        $usedHeight = 0.0;
+        foreach ($columns as $index => $columnLines) {
+            $dx = $index * ($columnWidth + $gap);
+            $cursor = 0.0;
+            foreach ($columnLines as $line) {
+                // An atomic inline (`<img>`, `inline-block`) carries its own
+                // committed geometry, already baked against the ORIGINAL line
+                // top by `commitAtomicFragmentY`. Moving the line alone would
+                // leave the atomic's box painting at its pre-balance position
+                // while its fragment paints at the new one, so shift the
+                // atomic's whole subtree by the same delta on both axes.
+                $dy = $cursor - $line->y;
+                $line->y = $cursor;
+                if ($dx !== 0.0 || $dy !== 0.0) {
+                    foreach ($line->fragments as $fragment) {
+                        if ($fragment->atomicBox !== null) {
+                            $this->shiftSubtree($fragment->atomicBox, $dy, $dx);
+                        }
+                    }
+                }
+                if ($dx !== 0.0) {
+                    $line->fragments = $this->inlineLayout->shiftFragments($line->fragments, $dx);
+                }
+                $cursor += $line->height;
+            }
+            $usedHeight = max($usedHeight, $cursor);
+        }
+
+        return $usedHeight;
+    }
+
+    /**
+     * Distribute line boxes over `count` columns so the tallest column is
+     * as short as possible (CSS Multi-column 1 §3.4 `column-fill: balance`).
+     *
+     * Bisects on the column height: for a candidate height, a greedy
+     * top-to-bottom fill tells us how many columns the lines need, and the
+     * smallest height that still fits in `count` columns is the balanced
+     * height. For the uniform line heights that dominate real content this
+     * lands on the same distribution browsers produce (7 lines over 3
+     * columns → 3/3/1, not the 2/2/3 a naive "fill to average" gives).
+     *
+     * @param  list<LineBox> $lines
+     * @return list<list<LineBox>>
+     */
+    private function balanceLinesIntoColumns(array $lines, int $count): array
+    {
+        $total = 0.0;
+        $tallest = 0.0;
+        foreach ($lines as $line) {
+            $total += $line->height;
+            $tallest = max($tallest, $line->height);
+        }
+
+        // A column can never be shorter than its tallest single line, and
+        // never needs to be taller than the whole content.
+        $low = $tallest;
+        $high = max($tallest, $total);
+        for ($i = 0; $i < 40 && $high - $low > 0.01; $i++) {
+            $mid = ($low + $high) / 2.0;
+            if (count($this->fillLinesGreedily($lines, $mid)) <= $count) {
+                $high = $mid;
+            } else {
+                $low = $mid;
+            }
+        }
+
+        $columns = $this->fillLinesGreedily($lines, $high);
+
+        // Overflow guard: a pathological set can still want more columns
+        // than exist. Everything past the last column joins it rather than
+        // vanishing.
+        if (count($columns) > $count) {
+            $overflow = array_splice($columns, $count);
+            foreach ($overflow as $extra) {
+                $columns[$count - 1] = array_merge($columns[$count - 1], $extra);
+            }
+        }
+
+        return $columns;
+    }
+
+    /**
+     * Greedy top-to-bottom fill: start a new column whenever the next line
+     * would push the current one past `limit`. A column always takes at
+     * least one line, so a line taller than `limit` cannot loop forever.
+     *
+     * @param  list<LineBox> $lines
+     * @return list<list<LineBox>>
+     */
+    private function fillLinesGreedily(array $lines, float $limit): array
+    {
+        /** @var list<list<LineBox>> $columns */
+        $columns = [];
+        /** @var list<LineBox> $current */
+        $current = [];
+        $used = 0.0;
+        foreach ($lines as $line) {
+            if ($current !== [] && $used + $line->height > $limit + 0.001) {
+                $columns[] = $current;
+                $current = [];
+                $used = 0.0;
+            }
+            $current[] = $line;
+            $used += $line->height;
+        }
+        if ($current !== []) {
+            $columns[] = $current;
+        }
+        return $columns;
     }
 
     /**

@@ -1268,10 +1268,17 @@ final class InlineLayout
     }
 
     /**
+     * Translate a line's fragments along the inline axis. `InlineFragment`
+     * is readonly, so each one is rebuilt at the new `x`.
+     *
+     * Public because `BlockLayout` reuses it when it moves whole lines —
+     * e.g. distributing an inline formatting context's lines into
+     * multi-column columns.
+     *
      * @param list<InlineFragment> $fragments
      * @return list<InlineFragment>
      */
-    private function shiftFragments(array $fragments, float $dx): array
+    public function shiftFragments(array $fragments, float $dx): array
     {
         $out = [];
         foreach ($fragments as $f) {
