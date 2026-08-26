@@ -8041,6 +8041,224 @@ final class BlockLayout
     }
 
     /**
+     * The one shape of block content this increment can fragment across a
+     * column boundary: a single in-flow block child whose own children
+     * form an inline formatting context, carrying nothing that would need
+     * per-fragment geometry to render correctly.
+     *
+     * `Box` owns exactly ONE `BoxGeometry`, so a fragmented block has
+     * nowhere to record a second border box. Everything that would make
+     * the difference visible — borders, backgrounds, floats, out-of-flow
+     * descendants, nested columns, forced or avoided breaks — disqualifies
+     * the child rather than rendering it wrongly.
+     *
+     * @param list<Box> $children
+     */
+    private function singleIfcColumnCandidate(array $children): ?Box
+    {
+        if (count($children) !== 1) {
+            return null;
+        }
+        $child = $children[0];
+        return $this->isIfcFragmentable($child) ? $child : null;
+    }
+
+    /**
+     * Whether this box's content can be split between columns by moving
+     * its LINE BOXES, without needing geometry per fragment.
+     *
+     * `Box` owns exactly ONE `BoxGeometry`, so a split box has nowhere to
+     * record a second border box. Everything whose rendering would expose
+     * that — borders, backgrounds, floats, out-of-flow descendants, nested
+     * columns, forced or avoided breaks — disqualifies the box rather than
+     * being drawn in the wrong place.
+     */
+    private function isIfcFragmentable(Box $child): bool
+    {
+        if ((!($child instanceof BlockBox) && !($child instanceof AnonymousBlockBox))
+            || $child->lineBoxes === []
+            || $child->multiColumn !== null
+            || $child->children === []
+            || !$this->allInlineLevel($child->children)
+            || $this->isOutOfFlow($child)
+            || $this->floatSide($child) !== null
+            || $this->forcesColumnBreakBefore($child)
+            || $this->forcesColumnBreakAfter($child)
+            || $this->avoidsColumnBreakInside($child)
+            || $this->hasVisibleBoxDecorations($child)
+            || $this->isMonolithic($child)
+        ) {
+            return false;
+        }
+        // An out-of-flow or floated inline descendant is positioned against
+        // the box's single tall geometry; moving the lines out from under
+        // it would strand it.
+        foreach ($child->children as $inline) {
+            if ($this->isOutOfFlow($inline) || $this->floatSide($inline) !== null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Spill one fragmentable child's line boxes onward from
+     * (`$startCol`, `$startY`), opening new columns as each fills, and
+     * return the column and offset the next sibling continues from.
+     *
+     * The box itself is first moved to the top of column 0 so that
+     * `line.y` reads directly as an offset within a column and a
+     * fragment's shift reads directly as a column step — the painter
+     * draws at `box.geometry.{x,y} + {fragment.x, line.y}`.
+     *
+     * @return array{int, float}
+     */
+    private function spillChildLinesAcrossColumns(
+        Box $child,
+        float $contentX,
+        float $originY,
+        float $columnWidth,
+        float $gap,
+        int $count,
+        int $startCol,
+        float $startY,
+        float $balanced,
+    ): array {
+        $child->geometry->marginTop = 0.0;
+        $this->shiftSubtree(
+            $child,
+            $originY - $child->geometry->y,
+            $contentX - $child->geometry->x,
+        );
+
+        $col = $startCol;
+        $y = $startY;
+        $tallest = 0.0;
+        foreach ($child->lineBoxes as $line) {
+            if ($y > 0.0 && $col < $count - 1 && $y + $line->height > $balanced + 0.001) {
+                $col++;
+                $y = 0.0;
+            }
+            $dx = $col * ($columnWidth + $gap);
+            $dy = $y - $line->y;
+            $line->y = $y;
+            if ($dx !== 0.0 || $dy !== 0.0) {
+                foreach ($line->fragments as $fragment) {
+                    if ($fragment->atomicBox !== null) {
+                        $this->shiftSubtree($fragment->atomicBox, $dy, $dx);
+                    }
+                }
+            }
+            if ($dx !== 0.0) {
+                $line->fragments = $this->inlineLayout->shiftFragments($line->fragments, $dx);
+            }
+            $y += $line->height;
+            $tallest = max($tallest, $y);
+        }
+        // The box no longer spans one tall column. It has no visible
+        // decorations, so this only affects what enclosing code measures.
+        $child->geometry->height = $tallest;
+
+        return [$col, $y];
+    }
+
+    /**
+     * Distribute a single IFC child's line boxes across the columns and
+     * collapse its own geometry to the balanced column height.
+     *
+     * The child's content origin IS column 0's origin, so a line moves to
+     * column `i` by the same fragment shift the inline-only path uses.
+     */
+    private function fragmentIfcChildIntoColumns(
+        Box $child,
+        float $columnWidth,
+        float $gap,
+        int $count,
+    ): float {
+        $columns = $this->balanceLinesIntoColumns($child->lineBoxes, $count);
+
+        $used = 0.0;
+        foreach ($columns as $index => $columnLines) {
+            $dx = $index * ($columnWidth + $gap);
+            $cursor = 0.0;
+            foreach ($columnLines as $line) {
+                $dy = $cursor - $line->y;
+                $line->y = $cursor;
+                if ($dx !== 0.0 || $dy !== 0.0) {
+                    foreach ($line->fragments as $fragment) {
+                        if ($fragment->atomicBox !== null) {
+                            $this->shiftSubtree($fragment->atomicBox, $dy, $dx);
+                        }
+                    }
+                }
+                if ($dx !== 0.0) {
+                    $line->fragments = $this->inlineLayout->shiftFragments($line->fragments, $dx);
+                }
+                $cursor += $line->height;
+            }
+            $used = max($used, $cursor);
+        }
+
+        // The child no longer occupies one tall column. It has no visible
+        // decorations (the candidate test guarantees it), so shrinking its
+        // box to the balanced height only affects what the container
+        // reports as its own content height.
+        $child->geometry->height = $used;
+
+        return $used + $child->geometry->marginTop + $child->geometry->marginBottom;
+    }
+
+    /**
+     * CSS Contain 1 §containment-size — a size-contained box is
+     * MONOLITHIC: a fragmentation container may not split it, so its lines
+     * all stay in one column even when they overflow it.
+     */
+    private function isMonolithic(Box $box): bool
+    {
+        return $this->containsSize($box->style, 'block')
+            || $this->containsSize($box->style, 'inline');
+    }
+
+    /**
+     * CSS Fragmentation 4 §4.1 — `break-inside: avoid` and `avoid-column`
+     * forbid splitting a box between columns. `avoid-page` constrains page
+     * breaks only, so it does not disqualify a column split.
+     */
+    private function avoidsColumnBreakInside(Box $box): bool
+    {
+        $value = $box->style->get('break-inside');
+        return $value instanceof Keyword
+            && in_array(strtolower($value->name), ['avoid', 'avoid-column'], true);
+    }
+
+    /**
+     * Borders and backgrounds are painted from the box's single geometry.
+     * If the box's content is split across columns while its border box
+     * stays where it was, the decoration renders in the wrong place — so
+     * a decorated box is never a fragmentation candidate.
+     */
+    private function hasVisibleBoxDecorations(Box $box): bool
+    {
+        $g = $box->geometry;
+        if ($g->borderTop > 0.0 || $g->borderRight > 0.0
+            || $g->borderBottom > 0.0 || $g->borderLeft > 0.0
+        ) {
+            return true;
+        }
+        $background = $box->style->get('background-color');
+        if ($background instanceof \Phpdftk\Css\Value\Color && $background->a > 0.0) {
+            return true;
+        }
+        $image = $box->style->get('background-image');
+        if ($image !== null
+            && !($image instanceof Keyword && strtolower($image->name) === 'none')
+        ) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * Split a child list into vertical segments at `column-span: all`
      * boundaries. Each segment is either a columnar run of regular
      * children OR a single span-all child. Order is preserved.
@@ -8198,6 +8416,27 @@ final class BlockLayout
             }
         }
 
+        // CSS Multi-column 1 §3 — the whole-child redistribution below
+        // cannot split anything, so a container whose entire content is a
+        // single block of text leaves everything in column 0. That is the
+        // dominant real-world shape. When that one child's own children
+        // form an inline formatting context, its already-wrapped LINE
+        // BOXES can be partitioned across the columns exactly as an
+        // inline-only container's are ({@see layoutMultiColumnInline}) —
+        // the text was measured against the column width in the pass
+        // above, so nothing needs re-wrapping.
+        if ($count > 1) {
+            $ifcChild = $this->singleIfcColumnCandidate($children);
+            if ($ifcChild !== null) {
+                return $this->fragmentIfcChildIntoColumns(
+                    $ifcChild,
+                    $columnWidth,
+                    $gap,
+                    $count,
+                );
+            }
+        }
+
         $balanced = $count > 0 ? ceil($childTotal / $count) : $childTotal;
 
         $currentCol = 0;
@@ -8223,6 +8462,26 @@ final class BlockLayout
                 && $currentCol < $count - 1
                 && $colY + $h > $balanced + 0.001
             ) {
+                // A child that overflows the column is normally pushed
+                // whole into the next one, which leaves a ragged gap and
+                // can overflow the last column. When its content is just
+                // lines, spill them across the boundary instead.
+                if ($this->isIfcFragmentable($child)) {
+                    [$currentCol, $colY] = $this->spillChildLinesAcrossColumns(
+                        $child,
+                        $geo->x,
+                        $originY,
+                        $columnWidth,
+                        $gap,
+                        $count,
+                        $currentCol,
+                        $colY,
+                        $balanced,
+                    );
+                    $columnHeights[$currentCol] = $colY;
+                    $prevChild = $child;
+                    continue;
+                }
                 $currentCol++;
                 $colY = 0.0;
             }

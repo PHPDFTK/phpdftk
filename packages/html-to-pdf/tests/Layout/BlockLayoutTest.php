@@ -2404,6 +2404,123 @@ final class BlockLayoutTest extends TestCase
         );
     }
 
+    public function testMultiColumnFragmentsSingleBlockChildLinesAcrossColumns(): void
+    {
+        // A multi-column container whose whole content is ONE block of text
+        // used to leave everything in column 0, because whole-child
+        // redistribution has nothing to redistribute. The child's line
+        // boxes are split across the columns instead.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><section><p>aaaa bbbb cccc dddd eeee ffff</p></section></body></html>',
+            'html, body, section, p { display: block; }
+             p { margin: 0; }
+             section { width: 300px; column-count: 3; column-gap: 0;
+                       font-family: noto; font-size: 20px; line-height: 20px; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
+        $p = $this->find($box, 'p');
+        self::assertNotNull($p);
+        self::assertGreaterThan(1, count($p->lineBoxes), 'paragraph wrapped to several lines');
+
+        // Lines restart per column rather than stacking straight down.
+        $tops = [];
+        foreach ($p->lineBoxes as $line) {
+            $tops[(string) round($line->y, 3)] = true;
+        }
+        self::assertLessThan(count($p->lineBoxes), count($tops));
+
+        // ...and they reach past the first column measure.
+        $rightmost = 0.0;
+        foreach ($p->lineBoxes as $line) {
+            foreach ($line->fragments as $fragment) {
+                $rightmost = max($rightmost, $fragment->x);
+            }
+        }
+        self::assertNotNull($section->multiColumn);
+        self::assertGreaterThan($section->multiColumn->columnWidth, $rightmost);
+    }
+
+    public function testMultiColumnKeepsDecoratedChildWhole(): void
+    {
+        // A box with a visible border paints from its single geometry, so
+        // splitting its lines across columns would strand the border. Such
+        // a child must stay whole in one column.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><section><p>aaaa bbbb cccc dddd eeee ffff</p></section></body></html>',
+            'html, body, section, p { display: block; }
+             p { margin: 0; border: 5px solid black; }
+             section { width: 300px; column-count: 3; column-gap: 0;
+                       font-family: noto; font-size: 20px; line-height: 20px; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $p = $this->find($box, 'p');
+        self::assertNotNull($p);
+        // Every line keeps a distinct top — nothing was moved into a column.
+        $tops = [];
+        foreach ($p->lineBoxes as $line) {
+            $tops[(string) round($line->y, 3)] = true;
+        }
+        self::assertCount(count($p->lineBoxes), $tops, 'decorated child stays unsplit');
+    }
+
+    public function testMultiColumnKeepsSizeContainedChildWhole(): void
+    {
+        // CSS Contain 1 §containment-size — a size-contained box is
+        // MONOLITHIC, so a fragmentation container may not split it. Its
+        // lines stay in one column even when they overflow.
+        $font = OpenTypeParser::fromBytes(
+            (string) file_get_contents(dirname(__DIR__, 4) . '/tests/fixtures/fonts/NotoSans-Regular.otf'),
+        )->parse();
+        $box = $this->buildTree(
+            '<html><body><section><p>aaaa bbbb cccc dddd eeee ffff</p></section></body></html>',
+            'html, body, section, p { display: block; }
+             p { margin: 0; contain: size; }
+             section { width: 300px; column-count: 3; column-gap: 0;
+                       font-family: noto; font-size: 20px; line-height: 20px; }',
+        );
+        $this->layout->layout($box, new LayoutContext(
+            600.0,
+            800.0,
+            0.0,
+            0.0,
+            new LengthContext(),
+            fontResolver: new FontResolver(['noto' => $font], null),
+        ));
+        $p = $this->find($box, 'p');
+        self::assertNotNull($p);
+        $tops = [];
+        foreach ($p->lineBoxes as $line) {
+            $tops[(string) round($line->y, 3)] = true;
+        }
+        self::assertCount(
+            count($p->lineBoxes),
+            $tops,
+            'size-contained child is monolithic and stays unsplit',
+        );
+    }
+
     public function testMultiColumnIgnoredOnTable(): void
     {
         // Tables have their own layout — column-count is a no-op here.
