@@ -1375,7 +1375,7 @@ final class Painter
                 return null;
             }
             [$sx, $sy] = $this->rayOrigin($box, $ray, $cbX, $cbY, $cbW, $cbH);
-            $length = $this->rayLength($ray, $degrees, $sx, $sy, $cbX, $cbY, $cbW, $cbH);
+            $length = $this->rayLength($box, $ray, $degrees, $sx, $sy, $cbX, $cbY, $cbW, $cbH);
             $distance = $this->resolveMotionDistance($box, $length);
 
             // CSS ray angles are compass BEARINGS: 0deg points UP and
@@ -1396,7 +1396,8 @@ final class Painter
             // A lone `<coord-box>` is a complete offset-path: the reference
             // rectangle itself. The reference box's own `border-radius`
             // should round it; square corners are the approximation here.
-            if ($this->motionCoordBox($box) === null) {
+            $coordBox = $this->motionCoordBox($box);
+            if ($coordBox === null) {
                 return null;
             }
             return $this->pointAlongPolyline($box, $this->roundedRectPolyline(
@@ -1404,7 +1405,7 @@ final class Painter
                 $cbY,
                 $cbW,
                 $cbH,
-                [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+                $this->referenceBoxRadii($parent ?? $box, $coordBox),
             ));
         }
         if ($shape instanceof \Phpdftk\Css\Value\PathShape) {
@@ -2301,6 +2302,43 @@ final class Painter
     }
 
     /**
+     * The corner radii of the reference box, as a bare `<coord-box>`
+     * offset-path inherits them.
+     *
+     * `border-radius` describes the BORDER box, so an inner coord box
+     * shrinks each radius by the border and padding it sits inside
+     * (CSS Backgrounds 3 §5.4), floored at zero.
+     *
+     * @return list<array{float, float}>
+     */
+    private function referenceBoxRadii(Box $source, string $coordBox): array
+    {
+        $g = $source->geometry;
+        $inset = match ($coordBox) {
+            'content-box' => [
+                $g->borderLeft + $g->paddingLeft,
+                $g->borderTop + $g->paddingTop,
+                $g->borderRight + $g->paddingRight,
+                $g->borderBottom + $g->paddingBottom,
+            ],
+            'padding-box' => [$g->borderLeft, $g->borderTop, $g->borderRight, $g->borderBottom],
+            default => [0.0, 0.0, 0.0, 0.0],
+        };
+        [$left, $top, $right, $bottom] = $inset;
+
+        // Percentage radii always resolve against the BORDER box, whichever
+        // coord box the path itself uses.
+        [$borderWidth, $borderHeight] = $this->borderBoxExtent($source);
+        $radii = $this->borderRadiiXY($source, $borderWidth, $borderHeight);
+        return [
+            [max(0.0, $radii[0][0] - $left), max(0.0, $radii[0][1] - $top)],
+            [max(0.0, $radii[1][0] - $right), max(0.0, $radii[1][1] - $top)],
+            [max(0.0, $radii[2][0] - $right), max(0.0, $radii[2][1] - $bottom)],
+            [max(0.0, $radii[3][0] - $left), max(0.0, $radii[3][1] - $bottom)],
+        ];
+    }
+
+    /**
      * The `<coord-box>` named by this box's `offset-path`, if any.
      *
      * A `<coord-box>` may stand alone as the whole offset-path
@@ -2384,6 +2422,7 @@ final class Painter
      * measure to a side or a corner.
      */
     private function rayLength(
+        Box $box,
         \Phpdftk\Css\Value\Ray $ray,
         float $degrees,
         float $sx,
@@ -2405,7 +2444,7 @@ final class Painter
             }
         }
 
-        return match ($ray->size) {
+        $length = match ($ray->size) {
             \Phpdftk\Css\Value\RaySize::ClosestSide => min($sides),
             \Phpdftk\Css\Value\RaySize::FarthestSide => max($sides),
             \Phpdftk\Css\Value\RaySize::ClosestCorner => min($corners),
@@ -2420,6 +2459,31 @@ final class Painter
                 $bottom,
             ),
         };
+
+        // CSS Motion Path 1 §2.2 — `contain` shortens the ray so the
+        // element still fits inside its containing block. The reduction is
+        // half the box's LARGER side and does not depend on the ray's
+        // direction, so a wide box is held back as far when travelling
+        // vertically as horizontally.
+        if ($ray->contain) {
+            [$width, $height] = $this->borderBoxExtent($box);
+            $length = max(0.0, $length - max($width, $height) / 2.0);
+        }
+        return $length;
+    }
+
+    /**
+     * The box's border-box width and height.
+     *
+     * @return array{float, float}
+     */
+    private function borderBoxExtent(Box $box): array
+    {
+        $g = $box->geometry;
+        return [
+            $g->width + $g->paddingLeft + $g->paddingRight + $g->borderLeft + $g->borderRight,
+            $g->height + $g->paddingTop + $g->paddingBottom + $g->borderTop + $g->borderBottom,
+        ];
     }
 
     /**
