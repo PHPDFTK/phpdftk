@@ -1804,19 +1804,43 @@ final class InlineLayout
         }
         $baseline = $above;
         $height = $above + $below;
+        // Pass B — `top` / `bottom` align against the LINE BOX rather than the
+        // baseline, so they can only be placed once the baseline-aligned
+        // content has sized it. CSS 2.1 §10.8.1: the line box height spans the
+        // uppermost box top to the lowermost box bottom, and top/bottom-aligned
+        // boxes are included in that span — a box taller than the line grows
+        // it. Which EDGE is pinned decides which way it grows: `top` holds the
+        // box top against the line top so the line grows downward and the
+        // baseline stays put, while `bottom` holds the box bottom against the
+        // line bottom so the line grows upward and the baseline travels down
+        // with it.
+        //
+        // Growth therefore has to finish before any offset is assigned;
+        // computing them in one pass left every `bottom` box pinned to a line
+        // that had not yet grown, so a 50px inline-block sat in a 19px line
+        // and consecutive ones overlapped.
+        $deferred = [];
         foreach ($fragments as $i => $f) {
             if ($offsets[$i] !== null) {
                 continue;
             }
             [, , $ea, $ed] = $this->fragmentExtents($f);
-            if ($f->verticalAlign === 'top') {
-                // Box top pinned to the line top (y = 0); grow the line down.
-                $offsets[$i] = $ea - $baseline;
-                $height = max($height, $ea + $ed);
-            } else {
-                // Box bottom pinned to the line bottom.
-                $offsets[$i] = $height - $ed - $baseline;
+            $deferred[$i] = [$f->verticalAlign, $ea, $ed];
+        }
+        foreach ($deferred as [$verticalAlign, $ea, $ed]) {
+            $extent = $ea + $ed;
+            if ($extent <= $height) {
+                continue;
             }
+            if ($verticalAlign !== 'top') {
+                $baseline += $extent - $height;
+            }
+            $height = $extent;
+        }
+        foreach ($deferred as $i => [$verticalAlign, $ea, $ed]) {
+            $offsets[$i] = $verticalAlign === 'top'
+                ? $ea - $baseline
+                : $height - $ed - $baseline;
         }
         $out = [];
         foreach ($fragments as $i => $f) {
