@@ -3342,13 +3342,146 @@ final class ValueParser
             $value = $this->parseFromString(self::serializeTokens($group));
             $values[] = $value;
         }
-        if (count($values) === 1) {
-            return [$values[0], $values[0]];
+        return self::assignPositionAxes($values);
+    }
+
+    /**
+     * CSS Values 4 §3.5 — resolve a parsed `<position>` component list onto
+     * the horizontal and vertical axes.
+     *
+     * A lone keyword names ONE axis and leaves the other centred, so
+     * `at top` is `center top`, not `top top`. Two keywords may arrive in
+     * either order (`top left` == `left top`). The three- and four-value
+     * forms pair an edge keyword with an offset measured FROM that edge, so
+     * `right 25%` is 25% in from the right — i.e. `75%` across.
+     *
+     * @param list<Value> $values
+     * @return array{?Value, ?Value}
+     */
+    private static function assignPositionAxes(array $values): array
+    {
+        $count = count($values);
+        if ($count === 1) {
+            $value = $values[0];
+            $axis = self::positionKeywordAxis($value);
+            if ($axis === 'y') {
+                return [new Keyword('center'), $value];
+            }
+            if ($axis === 'x') {
+                return [$value, new Keyword('center')];
+            }
+            // `center`, or a bare <length-percentage>, sets the x axis.
+            return [$value, new Keyword('center')];
         }
-        if (count($values) === 2) {
-            return [$values[0], $values[1]];
+        if ($count === 2) {
+            [$first, $second] = $values;
+            if (self::positionKeywordAxis($first) === 'y'
+                || self::positionKeywordAxis($second) === 'x'
+            ) {
+                return [$second, $first];
+            }
+            return [$first, $second];
         }
-        return [null, null];
+        if ($count !== 3 && $count !== 4) {
+            return [null, null];
+        }
+
+        // Three/four-value edge-offset form. Collect (axis, value) entries,
+        // then place any `center` into whichever axis is still free.
+        $entries = [];
+        $index = 0;
+        while ($index < $count) {
+            $keyword = $values[$index];
+            if (!($keyword instanceof Keyword)) {
+                return [null, null];
+            }
+            $offset = null;
+            if ($index + 1 < $count && !($values[$index + 1] instanceof Keyword)) {
+                $offset = $values[$index + 1];
+                $index += 2;
+            } else {
+                ++$index;
+            }
+            $entry = self::edgeOffsetValue(strtolower($keyword->name), $offset);
+            if ($entry === null) {
+                return [null, null];
+            }
+            $entries[] = $entry;
+        }
+        if (count($entries) !== 2) {
+            return [null, null];
+        }
+
+        $axes = ['x' => null, 'y' => null];
+        foreach ($entries as [$axis, $value]) {
+            if ($axis === null) {
+                continue;
+            }
+            if ($axes[$axis] !== null) {
+                return [null, null];
+            }
+            $axes[$axis] = $value;
+        }
+        foreach ($entries as [$axis, $value]) {
+            if ($axis !== null) {
+                continue;
+            }
+            $free = $axes['x'] === null ? 'x' : ($axes['y'] === null ? 'y' : null);
+            if ($free === null) {
+                return [null, null];
+            }
+            $axes[$free] = $value;
+        }
+        if ($axes['x'] === null || $axes['y'] === null) {
+            return [null, null];
+        }
+        return [$axes['x'], $axes['y']];
+    }
+
+    /** The axis a `<position>` keyword names, or null for `center`. */
+    private static function positionKeywordAxis(?Value $value): ?string
+    {
+        if (!($value instanceof Keyword)) {
+            return null;
+        }
+        return match (strtolower($value->name)) {
+            'left', 'right' => 'x',
+            'top', 'bottom' => 'y',
+            default => null,
+        };
+    }
+
+    /**
+     * One `<edge> <offset>?` pair from the three/four-value `<position>`
+     * form, folded into a single axis value measured from the start edge.
+     *
+     * @return array{?string, Value}|null
+     */
+    private static function edgeOffsetValue(string $edge, ?Value $offset): ?array
+    {
+        $near = static fn(): Value => $offset ?? new Percentage(0.0);
+        $far = static function () use ($offset): Value {
+            if ($offset === null) {
+                return new Percentage(100.0);
+            }
+            if ($offset instanceof Percentage) {
+                return new Percentage(100.0 - $offset->value);
+            }
+            return new Calc(new CalcBinary(
+                new CalcLeaf(new Percentage(100.0)),
+                CalcOp::Sub,
+                new CalcLeaf($offset),
+            ));
+        };
+        return match ($edge) {
+            'left' => ['x', $near()],
+            'top' => ['y', $near()],
+            'right' => ['x', $far()],
+            'bottom' => ['y', $far()],
+            // `center` takes no offset and adopts whichever axis is free.
+            'center' => $offset === null ? [null, new Percentage(50.0)] : null,
+            default => null,
+        };
     }
 
     /**

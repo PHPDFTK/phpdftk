@@ -1276,7 +1276,29 @@ final class Painter
     /** Whether this box is positioned along an `offset-path`. */
     private function hasMotionPath(Box $box): bool
     {
-        return $this->motionRay($box) !== null;
+        return $this->motionRay($box) !== null
+            || $this->motionShape($box) !== null
+            || $this->motionCoordBox($box) !== null;
+    }
+
+    /**
+     * The `<basic-shape>` in this box's `offset-path`, if any. As with
+     * `ray()`, a trailing `<coord-box>` puts the cascade in a ValueList.
+     */
+    private function motionShape(Box $box): ?\Phpdftk\Css\Value\BasicShape
+    {
+        $value = $box->style->get('offset-path');
+        if ($value instanceof \Phpdftk\Css\Value\BasicShape) {
+            return $value;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($value->values as $component) {
+                if ($component instanceof \Phpdftk\Css\Value\BasicShape) {
+                    return $component;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -1315,30 +1337,12 @@ final class Painter
      */
     private function motionPathFunctions(Box $box, ?Box $parent): array
     {
-        $ray = $this->motionRay($box);
-        if ($ray === null) {
+        $placement = $this->motionPlacement($box, $parent);
+        if ($placement === null) {
             return [];
         }
-        $degrees = $this->rayAngleDegrees($ray);
-        if ($degrees === null) {
-            return [];
-        }
-
-        [$cbX, $cbY, $cbW, $cbH] = $this->motionReferenceRect($box, $parent);
-        [$sx, $sy] = $this->rayOrigin($box, $ray, $cbX, $cbY, $cbW, $cbH);
-        $length = $this->rayLength($ray, $degrees, $sx, $sy, $cbX, $cbY, $cbW, $cbH);
-        $distance = $this->resolveMotionDistance($box, $length);
-
-        // CSS ray angles are compass BEARINGS: 0deg points UP and positive
-        // angles turn clockwise. In CSS coordinates Y grows downward, so
-        // the unit vector is (sin θ, -cos θ) — not the (cos, sin) of an
-        // ordinary mathematical angle, which would be 90° out.
-        $theta = deg2rad($degrees);
-        $px = $sx + $distance * sin($theta);
-        $py = $sy - $distance * cos($theta);
-
-        // The path tangent trails the bearing by 90°.
-        $phi = $this->resolveMotionRotation($box, $degrees - 90.0);
+        [$px, $py, $tangent] = $placement;
+        $phi = $this->resolveMotionRotation($box, $tangent);
 
         [$ox, $oy] = $this->transformOriginCss($box);
         [$ax, $ay] = $this->motionAnchorCss($box, $ox, $oy);
@@ -1351,6 +1355,876 @@ final class Painter
             $functions[] = $this->pixelTranslate($ox - $ax, $oy - $ay);
         }
         return $functions;
+    }
+
+
+    /**
+     * Where on its `offset-path` a box sits, in CSS page coordinates,
+     * together with the path tangent in degrees.
+     *
+     * @return array{float, float, float}|null
+     */
+    private function motionPlacement(Box $box, ?Box $parent): ?array
+    {
+        [$cbX, $cbY, $cbW, $cbH] = $this->motionReferenceRect($box, $parent);
+
+        $ray = $this->motionRay($box);
+        if ($ray !== null) {
+            $degrees = $this->rayAngleDegrees($ray);
+            if ($degrees === null) {
+                return null;
+            }
+            [$sx, $sy] = $this->rayOrigin($box, $ray, $cbX, $cbY, $cbW, $cbH);
+            $length = $this->rayLength($ray, $degrees, $sx, $sy, $cbX, $cbY, $cbW, $cbH);
+            $distance = $this->resolveMotionDistance($box, $length);
+
+            // CSS ray angles are compass BEARINGS: 0deg points UP and
+            // positive angles turn clockwise. In CSS coordinates Y grows
+            // downward, so the unit vector is (sin θ, -cos θ) — not the
+            // (cos, sin) of an ordinary mathematical angle, which would be
+            // 90° out. The tangent then trails the bearing by 90°.
+            $theta = deg2rad($degrees);
+            return [
+                $sx + $distance * sin($theta),
+                $sy - $distance * cos($theta),
+                $degrees - 90.0,
+            ];
+        }
+
+        $shape = $this->motionShape($box);
+        if ($shape === null) {
+            // A lone `<coord-box>` is a complete offset-path: the reference
+            // rectangle itself. The reference box's own `border-radius`
+            // should round it; square corners are the approximation here.
+            if ($this->motionCoordBox($box) === null) {
+                return null;
+            }
+            return $this->pointAlongPolyline($box, $this->roundedRectPolyline(
+                $cbX,
+                $cbY,
+                $cbW,
+                $cbH,
+                [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            ));
+        }
+        if ($shape instanceof \Phpdftk\Css\Value\PathShape) {
+            // Unlike a <basic-shape>, `path()` is NOT resolved in the
+            // reference box: its coordinates are the element's own, so the
+            // path hangs off the box's border-box origin. `offset-path-
+            // string-003` pins this down — a 200x300 box at (50, 80) with
+            // `path('M 50 40')` has to land at (100, 120), which only the
+            // element-relative origin produces.
+            $g = $box->geometry;
+            [$points, $closed] = $this->svgPathPolyline(
+                $shape->pathData,
+                $g->x - $g->paddingLeft - $g->borderLeft,
+                $g->y - $g->paddingTop - $g->borderTop,
+            );
+            if ($points === []) {
+                return null;
+            }
+            return $this->pointAlongPolyline($box, $points, $closed);
+        }
+        $points = $this->motionShapePolyline($box, $shape, $cbX, $cbY, $cbW, $cbH);
+        if ($points === []) {
+            return null;
+        }
+        return $this->pointAlongPolyline($box, $points);
+    }
+
+    /**
+     * Walk a closed polyline to the point at `offset-distance`.
+     *
+     * Sampling every shape into a polyline gives one arc-length
+     * parameterisation for all of them: an ellipse's quarter-perimeter has
+     * no closed form, and a rounded rectangle mixes straight runs with
+     * elliptical arcs, so a cumulative-length table is the honest way to
+     * measure both.
+     *
+     * CSS Motion Path 1 §3.1 — a distance off either end of a CLOSED path
+     * wraps around it, while an open path clamps to its endpoints.
+     *
+     * @param list<array{float, float}> $points
+     * @return array{float, float, float}
+     */
+    private function pointAlongPolyline(Box $box, array $points, bool $closed = true): array
+    {
+        $count = count($points);
+        $cumulative = [0.0];
+        $total = 0.0;
+        for ($i = 1; $i < $count; ++$i) {
+            $total += hypot(
+                $points[$i][0] - $points[$i - 1][0],
+                $points[$i][1] - $points[$i - 1][1],
+            );
+            $cumulative[$i] = $total;
+        }
+        // A degenerate shape — `circle()` centred on an edge resolves
+        // `closest-side` to zero — collapses to its single point.
+        if ($total <= 0.0 || $count < 2) {
+            return [$points[0][0], $points[0][1], 0.0];
+        }
+
+        $distance = $this->resolveMotionDistance($box, $total);
+        if ($closed) {
+            $distance = fmod($distance, $total);
+            if ($distance < 0.0) {
+                $distance += $total;
+            }
+        } else {
+            $distance = max(0.0, min($total, $distance));
+        }
+
+        $index = 1;
+        while ($index < $count - 1 && $cumulative[$index] < $distance) {
+            ++$index;
+        }
+        [$x0, $y0] = $points[$index - 1];
+        [$x1, $y1] = $points[$index];
+        $span = $cumulative[$index] - $cumulative[$index - 1];
+        $t = $span > 0.0 ? ($distance - $cumulative[$index - 1]) / $span : 0.0;
+
+        return [
+            $x0 + ($x1 - $x0) * $t,
+            $y0 + ($y1 - $y0) * $t,
+            rad2deg(atan2($y1 - $y0, $x1 - $x0)),
+        ];
+    }
+
+    /**
+     * Sample a `<basic-shape>` offset-path into a closed polyline, in CSS
+     * page coordinates.
+     *
+     * Every shape starts where its conversion to a path starts and winds
+     * clockwise: circles and ellipses from 3 o'clock, the rectangle family
+     * from the top-left corner, and a polygon from its first vertex.
+     *
+     * @return list<array{float, float}>
+     */
+    private function motionShapePolyline(
+        Box $box,
+        \Phpdftk\Css\Value\BasicShape $shape,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): array {
+        if ($shape instanceof \Phpdftk\Css\Value\CircleShape) {
+            [$cx, $cy] = $this->shapeCentre(
+                $box,
+                $shape->centerX,
+                $shape->centerY,
+                $cbX,
+                $cbY,
+                $cbW,
+                $cbH,
+            );
+            $radius = $this->shapeRadius(
+                $shape->radius,
+                $cx,
+                $cy,
+                $cbX,
+                $cbY,
+                $cbW,
+                $cbH,
+                null,
+            );
+            return $this->ellipsePolyline($cx, $cy, $radius, $radius);
+        }
+        if ($shape instanceof \Phpdftk\Css\Value\EllipseShape) {
+            [$cx, $cy] = $this->shapeCentre(
+                $box,
+                $shape->centerX,
+                $shape->centerY,
+                $cbX,
+                $cbY,
+                $cbW,
+                $cbH,
+            );
+            $rx = $this->shapeRadius($shape->radiusX, $cx, $cy, $cbX, $cbY, $cbW, $cbH, true);
+            $ry = $this->shapeRadius($shape->radiusY, $cx, $cy, $cbX, $cbY, $cbW, $cbH, false);
+            return $this->ellipsePolyline($cx, $cy, $rx, $ry);
+        }
+        if ($shape instanceof \Phpdftk\Css\Value\PolygonShape) {
+            $points = [];
+            foreach ($shape->vertices as $vertex) {
+                $points[] = [
+                    $cbX + $this->resolvePositionComponent($vertex[0], $cbW, true),
+                    $cbY + $this->resolvePositionComponent($vertex[1], $cbH, false),
+                ];
+            }
+            if (count($points) < 2) {
+                return $points;
+            }
+            $points[] = $points[0];
+            return $points;
+        }
+
+        $rect = $this->motionShapeRect($shape, $cbX, $cbY, $cbW, $cbH);
+        if ($rect === null) {
+            return [];
+        }
+        [$left, $top, $width, $height, $radii] = $rect;
+        return $this->roundedRectPolyline($left, $top, $width, $height, $radii);
+    }
+
+
+    /**
+     * The centre of a `circle()` / `ellipse()` offset-path.
+     *
+     * An omitted `at <position>` does NOT default to the reference box's
+     * centre the way it does for `clip-path` — CSS Motion Path 1 §2 makes
+     * `offset-position` the default, so `circle()` with
+     * `offset-position: auto` is centred on the box's own corner.
+     *
+     * @return array{float, float}
+     */
+    private function shapeCentre(
+        Box $box,
+        ?\Phpdftk\Css\Value\Value $centerX,
+        ?\Phpdftk\Css\Value\Value $centerY,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): array {
+        if ($centerX !== null && $centerY !== null) {
+            return [
+                $cbX + $this->resolvePositionComponent($centerX, $cbW, true),
+                $cbY + $this->resolvePositionComponent($centerY, $cbH, false),
+            ];
+        }
+        return $this->offsetPositionPoint($box, $cbX, $cbY, $cbW, $cbH);
+    }
+
+    /**
+     * `offset-position` in CSS page coordinates. `auto` is the box's own
+     * border-box origin; `normal` — the initial value — is the centre of
+     * the containing block.
+     *
+     * @return array{float, float}
+     */
+    private function offsetPositionPoint(
+        Box $box,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): array {
+        $position = $box->style->get('offset-position');
+        if ($position instanceof Keyword && strtolower($position->name) === 'auto') {
+            $g = $box->geometry;
+            return [
+                $g->x - $g->paddingLeft - $g->borderLeft,
+                $g->y - $g->paddingTop - $g->borderTop,
+            ];
+        }
+        if ($position instanceof \Phpdftk\Css\Value\ValueList
+            && count($position->values) >= 2
+        ) {
+            return [
+                $cbX + $this->resolvePositionComponent($position->values[0], $cbW, true),
+                $cbY + $this->resolvePositionComponent($position->values[1], $cbH, false),
+            ];
+        }
+        return [$cbX + $cbW / 2.0, $cbY + $cbH / 2.0];
+    }
+
+    /**
+     * One radius of a `circle()` / `ellipse()`.
+     *
+     * `$horizontal` picks the axis for an ellipse; `null` marks a circle,
+     * whose percentage radius resolves against the reference box's
+     * diagonal per CSS Shapes 1 §5 rather than against one side.
+     */
+    private function shapeRadius(
+        ?\Phpdftk\Css\Value\Value $radius,
+        float $cx,
+        float $cy,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+        ?bool $horizontal,
+    ): float {
+        $left = abs($cx - $cbX);
+        $right = abs($cbX + $cbW - $cx);
+        $top = abs($cy - $cbY);
+        $bottom = abs($cbY + $cbH - $cy);
+
+        $keyword = null;
+        if ($radius === null) {
+            $keyword = 'closest-side';
+        } elseif ($radius instanceof Keyword) {
+            $keyword = strtolower($radius->name);
+        }
+        if ($keyword !== null) {
+            $sides = $horizontal === null
+                ? [$left, $right, $top, $bottom]
+                : ($horizontal ? [$left, $right] : [$top, $bottom]);
+            $corners = [
+                hypot($left, $top),
+                hypot($right, $top),
+                hypot($left, $bottom),
+                hypot($right, $bottom),
+            ];
+            return match ($keyword) {
+                'farthest-side' => max($sides),
+                'closest-corner' => min($corners),
+                'farthest-corner' => max($corners),
+                default => min($sides),
+            };
+        }
+        if ($radius instanceof \Phpdftk\Css\Value\Percentage) {
+            $basis = match ($horizontal) {
+                true => $cbW,
+                false => $cbH,
+                // CSS Shapes 1 §5: sqrt(w² + h²) / sqrt(2).
+                null => sqrt(($cbW * $cbW + $cbH * $cbH) / 2.0),
+            };
+            return abs($basis * $radius->value / 100.0);
+        }
+        return abs($this->resolvePositionComponent(
+            $radius,
+            $horizontal === false ? $cbH : $cbW,
+            $horizontal !== false,
+        ));
+    }
+
+    /**
+     * Resolve `inset()` / `rect()` / `xywh()` to a rectangle plus its four
+     * corner radii, in CSS page coordinates.
+     *
+     * @return array{float, float, float, float, list<array{float, float}>}|null
+     */
+    private function motionShapeRect(
+        \Phpdftk\Css\Value\BasicShape $shape,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): ?array {
+        $radiiSource = null;
+        if ($shape instanceof \Phpdftk\Css\Value\InsetShape) {
+            $edges = $this->expandBoxSides($shape->insets);
+            $top = $this->resolvePositionComponent($edges[0], $cbH, false);
+            $right = $this->resolvePositionComponent($edges[1], $cbW, true);
+            $bottom = $this->resolvePositionComponent($edges[2], $cbH, false);
+            $left = $this->resolvePositionComponent($edges[3], $cbW, true);
+            $x0 = $cbX + $left;
+            $y0 = $cbY + $top;
+            $x1 = $cbX + $cbW - $right;
+            $y1 = $cbY + $cbH - $bottom;
+            $radiiSource = $shape->borderRadius;
+        } elseif ($shape instanceof \Phpdftk\Css\Value\RectShape) {
+            // `rect()` edges are offsets from the reference box's top-left,
+            // not insets from each side, and `auto` means that box's own
+            // edge.
+            $edges = $this->expandBoxSides($shape->edges);
+            $top = $this->motionRectEdge($edges[0], $cbH, false, 0.0);
+            $right = $this->motionRectEdge($edges[1], $cbW, true, $cbW);
+            $bottom = $this->motionRectEdge($edges[2], $cbH, false, $cbH);
+            $left = $this->motionRectEdge($edges[3], $cbW, true, 0.0);
+            $x0 = $cbX + $left;
+            $y0 = $cbY + $top;
+            $x1 = $cbX + $right;
+            $y1 = $cbY + $bottom;
+            $radiiSource = $shape->borderRadius;
+        } elseif ($shape instanceof \Phpdftk\Css\Value\XywhShape) {
+            $x0 = $cbX + $this->resolvePositionComponent($shape->x, $cbW, true);
+            $y0 = $cbY + $this->resolvePositionComponent($shape->y, $cbH, false);
+            $x1 = $x0 + $this->resolvePositionComponent($shape->width, $cbW, true);
+            $y1 = $y0 + $this->resolvePositionComponent($shape->height, $cbH, false);
+            $radiiSource = $shape->borderRadius;
+        } else {
+            return null;
+        }
+
+        $left = min($x0, $x1);
+        $top = min($y0, $y1);
+        $width = abs($x1 - $x0);
+        $height = abs($y1 - $y0);
+        $radii = $this->shapeCornerRadii($radiiSource, $width, $height);
+
+        return [$left, $top, $width, $height, $radii];
+    }
+
+    /** One `rect()` edge, where `auto` falls back to the reference box. */
+    private function motionRectEdge(
+        \Phpdftk\Css\Value\Value $value,
+        float $extent,
+        bool $horizontal,
+        float $auto,
+    ): float {
+        if ($value instanceof Keyword && strtolower($value->name) === 'auto') {
+            return $auto;
+        }
+        return $this->resolvePositionComponent($value, $extent, $horizontal);
+    }
+
+    /**
+     * Expand a 1-to-4 value box-side list to the full top/right/bottom/left
+     * quartet.
+     *
+     * @param list<\Phpdftk\Css\Value\Value> $values
+     * @return array{
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value
+     * }
+     */
+    private function expandBoxSides(array $values): array
+    {
+        return match (count($values)) {
+            1 => [$values[0], $values[0], $values[0], $values[0]],
+            2 => [$values[0], $values[1], $values[0], $values[1]],
+            3 => [$values[0], $values[1], $values[2], $values[1]],
+            default => [$values[0], $values[1], $values[2], $values[3]],
+        };
+    }
+
+    /**
+     * The four `[rx, ry]` corner radii of a `round <border-radius>` clause,
+     * clockwise from the top-left, scaled down together if adjacent radii
+     * would overlap (CSS Backgrounds 3 §5.5).
+     *
+     * @param ?array<int, mixed> $radiusSource
+     * @return list<array{float, float}>
+     */
+    private function shapeCornerRadii(?array $radiusSource, float $width, float $height): array
+    {
+        if ($radiusSource === null || $radiusSource === []) {
+            return [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]];
+        }
+        $horizontal = [];
+        $vertical = [];
+        foreach ($radiusSource as $entry) {
+            if (is_array($entry) && count($entry) >= 2) {
+                $horizontal[] = $entry[0];
+                $vertical[] = $entry[1];
+                continue;
+            }
+            if ($entry instanceof \Phpdftk\Css\Value\Value) {
+                $horizontal[] = $entry;
+                $vertical[] = $entry;
+            }
+        }
+        if ($horizontal === []) {
+            return [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]];
+        }
+        $hx = $this->expandCornerList($horizontal);
+        $vy = $this->expandCornerList($vertical);
+
+        $radii = [];
+        for ($i = 0; $i < 4; ++$i) {
+            $radii[] = [
+                abs($this->resolvePositionComponent($hx[$i], $width, true)),
+                abs($this->resolvePositionComponent($vy[$i], $height, false)),
+            ];
+        }
+
+        // Uniform down-scale when opposing radii overshoot an edge.
+        $scale = 1.0;
+        foreach ([
+            [$radii[0][0] + $radii[1][0], $width],
+            [$radii[3][0] + $radii[2][0], $width],
+            [$radii[0][1] + $radii[3][1], $height],
+            [$radii[1][1] + $radii[2][1], $height],
+        ] as [$sum, $extent]) {
+            if ($sum > 0.0 && $sum > $extent) {
+                $scale = min($scale, $extent / $sum);
+            }
+        }
+        if ($scale < 1.0) {
+            foreach ($radii as $i => [$rx, $ry]) {
+                $radii[$i] = [$rx * $scale, $ry * $scale];
+            }
+        }
+        return $radii;
+    }
+
+    /**
+     * Expand a 1-to-4 value corner list to all four corners.
+     *
+     * @param list<\Phpdftk\Css\Value\Value> $values
+     * @return array{
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value,
+     *     \Phpdftk\Css\Value\Value
+     * }
+     */
+    private function expandCornerList(array $values): array
+    {
+        return match (count($values)) {
+            1 => [$values[0], $values[0], $values[0], $values[0]],
+            2 => [$values[0], $values[1], $values[0], $values[1]],
+            3 => [$values[0], $values[1], $values[2], $values[1]],
+            default => [$values[0], $values[1], $values[2], $values[3]],
+        };
+    }
+
+    /**
+     * An ellipse sampled clockwise from 3 o'clock, closed.
+     *
+     * @return list<array{float, float}>
+     */
+    private function ellipsePolyline(float $cx, float $cy, float $rx, float $ry): array
+    {
+        if ($rx <= 0.0 && $ry <= 0.0) {
+            return [[$cx, $cy]];
+        }
+        $steps = 720;
+        $points = [];
+        for ($i = 0; $i <= $steps; ++$i) {
+            $angle = 2.0 * M_PI * $i / $steps;
+            $points[] = [$cx + $rx * cos($angle), $cy + $ry * sin($angle)];
+        }
+        return $points;
+    }
+
+    /**
+     * A rectangle sampled clockwise from the top-left, closed. Non-zero
+     * corner radii become elliptical arcs, so the path starts where the
+     * top edge does rather than at the (cut away) corner itself.
+     *
+     * @param list<array{float, float}> $radii
+     * @return list<array{float, float}>
+     */
+    private function roundedRectPolyline(
+        float $left,
+        float $top,
+        float $width,
+        float $height,
+        array $radii,
+    ): array {
+        $right = $left + $width;
+        $bottom = $top + $height;
+        if ($width <= 0.0 && $height <= 0.0) {
+            return [[$left, $top]];
+        }
+        [$tl, $tr, $br, $bl] = $radii;
+        $rounded = false;
+        foreach ($radii as [$rx, $ry]) {
+            if ($rx > 0.0 || $ry > 0.0) {
+                $rounded = true;
+                break;
+            }
+        }
+        if (!$rounded) {
+            return [
+                [$left, $top],
+                [$right, $top],
+                [$right, $bottom],
+                [$left, $bottom],
+                [$left, $top],
+            ];
+        }
+
+        $arcSteps = 24;
+        $points = [[$left + $tl[0], $top]];
+        // Each corner arc sweeps a quarter turn clockwise, from the end of
+        // the incoming edge to the start of the outgoing one.
+        foreach ([
+            [$right - $tr[0], $top, $tr, $right - $tr[0], $top + $tr[1], -M_PI / 2.0],
+            [$right, $bottom - $br[1], $br, $right - $br[0], $bottom - $br[1], 0.0],
+            [$left + $bl[0], $bottom, $bl, $left + $bl[0], $bottom - $bl[1], M_PI / 2.0],
+            [$left, $top + $tl[1], $tl, $left + $tl[0], $top + $tl[1], M_PI],
+        ] as [$edgeX, $edgeY, $radius, $arcCx, $arcCy, $start]) {
+            $points[] = [$edgeX, $edgeY];
+            if ($radius[0] <= 0.0 && $radius[1] <= 0.0) {
+                continue;
+            }
+            for ($i = 1; $i <= $arcSteps; ++$i) {
+                $angle = $start + (M_PI / 2.0) * $i / $arcSteps;
+                $points[] = [
+                    $arcCx + $radius[0] * cos($angle),
+                    $arcCy + $radius[1] * sin($angle),
+                ];
+            }
+        }
+        return $points;
+    }
+
+
+    /**
+     * Flatten SVG path data into a polyline, in CSS page coordinates
+     * anchored at the reference box's origin.
+     *
+     * Returns the points and whether the path closed, which decides
+     * whether `offset-distance` wraps or clamps.
+     *
+     * A second subpath ends the walk: `offset-distance` measures one
+     * continuous run, and stitching disjoint subpaths would invent
+     * segments across the gaps that the author never drew.
+     *
+     * @return array{list<array{float, float}>, bool}
+     */
+    private function svgPathPolyline(string $pathData, float $originX, float $originY): array
+    {
+        $commands = \Phpdftk\Svg\Path\PathData::parse($pathData)->commands;
+
+        $points = [];
+        $x = 0.0;
+        $y = 0.0;
+        $startX = 0.0;
+        $startY = 0.0;
+        $closed = false;
+        // Reflection state for the smooth curve commands.
+        $lastCubic = null;
+        $lastQuadratic = null;
+        $started = false;
+
+        $push = static function (float $px, float $py) use (&$points, $originX, $originY): void {
+            $points[] = [$originX + $px, $originY + $py];
+        };
+
+        foreach ($commands as $command) {
+            $absolute = $command->absolute;
+            $baseX = $absolute ? 0.0 : $x;
+            $baseY = $absolute ? 0.0 : $y;
+            $cubic = null;
+            $quadratic = null;
+
+            if ($command instanceof \Phpdftk\Svg\Path\MoveTo) {
+                if ($started) {
+                    break;
+                }
+                $x = $baseX + $command->x;
+                $y = $baseY + $command->y;
+                $startX = $x;
+                $startY = $y;
+                $started = true;
+                $push($x, $y);
+            } elseif ($command instanceof \Phpdftk\Svg\Path\LineTo) {
+                $x = $baseX + $command->x;
+                $y = $baseY + $command->y;
+                $push($x, $y);
+            } elseif ($command instanceof \Phpdftk\Svg\Path\HorizontalLineTo) {
+                $x = $baseX + $command->x;
+                $push($x, $y);
+            } elseif ($command instanceof \Phpdftk\Svg\Path\VerticalLineTo) {
+                $y = $baseY + $command->y;
+                $push($x, $y);
+            } elseif ($command instanceof \Phpdftk\Svg\Path\CurveTo) {
+                $c1x = $baseX + $command->x1;
+                $c1y = $baseY + $command->y1;
+                $c2x = $baseX + $command->x2;
+                $c2y = $baseY + $command->y2;
+                $ex = $baseX + $command->x;
+                $ey = $baseY + $command->y;
+                foreach ($this->cubicSamples($x, $y, $c1x, $c1y, $c2x, $c2y, $ex, $ey) as [$sx, $sy]) {
+                    $push($sx, $sy);
+                }
+                $cubic = [$c2x, $c2y];
+                $x = $ex;
+                $y = $ey;
+            } elseif ($command instanceof \Phpdftk\Svg\Path\SmoothCurveTo) {
+                [$c1x, $c1y] = $lastCubic !== null
+                    ? [2.0 * $x - $lastCubic[0], 2.0 * $y - $lastCubic[1]]
+                    : [$x, $y];
+                $c2x = $baseX + $command->x2;
+                $c2y = $baseY + $command->y2;
+                $ex = $baseX + $command->x;
+                $ey = $baseY + $command->y;
+                foreach ($this->cubicSamples($x, $y, $c1x, $c1y, $c2x, $c2y, $ex, $ey) as [$sx, $sy]) {
+                    $push($sx, $sy);
+                }
+                $cubic = [$c2x, $c2y];
+                $x = $ex;
+                $y = $ey;
+            } elseif ($command instanceof \Phpdftk\Svg\Path\QuadraticCurveTo) {
+                $qx = $baseX + $command->x1;
+                $qy = $baseY + $command->y1;
+                $ex = $baseX + $command->x;
+                $ey = $baseY + $command->y;
+                foreach ($this->quadraticSamples($x, $y, $qx, $qy, $ex, $ey) as [$sx, $sy]) {
+                    $push($sx, $sy);
+                }
+                $quadratic = [$qx, $qy];
+                $x = $ex;
+                $y = $ey;
+            } elseif ($command instanceof \Phpdftk\Svg\Path\SmoothQuadraticCurveTo) {
+                [$qx, $qy] = $lastQuadratic !== null
+                    ? [2.0 * $x - $lastQuadratic[0], 2.0 * $y - $lastQuadratic[1]]
+                    : [$x, $y];
+                $ex = $baseX + $command->x;
+                $ey = $baseY + $command->y;
+                foreach ($this->quadraticSamples($x, $y, $qx, $qy, $ex, $ey) as [$sx, $sy]) {
+                    $push($sx, $sy);
+                }
+                $quadratic = [$qx, $qy];
+                $x = $ex;
+                $y = $ey;
+            } elseif ($command instanceof \Phpdftk\Svg\Path\ArcTo) {
+                $ex = $baseX + $command->x;
+                $ey = $baseY + $command->y;
+                foreach ($this->arcSamples(
+                    $x,
+                    $y,
+                    $command->rx,
+                    $command->ry,
+                    $command->xAxisRotation,
+                    $command->largeArc,
+                    $command->sweep,
+                    $ex,
+                    $ey,
+                ) as [$sx, $sy]) {
+                    $push($sx, $sy);
+                }
+                $x = $ex;
+                $y = $ey;
+            } elseif ($command instanceof \Phpdftk\Svg\Path\ClosePath) {
+                $push($startX, $startY);
+                $x = $startX;
+                $y = $startY;
+                $closed = true;
+            }
+
+            $lastCubic = $cubic;
+            $lastQuadratic = $quadratic;
+        }
+
+        return [$points, $closed];
+    }
+
+    /**
+     * Points along a cubic Bézier, excluding its start.
+     *
+     * @return list<array{float, float}>
+     */
+    private function cubicSamples(
+        float $x0,
+        float $y0,
+        float $x1,
+        float $y1,
+        float $x2,
+        float $y2,
+        float $x3,
+        float $y3,
+    ): array {
+        $steps = 32;
+        $samples = [];
+        for ($i = 1; $i <= $steps; ++$i) {
+            $t = $i / $steps;
+            $u = 1.0 - $t;
+            $a = $u * $u * $u;
+            $b = 3.0 * $u * $u * $t;
+            $c = 3.0 * $u * $t * $t;
+            $d = $t * $t * $t;
+            $samples[] = [
+                $a * $x0 + $b * $x1 + $c * $x2 + $d * $x3,
+                $a * $y0 + $b * $y1 + $c * $y2 + $d * $y3,
+            ];
+        }
+        return $samples;
+    }
+
+    /**
+     * Points along a quadratic Bézier, excluding its start.
+     *
+     * @return list<array{float, float}>
+     */
+    private function quadraticSamples(
+        float $x0,
+        float $y0,
+        float $x1,
+        float $y1,
+        float $x2,
+        float $y2,
+    ): array {
+        $steps = 24;
+        $samples = [];
+        for ($i = 1; $i <= $steps; ++$i) {
+            $t = $i / $steps;
+            $u = 1.0 - $t;
+            $samples[] = [
+                $u * $u * $x0 + 2.0 * $u * $t * $x1 + $t * $t * $x2,
+                $u * $u * $y0 + 2.0 * $u * $t * $y1 + $t * $t * $y2,
+            ];
+        }
+        return $samples;
+    }
+
+    /**
+     * Points along an SVG elliptical arc, excluding its start.
+     *
+     * Implements the endpoint-to-centre conversion of SVG 2 §B.2.4,
+     * including the §B.2.5 correction that scales up radii too small to
+     * span the two endpoints.
+     *
+     * @return list<array{float, float}>
+     */
+    private function arcSamples(
+        float $x0,
+        float $y0,
+        float $rx,
+        float $ry,
+        float $rotationDegrees,
+        bool $largeArc,
+        bool $sweep,
+        float $x1,
+        float $y1,
+    ): array {
+        $rx = abs($rx);
+        $ry = abs($ry);
+        // Degenerate radii make the arc a straight line (SVG 2 §B.2.5).
+        if ($rx == 0.0 || $ry == 0.0 || ($x0 == $x1 && $y0 == $y1)) {
+            return [[$x1, $y1]];
+        }
+
+        $phi = deg2rad($rotationDegrees);
+        $cosPhi = cos($phi);
+        $sinPhi = sin($phi);
+
+        $dx = ($x0 - $x1) / 2.0;
+        $dy = ($y0 - $y1) / 2.0;
+        $x1p = $cosPhi * $dx + $sinPhi * $dy;
+        $y1p = -$sinPhi * $dx + $cosPhi * $dy;
+
+        $lambda = ($x1p * $x1p) / ($rx * $rx) + ($y1p * $y1p) / ($ry * $ry);
+        if ($lambda > 1.0) {
+            $scale = sqrt($lambda);
+            $rx *= $scale;
+            $ry *= $scale;
+        }
+
+        $numerator = $rx * $rx * $ry * $ry
+            - $rx * $rx * $y1p * $y1p
+            - $ry * $ry * $x1p * $x1p;
+        $denominator = $rx * $rx * $y1p * $y1p + $ry * $ry * $x1p * $x1p;
+        $factor = $denominator == 0.0 ? 0.0 : sqrt(max(0.0, $numerator / $denominator));
+        if ($largeArc === $sweep) {
+            $factor = -$factor;
+        }
+        $cxp = $factor * $rx * $y1p / $ry;
+        $cyp = -$factor * $ry * $x1p / $rx;
+
+        $cx = $cosPhi * $cxp - $sinPhi * $cyp + ($x0 + $x1) / 2.0;
+        $cy = $sinPhi * $cxp + $cosPhi * $cyp + ($y0 + $y1) / 2.0;
+
+        $startAngle = atan2(($y1p - $cyp) / $ry, ($x1p - $cxp) / $rx);
+        $endAngle = atan2((-$y1p - $cyp) / $ry, (-$x1p - $cxp) / $rx);
+        $sweepAngle = $endAngle - $startAngle;
+        if (!$sweep && $sweepAngle > 0.0) {
+            $sweepAngle -= 2.0 * M_PI;
+        } elseif ($sweep && $sweepAngle < 0.0) {
+            $sweepAngle += 2.0 * M_PI;
+        }
+
+        $steps = max(8, (int) ceil(abs($sweepAngle) / (M_PI / 24.0)));
+        $samples = [];
+        for ($i = 1; $i <= $steps; ++$i) {
+            $angle = $startAngle + $sweepAngle * $i / $steps;
+            $ex = $rx * cos($angle);
+            $ey = $ry * sin($angle);
+            $samples[] = [
+                $cx + $cosPhi * $ex - $sinPhi * $ey,
+                $cy + $sinPhi * $ex + $cosPhi * $ey,
+            ];
+        }
+        return $samples;
     }
 
     private function pixelTranslate(float $dx, float $dy): \Phpdftk\Css\Value\TranslateTransform
@@ -1392,7 +2266,71 @@ final class Painter
     {
         $source = $parent ?? $box;
         $g = $source->geometry;
-        return [$g->x, $g->y, $g->width, $g->height];
+
+        // CSS Motion Path 1 §2 — an omitted `<coord-box>` is `border-box`.
+        // The SVG boxes have no meaning for an HTML containing block, so
+        // they fall back to it too.
+        [$left, $top, $right, $bottom] = match ($this->motionCoordBox($box) ?? 'border-box') {
+            'content-box' => [0.0, 0.0, 0.0, 0.0],
+            'padding-box' => [
+                $g->paddingLeft,
+                $g->paddingTop,
+                $g->paddingRight,
+                $g->paddingBottom,
+            ],
+            'margin-box' => [
+                $g->paddingLeft + $g->borderLeft + $g->marginLeft,
+                $g->paddingTop + $g->borderTop + $g->marginTop,
+                $g->paddingRight + $g->borderRight + $g->marginRight,
+                $g->paddingBottom + $g->borderBottom + $g->marginBottom,
+            ],
+            default => [
+                $g->paddingLeft + $g->borderLeft,
+                $g->paddingTop + $g->borderTop,
+                $g->paddingRight + $g->borderRight,
+                $g->paddingBottom + $g->borderBottom,
+            ],
+        };
+
+        return [
+            $g->x - $left,
+            $g->y - $top,
+            $g->width + $left + $right,
+            $g->height + $top + $bottom,
+        ];
+    }
+
+    /**
+     * The `<coord-box>` named by this box's `offset-path`, if any.
+     *
+     * A `<coord-box>` may stand alone as the whole offset-path
+     * (`offset-path: padding-box`), in which case it is both the reference
+     * box and the path itself.
+     */
+    private function motionCoordBox(Box $box): ?string
+    {
+        $value = $box->style->get('offset-path');
+        $components = $value instanceof \Phpdftk\Css\Value\ValueList
+            ? $value->values
+            : ($value !== null ? [$value] : []);
+        foreach ($components as $component) {
+            if (!($component instanceof Keyword)) {
+                continue;
+            }
+            $name = strtolower($component->name);
+            if (in_array($name, [
+                'content-box',
+                'padding-box',
+                'border-box',
+                'margin-box',
+                'fill-box',
+                'stroke-box',
+                'view-box',
+            ], true)) {
+                return $name;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1539,6 +2477,15 @@ final class Painter
         if ($value instanceof \Phpdftk\Css\Value\Length) {
             return $value->value;
         }
+        // `calc(12.5% + 200px)` mixes both, so percentages resolve against
+        // the path length rather than being dropped.
+        if ($value instanceof \Phpdftk\Css\Value\Calc) {
+            $resolved = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate(
+                $value,
+                new \Phpdftk\Css\Cascade\LengthContext(percentageBasis: $length),
+            );
+            return is_finite($resolved) ? $resolved : 0.0;
+        }
         return 0.0;
     }
 
@@ -1653,9 +2600,17 @@ final class Painter
             return match (strtolower($value->name)) {
                 'left', 'top' => 0.0,
                 'right', 'bottom' => $extent,
-                'center' => $extent / 2.0,
-                default => $horizontal ? $extent / 2.0 : $extent / 2.0,
+                default => $extent / 2.0,
             };
+        }
+        // The three/four-value `<position>` form folds an offset from a far
+        // edge into `calc(100% - <length>)`.
+        if ($value instanceof \Phpdftk\Css\Value\Calc) {
+            $resolved = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate(
+                $value,
+                new \Phpdftk\Css\Cascade\LengthContext(percentageBasis: $extent),
+            );
+            return is_finite($resolved) ? $resolved : 0.0;
         }
         return 0.0;
     }
