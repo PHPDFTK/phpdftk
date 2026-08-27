@@ -2445,6 +2445,69 @@ final class PainterTest extends TestCase
         self::assertNotNull($found, 'expected rotate cm operator in ' . implode(' | ', $ops));
     }
 
+    public function testOffsetPathRayTranslatesAndRotates(): void
+    {
+        // CSS Motion Path 1 §2.2. WPT `offset-path-ray-001` asserts this
+        // exact equivalence: with `offset-position: auto` (ray starts at
+        // the box's own top-left) and `transform-origin: 0 0`,
+        //
+        //   offset-path: ray(135deg closest-side); offset-distance: 20px
+        //
+        // renders identically to `transform: rotate(45deg) translate(20px)`.
+        //
+        // A ray angle is a compass BEARING — 0deg points up, positive turns
+        // clockwise — so the tangent trails it by 90deg, and the default
+        // `offset-rotate: auto` turns the box to follow it.
+        $root = $this->buildStraddlingBox(40.0, 80.0, 'red', null);
+        $div = $this->firstDivBox($root);
+        $div->style->set('offset-path', (new \Phpdftk\Css\ValueParser())
+            ->parseFromString('ray(135deg closest-side)'));
+        $div->style->set('offset-distance', new \Phpdftk\Css\Value\Length(20.0, \Phpdftk\Css\Value\LengthUnit::Px));
+        $div->style->set('offset-position', new \Phpdftk\Css\Value\Keyword('auto'));
+
+        $rayOps = $this->paintAndGetStream($root, new Painter(100.0))->getOperators();
+
+        // The same box under the reference's plain transform.
+        $refRoot = $this->buildStraddlingBox(40.0, 80.0, 'red', null);
+        $this->applyTransformToFirstBox($refRoot, 'rotate(45deg) translate(20px)');
+        $refOps = $this->paintAndGetStream($refRoot, new Painter(100.0))->getOperators();
+
+        $rayCm = $this->findCmOp($rayOps, '/ cm$/');
+        $refCm = $this->findCmOp($refOps, '/ cm$/');
+        self::assertNotNull($rayCm, 'ray path emits a cm matrix: ' . implode(' | ', $rayOps));
+        self::assertSame($refCm, $rayCm, 'ray() matches the equivalent rotate+translate');
+    }
+
+    public function testOffsetPathRayRespectsExplicitRotation(): void
+    {
+        // A bare `<angle>` on `offset-rotate` REPLACES the tangent rather
+        // than adding to it, so a 0deg rotation leaves the box upright and
+        // the matrix is a pure translation. Bearing 90deg points right.
+        //
+        // `transform-origin: 0 0` pins the origin to the box's own top-left,
+        // which is also where `offset-position: auto` starts the ray — so
+        // the translation is exactly the offset distance, with no
+        // origin-recentring term folded in.
+        $root = $this->buildStraddlingBox(40.0, 80.0, 'red', null);
+        $div = $this->firstDivBox($root);
+        $div->style->set('transform-origin', new \Phpdftk\Css\Value\ValueList(
+            [new \Phpdftk\Css\Value\Length(0.0, \Phpdftk\Css\Value\LengthUnit::Px),
+                new \Phpdftk\Css\Value\Length(0.0, \Phpdftk\Css\Value\LengthUnit::Px)],
+            \Phpdftk\Css\Value\ListSeparator::Space,
+        ));
+        $div->style->set('offset-path', (new \Phpdftk\Css\ValueParser())
+            ->parseFromString('ray(90deg closest-side)'));
+        $div->style->set('offset-distance', new \Phpdftk\Css\Value\Length(30.0, \Phpdftk\Css\Value\LengthUnit::Px));
+        $div->style->set('offset-position', new \Phpdftk\Css\Value\Keyword('auto'));
+        $div->style->set('offset-rotate', new \Phpdftk\Css\Value\Angle(0.0, \Phpdftk\Css\Value\AngleUnit::Deg));
+
+        $ops = $this->paintAndGetStream($root, new Painter(100.0))->getOperators();
+        self::assertNotNull(
+            $this->findCmOp($ops, '/^1 0 0 1 30 0 cm$/'),
+            'bearing 90deg moves +30 in X with no rotation: ' . implode(' | ', $ops),
+        );
+    }
+
     public function testTransformScaleEmitsScaleMatrix(): void
     {
         // `scale(2)` → cm [2, 0, 0, 2, 0, 0].

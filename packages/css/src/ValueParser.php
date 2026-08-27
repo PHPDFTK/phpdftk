@@ -86,6 +86,8 @@ use Phpdftk\Css\Value\NamedColors;
 use Phpdftk\Css\Value\Number;
 use Phpdftk\Css\Value\PaintFunction;
 use Phpdftk\Css\Value\Percentage;
+use Phpdftk\Css\Value\Ray;
+use Phpdftk\Css\Value\RaySize;
 use Phpdftk\Css\Value\RadialGradient;
 use Phpdftk\Css\Value\RelativeColor;
 use Phpdftk\Css\Value\ScrollTimeline;
@@ -420,6 +422,12 @@ final class ValueParser
             $st = $this->parseStepsFunction($tokens);
             if ($st !== null) {
                 return $st;
+            }
+        }
+        if ($name === 'ray') {
+            $ray = $this->parseRay($tokens);
+            if ($ray !== null) {
+                return $ray;
             }
         }
         if (in_array($name, ['circle', 'ellipse', 'inset', 'polygon', 'rect', 'xywh', 'path'], true)) {
@@ -2845,6 +2853,163 @@ final class ValueParser
         return $isSize
             ? new AnchorSizeFunction($anchorName, $side, $fallback)
             : new AnchorFunction($anchorName, $side, $fallback);
+    }
+
+    /**
+     * `ray( <angle> && <ray-size>? && contain? && [at <position>]? )`
+     * per CSS Motion Path 1 §2.2.
+     *
+     * The `&&` combinator means the components may appear in ANY order —
+     * `ray(at 10px 10px 0deg contain)` is as valid as
+     * `ray(0deg contain at 10px 10px)` — so this walks the space-separated
+     * groups and assigns each to whichever component it matches, rejecting
+     * duplicates. `at` swallows the position components that follow it and
+     * then hands control back, since more of the ray can follow.
+     *
+     * @param list<Token> $tokens
+     */
+    private function parseRay(array $tokens): ?Ray
+    {
+        $groups = self::splitParenAwareSpaceForm(self::trimWhitespace($tokens));
+        if ($groups === []) {
+            return null;
+        }
+
+        $angle = null;
+        $size = null;
+        $contain = false;
+        $positionGroups = [];
+        $sawAt = false;
+
+        for ($i = 0; $i < count($groups); $i++) {
+            $group = self::trimWhitespace($groups[$i]);
+            if ($group === []) {
+                continue;
+            }
+            if (count($group) === 1 && $group[0] instanceof IdentToken) {
+                $keyword = strtolower($group[0]->value);
+                $raySize = RaySize::tryFrom($keyword);
+                if ($raySize !== null) {
+                    if ($size !== null) {
+                        return null;
+                    }
+                    $size = $raySize;
+                    continue;
+                }
+                if ($keyword === 'contain') {
+                    if ($contain) {
+                        return null;
+                    }
+                    $contain = true;
+                    continue;
+                }
+                if ($keyword === 'at') {
+                    if ($sawAt) {
+                        return null;
+                    }
+                    $sawAt = true;
+                    // Take the following groups for as long as they read as
+                    // <position> components; a `<ray-size>`, `contain` or the
+                    // angle after them belongs to the ray, not the position.
+                    while ($i + 1 < count($groups) && count($positionGroups) < 4) {
+                        $next = self::trimWhitespace($groups[$i + 1]);
+                        if ($next === [] || !self::isPositionComponent($next)) {
+                            break;
+                        }
+                        $positionGroups[] = $next;
+                        $i++;
+                    }
+                    if ($positionGroups === []) {
+                        return null;
+                    }
+                    continue;
+                }
+            }
+            // Anything left has to be the angle, and there is only one.
+            if ($angle !== null) {
+                return null;
+            }
+            $parsed = $this->parseFromString(self::serializeTokens($group));
+            if (!($parsed instanceof Angle) && !($parsed instanceof Calc)) {
+                return null;
+            }
+            $angle = $parsed;
+        }
+
+        if ($angle === null) {
+            return null;
+        }
+
+        $atX = null;
+        $atY = null;
+        if ($positionGroups !== []) {
+            $flat = [];
+            foreach ($positionGroups as $index => $group) {
+                if ($index > 0) {
+                    $flat[] = new WhitespaceToken();
+                }
+                foreach ($group as $token) {
+                    $flat[] = $token;
+                }
+            }
+            [$atX, $atY] = $this->parsePositionXY($flat);
+            if ($atX === null || $atY === null) {
+                return null;
+            }
+            // Edge keywords compute to percentages, so `at center center`
+            // serializes as `at 50% 50%`.
+            $atX = self::positionKeywordToPercentage($atX);
+            $atY = self::positionKeywordToPercentage($atY);
+        }
+
+        return new Ray($angle, $size ?? RaySize::ClosestSide, $contain, $atX, $atY);
+    }
+
+    /**
+     * `left` / `top` → `0%`, `right` / `bottom` → `100%`, `center` →
+     * `50%` (CSS Values 4 §<position> computed value). Anything else is
+     * returned untouched.
+     */
+    private static function positionKeywordToPercentage(Value $value): Value
+    {
+        if (!$value instanceof Keyword) {
+            return $value;
+        }
+        return match (strtolower($value->name)) {
+            'left', 'top' => new Percentage(0.0),
+            'right', 'bottom' => new Percentage(100.0),
+            'center' => new Percentage(50.0),
+            default => $value,
+        };
+    }
+
+    /**
+     * Whether a token group can be one component of a `<position>` — a
+     * length, a percentage, a calc, or an edge/center keyword.
+     *
+     * @param list<Token> $tokens
+     */
+    private static function isPositionComponent(array $tokens): bool
+    {
+        if (count($tokens) === 1 && $tokens[0] instanceof IdentToken) {
+            return in_array(
+                strtolower($tokens[0]->value),
+                ['left', 'center', 'right', 'top', 'bottom'],
+                true,
+            );
+        }
+        if (count($tokens) === 1 && $tokens[0] instanceof NumberToken) {
+            return true;
+        }
+        if (count($tokens) === 1 && $tokens[0] instanceof PercentageToken) {
+            return true;
+        }
+        if (count($tokens) === 1 && $tokens[0] instanceof DimensionToken) {
+            // An angle here is the ray's own bearing, not a position.
+            return AngleUnit::tryFrom(strtolower($tokens[0]->unit)) === null;
+        }
+        // calc(...) and friends.
+        return $tokens[0] instanceof FunctionToken;
     }
 
     // ============================================================

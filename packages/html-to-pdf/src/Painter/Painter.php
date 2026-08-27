@@ -1060,7 +1060,7 @@ final class Painter
         // page's range. We still must descend into children for the
         // `<a href>` link-rect collection (which uses the page constant
         // to compute PDF-Y), but skip the heavy paint operations.
-        if ($this->boxEntirelyOffPage($box)) {
+        if ($this->boxEntirelyOffPage($box) && !$this->hasMotionPath($box)) {
             return;
         }
         // CSS Masking 1 §4 — a `mask-image` masks the box (and its subtree)
@@ -1091,7 +1091,7 @@ final class Painter
         // before any drawing. The graphics state save/restore wraps
         // the entire paint (background + content + children) so the
         // transform affects every nested operation.
-        $hasTransform = $this->applyBoxTransform($box, $stream);
+        $hasTransform = $this->applyBoxTransform($box, $stream, $parent);
         // CSS Transforms 2 §15 — `backface-visibility: hidden`
         // suppresses paint when the cumulative 3D rotation around
         // the X / Y axis flips the box past 90° (cos(θ) < 0). The
@@ -1237,12 +1237,16 @@ final class Painter
      * where M is the composition of all transform functions and the
      * origin sits at the box's `transform-origin` in PDF coordinates.
      */
-    private function applyBoxTransform(Box $box, ContentStream $stream): bool
+    private function applyBoxTransform(Box $box, ContentStream $stream, ?Box $parent = null): bool
     {
         // CSS Transforms 2 §5 — the individual transform properties apply in
         // order (translate, rotate, scale) BEFORE the `transform` list, all
         // sharing one transform-origin. Build a combined function list.
         $functions = $this->individualTransformFunctions($box);
+        // CSS Motion Path 1 §4 — `offset-path` contributes between the
+        // individual properties and `transform`, per the CTM algorithm in
+        // CSS Transforms 2 §CTM.
+        $functions = array_merge($functions, $this->motionPathFunctions($box, $parent));
         $value = $box->style->get('transform');
         if ($value instanceof \Phpdftk\Css\Value\Transform) {
             $functions = array_merge($functions, $value->functions);
@@ -1267,6 +1271,393 @@ final class Painter
             $stream->concatMatrix(1.0, 0.0, 0.0, 1.0, -$ox, -$oy);
         }
         return true;
+    }
+
+    /** Whether this box is positioned along an `offset-path`. */
+    private function hasMotionPath(Box $box): bool
+    {
+        return $this->motionRay($box) !== null;
+    }
+
+    /**
+     * The `ray()` in this box's `offset-path`, if any. `offset-path` may
+     * carry a trailing coordinate box (`ray(0deg) padding-box`), in which
+     * case the cascade holds a ValueList.
+     */
+    private function motionRay(Box $box): ?\Phpdftk\Css\Value\Ray
+    {
+        $value = $box->style->get('offset-path');
+        if ($value instanceof \Phpdftk\Css\Value\Ray) {
+            return $value;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\ValueList) {
+            foreach ($value->values as $component) {
+                if ($component instanceof \Phpdftk\Css\Value\Ray) {
+                    return $component;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * CSS Motion Path 1 §2 — the transform functions that place a box on
+     * its `offset-path`.
+     *
+     * The element's `offset-anchor` is moved onto the point at
+     * `offset-distance` along the path, and rotated by `offset-rotate`.
+     * `applyBoxTransform` wraps the returned list in
+     * `T(origin) … T(-origin)`, so the composition
+     * `T(P-O) · R(φ) · T(O-A)` reduces to `T(P) · R(φ) · T(-A)` — mapping
+     * the anchor exactly onto the path point.
+     *
+     * @return list<\Phpdftk\Css\Value\TransformFunction>
+     */
+    private function motionPathFunctions(Box $box, ?Box $parent): array
+    {
+        $ray = $this->motionRay($box);
+        if ($ray === null) {
+            return [];
+        }
+        $degrees = $this->rayAngleDegrees($ray);
+        if ($degrees === null) {
+            return [];
+        }
+
+        [$cbX, $cbY, $cbW, $cbH] = $this->motionReferenceRect($box, $parent);
+        [$sx, $sy] = $this->rayOrigin($box, $ray, $cbX, $cbY, $cbW, $cbH);
+        $length = $this->rayLength($ray, $degrees, $sx, $sy, $cbX, $cbY, $cbW, $cbH);
+        $distance = $this->resolveMotionDistance($box, $length);
+
+        // CSS ray angles are compass BEARINGS: 0deg points UP and positive
+        // angles turn clockwise. In CSS coordinates Y grows downward, so
+        // the unit vector is (sin θ, -cos θ) — not the (cos, sin) of an
+        // ordinary mathematical angle, which would be 90° out.
+        $theta = deg2rad($degrees);
+        $px = $sx + $distance * sin($theta);
+        $py = $sy - $distance * cos($theta);
+
+        // The path tangent trails the bearing by 90°.
+        $phi = $this->resolveMotionRotation($box, $degrees - 90.0);
+
+        [$ox, $oy] = $this->transformOriginCss($box);
+        [$ax, $ay] = $this->motionAnchorCss($box, $ox, $oy);
+
+        $functions = [$this->pixelTranslate($px - $ox, $py - $oy)];
+        if ($phi !== 0.0) {
+            $functions[] = new \Phpdftk\Css\Value\RotateTransform($phi);
+        }
+        if ($ox !== $ax || $oy !== $ay) {
+            $functions[] = $this->pixelTranslate($ox - $ax, $oy - $ay);
+        }
+        return $functions;
+    }
+
+    private function pixelTranslate(float $dx, float $dy): \Phpdftk\Css\Value\TranslateTransform
+    {
+        return new \Phpdftk\Css\Value\TranslateTransform(
+            new \Phpdftk\Css\Value\Length($dx, \Phpdftk\Css\Value\LengthUnit::Px),
+            new \Phpdftk\Css\Value\Length($dy, \Phpdftk\Css\Value\LengthUnit::Px),
+        );
+    }
+
+    /**
+     * A finite bearing in degrees. Enormous authored angles are wrapped
+     * before they reach `sin()` / `cos()`, and non-finite values (which a
+     * bad `calc()` can produce) disable the path rather than emitting a
+     * NaN matrix that would corrupt the content stream.
+     */
+    private function rayAngleDegrees(\Phpdftk\Css\Value\Ray $ray): ?float
+    {
+        $degrees = $ray->angleDegrees();
+        if ($degrees === null || !is_finite($degrees)) {
+            return null;
+        }
+        return fmod($degrees, 360.0);
+    }
+
+    /**
+     * The reference rectangle a ray is measured against — its containing
+     * block, in CSS page coordinates.
+     *
+     * Approximated by the paint parent's content box. That is correct for
+     * in-flow boxes; an absolutely-positioned box whose containing block is
+     * a more distant positioned ancestor resolves against the wrong
+     * rectangle, which matters only for percentage distances, `contain`,
+     * and the size keywords.
+     *
+     * @return array{float, float, float, float}
+     */
+    private function motionReferenceRect(Box $box, ?Box $parent): array
+    {
+        $source = $parent ?? $box;
+        $g = $source->geometry;
+        return [$g->x, $g->y, $g->width, $g->height];
+    }
+
+    /**
+     * Where the ray starts, in CSS page coordinates.
+     *
+     * `ray(... at <position>)` wins. Otherwise `offset-position: auto`
+     * starts at the box's own border-box top-left, an explicit
+     * `offset-position` resolves in the containing block, and `normal`
+     * (the initial value) falls back to the containing block's centre.
+     *
+     * @return array{float, float}
+     */
+    private function rayOrigin(
+        Box $box,
+        \Phpdftk\Css\Value\Ray $ray,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): array {
+        if ($ray->atX !== null && $ray->atY !== null) {
+            return [
+                $cbX + $this->resolvePositionComponent($ray->atX, $cbW, true),
+                $cbY + $this->resolvePositionComponent($ray->atY, $cbH, false),
+            ];
+        }
+        $position = $box->style->get('offset-position');
+        if ($position instanceof Keyword && strtolower($position->name) === 'auto') {
+            $g = $box->geometry;
+            return [
+                $g->x - $g->paddingLeft - $g->borderLeft,
+                $g->y - $g->paddingTop - $g->borderTop,
+            ];
+        }
+        if ($position instanceof \Phpdftk\Css\Value\ValueList
+            && count($position->values) >= 2
+        ) {
+            return [
+                $cbX + $this->resolvePositionComponent($position->values[0], $cbW, true),
+                $cbY + $this->resolvePositionComponent($position->values[1], $cbH, false),
+            ];
+        }
+        return [$cbX + $cbW / 2.0, $cbY + $cbH / 2.0];
+    }
+
+    /**
+     * CSS Motion Path 1 §2.2 — the ray's length.
+     *
+     * Only `sides` follows the angle, stopping where the ray leaves the
+     * containing block. The other four ignore the angle entirely and
+     * measure to a side or a corner.
+     */
+    private function rayLength(
+        \Phpdftk\Css\Value\Ray $ray,
+        float $degrees,
+        float $sx,
+        float $sy,
+        float $cbX,
+        float $cbY,
+        float $cbW,
+        float $cbH,
+    ): float {
+        $left = $cbX;
+        $right = $cbX + $cbW;
+        $top = $cbY;
+        $bottom = $cbY + $cbH;
+        $sides = [abs($sx - $left), abs($right - $sx), abs($sy - $top), abs($bottom - $sy)];
+        $corners = [];
+        foreach ([$left, $right] as $cx) {
+            foreach ([$top, $bottom] as $cy) {
+                $corners[] = hypot($sx - $cx, $sy - $cy);
+            }
+        }
+
+        return match ($ray->size) {
+            \Phpdftk\Css\Value\RaySize::ClosestSide => min($sides),
+            \Phpdftk\Css\Value\RaySize::FarthestSide => max($sides),
+            \Phpdftk\Css\Value\RaySize::ClosestCorner => min($corners),
+            \Phpdftk\Css\Value\RaySize::FarthestCorner => max($corners),
+            \Phpdftk\Css\Value\RaySize::Sides => $this->raySidesLength(
+                $degrees,
+                $sx,
+                $sy,
+                $left,
+                $top,
+                $right,
+                $bottom,
+            ),
+        };
+    }
+
+    /**
+     * `sides`: the distance from the origin to where the ray crosses the
+     * containing block's boundary. An origin outside the box gives zero —
+     * the ray must not reach back in.
+     */
+    private function raySidesLength(
+        float $degrees,
+        float $sx,
+        float $sy,
+        float $left,
+        float $top,
+        float $right,
+        float $bottom,
+    ): float {
+        if ($sx < $left || $sx > $right || $sy < $top || $sy > $bottom) {
+            return 0.0;
+        }
+        $theta = deg2rad($degrees);
+        $ux = sin($theta);
+        $uy = -cos($theta);
+        $best = null;
+        // Distance to each of the four edge lines, keeping the nearest
+        // one the ray actually travels toward.
+        foreach ([[$ux, $left - $sx], [$ux, $right - $sx]] as [$component, $delta]) {
+            if (abs($component) > 1e-9) {
+                $t = $delta / $component;
+                if ($t >= 0.0) {
+                    $best = $best === null ? $t : min($best, $t);
+                }
+            }
+        }
+        foreach ([[$uy, $top - $sy], [$uy, $bottom - $sy]] as [$component, $delta]) {
+            if (abs($component) > 1e-9) {
+                $t = $delta / $component;
+                if ($t >= 0.0) {
+                    $best = $best === null ? $t : min($best, $t);
+                }
+            }
+        }
+        return $best ?? 0.0;
+    }
+
+    /**
+     * `offset-distance`. A percentage is of the path's length; absolute
+     * lengths are NOT clamped to the path (only a `contain` ray shortens).
+     */
+    private function resolveMotionDistance(Box $box, float $length): float
+    {
+        $value = $box->style->get('offset-distance');
+        if ($value instanceof \Phpdftk\Css\Value\Percentage) {
+            return $length * $value->value / 100.0;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Length) {
+            return $value->value;
+        }
+        return 0.0;
+    }
+
+    /**
+     * `offset-rotate` — initial value `auto`, which follows the path
+     * tangent. `reverse` faces the other way; a bare angle ignores the
+     * tangent; `auto <angle>` / `reverse <angle>` add to it.
+     */
+    private function resolveMotionRotation(Box $box, float $tangent): float
+    {
+        $value = $box->style->get('offset-rotate');
+        $components = $value instanceof \Phpdftk\Css\Value\ValueList
+            ? $value->values
+            : ($value !== null ? [$value] : []);
+
+        $base = $tangent;
+        $extra = 0.0;
+        $sawKeyword = false;
+        foreach ($components as $component) {
+            if ($component instanceof Keyword) {
+                $name = strtolower($component->name);
+                if ($name === 'auto') {
+                    $base = $tangent;
+                    $sawKeyword = true;
+                } elseif ($name === 'reverse') {
+                    $base = $tangent + 180.0;
+                    $sawKeyword = true;
+                }
+                continue;
+            }
+            if ($component instanceof \Phpdftk\Css\Value\Angle) {
+                $extra = $component->toDegrees();
+            }
+        }
+        // A bare `<angle>` replaces the tangent rather than adding to it.
+        if (!$sawKeyword && $components !== []) {
+            $hasAngle = false;
+            foreach ($components as $component) {
+                if ($component instanceof \Phpdftk\Css\Value\Angle) {
+                    $hasAngle = true;
+                    break;
+                }
+            }
+            if ($hasAngle) {
+                return $extra;
+            }
+        }
+        return $base + $extra;
+    }
+
+    /**
+     * `transform-origin` in CSS page coordinates (Y down), as the motion
+     * math needs it. {@see resolveTransformOrigin} returns the same point
+     * already flipped into PDF space.
+     *
+     * @return array{float, float}
+     */
+    private function transformOriginCss(Box $box): array
+    {
+        $g = $box->geometry;
+        $width = $g->width + $g->paddingLeft + $g->paddingRight + $g->borderLeft + $g->borderRight;
+        $height = $g->height + $g->paddingTop + $g->paddingBottom + $g->borderTop + $g->borderBottom;
+        $boxX = $g->x - $g->paddingLeft - $g->borderLeft;
+        $boxY = $g->y - $g->paddingTop - $g->borderTop;
+        $value = $box->style->get('transform-origin');
+        $values = $value instanceof \Phpdftk\Css\Value\ValueList
+            ? $value->values
+            : ($value !== null ? [$value] : []);
+        [$offX, $offY] = $this->resolveTransformOriginOffsets($values, $width, $height);
+        return [$boxX + $offX, $boxY + $offY];
+    }
+
+    /**
+     * `offset-anchor` in CSS page coordinates. `auto` — the initial value
+     * — means the computed `transform-origin`, NOT `offset-position`.
+     *
+     * @return array{float, float}
+     */
+    private function motionAnchorCss(Box $box, float $originX, float $originY): array
+    {
+        $value = $box->style->get('offset-anchor');
+        if (!($value instanceof \Phpdftk\Css\Value\ValueList) || count($value->values) < 2) {
+            return [$originX, $originY];
+        }
+        $g = $box->geometry;
+        $width = $g->width + $g->paddingLeft + $g->paddingRight + $g->borderLeft + $g->borderRight;
+        $height = $g->height + $g->paddingTop + $g->paddingBottom + $g->borderTop + $g->borderBottom;
+        $boxX = $g->x - $g->paddingLeft - $g->borderLeft;
+        $boxY = $g->y - $g->paddingTop - $g->borderTop;
+        return [
+            $boxX + $this->resolvePositionComponent($value->values[0], $width, true),
+            $boxY + $this->resolvePositionComponent($value->values[1], $height, false),
+        ];
+    }
+
+    /**
+     * One `<position>` component against an extent. `$horizontal` selects
+     * which edge keywords apply.
+     */
+    private function resolvePositionComponent(
+        \Phpdftk\Css\Value\Value $value,
+        float $extent,
+        bool $horizontal,
+    ): float {
+        if ($value instanceof \Phpdftk\Css\Value\Length) {
+            return $value->value;
+        }
+        if ($value instanceof \Phpdftk\Css\Value\Percentage) {
+            return $extent * $value->value / 100.0;
+        }
+        if ($value instanceof Keyword) {
+            return match (strtolower($value->name)) {
+                'left', 'top' => 0.0,
+                'right', 'bottom' => $extent,
+                'center' => $extent / 2.0,
+                default => $horizontal ? $extent / 2.0 : $extent / 2.0,
+            };
+        }
+        return 0.0;
     }
 
     /**
