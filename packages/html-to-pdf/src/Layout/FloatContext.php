@@ -50,14 +50,21 @@ final class FloatContext
         float $desiredWidth,
     ): array {
         $currentY = $y;
+        // CSS Shapes 1 — `shape-outside` defines the float area that
+        // excludes LINE BOXES; it does not move the float itself or change
+        // how floats stack against each other, which CSS 2.1 §9.5.1 settles
+        // with margin boxes. So this search is deliberately shape-blind:
+        // letting a concave shape report free space here squeezes a second
+        // float in beside one it should have dropped below.
+        //
         // Iterate over candidate Y positions: every existing float's top
         // and bottom edge is a candidate where availability might change.
         // Bounded loop — at most O(items) iterations.
         $checked = 0;
         $limit = max(1, count($this->items) * 2 + 2);
         while ($checked < $limit) {
-            $left = $this->leftEdgeAt($currentY, $containingLeft);
-            $right = $this->rightEdgeAt($currentY, $containingRight);
+            $left = $this->leftEdgeAt($currentY, $containingLeft, true);
+            $right = $this->rightEdgeAt($currentY, $containingRight, true);
             $available = $right - $left;
             if ($available + 0.001 >= $desiredWidth) {
                 return ['left' => $left, 'right' => $right, 'y' => $currentY];
@@ -73,8 +80,8 @@ final class FloatContext
             $checked++;
         }
         return [
-            'left' => $this->leftEdgeAt($currentY, $containingLeft),
-            'right' => $this->rightEdgeAt($currentY, $containingRight),
+            'left' => $this->leftEdgeAt($currentY, $containingLeft, true),
+            'right' => $this->rightEdgeAt($currentY, $containingRight, true),
             'y' => $currentY,
         ];
     }
@@ -139,7 +146,7 @@ final class FloatContext
      * Sum of left-float right edges at `$y` (clamped to ≥ `$containingLeft`)
      * — i.e. the X coordinate where a line of inline content should start.
      */
-    public function leftEdgeAt(float $y, float $containingLeft): float
+    public function leftEdgeAt(float $y, float $containingLeft, bool $ignoreShape = false): float
     {
         $edge = $containingLeft;
         foreach ($this->items as $item) {
@@ -147,7 +154,7 @@ final class FloatContext
                 continue;
             }
             if ($y + 0.001 >= $item->top && $y + 0.001 < $item->top + $item->height) {
-                $rightEdge = $this->itemRightEdgeAt($item, $y);
+                $rightEdge = $this->itemRightEdgeAt($item, $y, $ignoreShape);
                 if ($rightEdge > $edge) {
                     $edge = $rightEdge;
                 }
@@ -161,9 +168,9 @@ final class FloatContext
      * item carries a `shape` (CSS Shapes 1 §3) the edge tracks the
      * shape's contour; otherwise it's the bounding rect's right edge.
      */
-    private function itemRightEdgeAt(FloatItem $item, float $y): float
+    private function itemRightEdgeAt(FloatItem $item, float $y, bool $ignoreShape = false): float
     {
-        if ($item->shape === null) {
+        if ($ignoreShape || $item->shape === null) {
             return $item->left + $item->width;
         }
         return $item->left + $this->shapeRightEdgeLocal($item, $y);
@@ -172,9 +179,9 @@ final class FloatContext
     /**
      * Left edge of a right-float's exclusion region at `$y`.
      */
-    private function itemLeftEdgeAt(FloatItem $item, float $y): float
+    private function itemLeftEdgeAt(FloatItem $item, float $y, bool $ignoreShape = false): float
     {
-        if ($item->shape === null) {
+        if ($ignoreShape || $item->shape === null) {
             return $item->left;
         }
         return $item->left + $this->shapeLeftEdgeLocal($item, $y);
@@ -328,7 +335,7 @@ final class FloatContext
      * Minimum of right-float left edges at `$y` (clamped to ≤
      * `$containingRight`) — where a line of inline content must end.
      */
-    public function rightEdgeAt(float $y, float $containingRight): float
+    public function rightEdgeAt(float $y, float $containingRight, bool $ignoreShape = false): float
     {
         $edge = $containingRight;
         foreach ($this->items as $item) {
@@ -336,7 +343,7 @@ final class FloatContext
                 continue;
             }
             if ($y + 0.001 >= $item->top && $y + 0.001 < $item->top + $item->height) {
-                $leftEdge = $this->itemLeftEdgeAt($item, $y);
+                $leftEdge = $this->itemLeftEdgeAt($item, $y, $ignoreShape);
                 if ($leftEdge < $edge) {
                     $edge = $leftEdge;
                 }
