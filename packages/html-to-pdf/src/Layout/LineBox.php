@@ -23,6 +23,16 @@ final class LineBox
         public float $height,
         public array $fragments,
         public float $baseline = 0.0,
+        /**
+         * The line's inline-end edge as the fitter saw it — the parent's
+         * content edge, pulled in by any float intruding at this line's
+         * height (CSS 2.1 §9.5). `text-align` measures its slack against
+         * THIS rather than the container's inline size, so a right-aligned
+         * line beside a float stops at the float instead of sliding under
+         * it. Null means "no float narrowed this line", and alignment falls
+         * back to the container extent.
+         */
+        public ?float $availableRight = null,
     ) {}
 
     public function totalWidth(): float

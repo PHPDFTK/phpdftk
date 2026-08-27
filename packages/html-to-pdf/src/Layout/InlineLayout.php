@@ -247,7 +247,7 @@ final class InlineLayout
                 $currentTrailingSpace = 0.0;
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
-                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase, $lineMaxRight);
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -384,7 +384,7 @@ final class InlineLayout
                 $currentTrailingSpace = 0.0;
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
-                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
+                $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase, $lineMaxRight);
                 $y += $effective;
                 $currentFragments = [];
                 $currentFragmentIsWs = [];
@@ -399,7 +399,7 @@ final class InlineLayout
             $currentTrailingSpace = 0.0;
             [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
             $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
-            $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
+            $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase, $lineMaxRight);
             $y += $effective;
         }
 
@@ -516,7 +516,7 @@ final class InlineLayout
                     blockOffset: $f->x,
                 );
             }
-            $out[] = new LineBox(0.0, $line->height, $newFrags, $line->baseline);
+            $out[] = new LineBox(0.0, $line->height, $newFrags, $line->baseline, $line->availableRight);
             $cumBlock += $line->height;
         }
         return $out;
@@ -853,7 +853,7 @@ final class InlineLayout
             $fragments[] = new InlineFragment($tail, $ellipsisWidth, $ellipsis);
         }
 
-        return new LineBox($line->y, $line->height, $fragments, $line->baseline);
+        return new LineBox($line->y, $line->height, $fragments, $line->baseline, $line->availableRight);
     }
 
     /**
@@ -1049,7 +1049,20 @@ final class InlineLayout
             // alignment slack this means we measure the line's
             // visible content edge, NOT the full fragment tail.
             $used = $this->lineUsedWidth($line);
-            $slack = $inlineExtent - $used;
+            // CSS 2.1 §9.5 — a line beside a float is SHORTER than the
+            // container. Measuring slack against the container's inline
+            // size instead sends right-aligned and centred text sliding
+            // under the float.
+            //
+            // The fitter's bound is only comparable when it was measured in
+            // the same axis alignment uses. A vertical IFC still wraps
+            // against the physical width while `$inlineExtent` is the
+            // styled height, so its bound belongs to the other axis and is
+            // ignored until the two agree.
+            $lineExtent = !$wm->isVertical() && $line->availableRight !== null
+                ? $line->availableRight
+                : $inlineExtent;
+            $slack = $lineExtent - $used;
             if ($slack <= 0.0) {
                 $out[] = $line;
                 continue;
@@ -1062,7 +1075,7 @@ final class InlineLayout
                 'justify' => $this->justifyFragments($line->fragments, $slack),
                 default => $line->fragments,
             };
-            $out[] = new LineBox($line->y, $line->height, $newFragments, $line->baseline);
+            $out[] = new LineBox($line->y, $line->height, $newFragments, $line->baseline, $line->availableRight);
         }
         return $out;
     }
