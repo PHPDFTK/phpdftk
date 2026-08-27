@@ -1398,7 +1398,12 @@ final class InlineLayoutTest extends TestCase
         // `text-align: justify; text-align-last: right` → middle
         // lines justify, last line shifts to the right edge.
         $this->skipIfNoFont();
-        $letters = str_repeat("\u{1820} ", 40);
+        // At 80px a line holds four "letter + space" tokens: the fourth
+        // letter fits at 76.416px and its trailing space is removed at the
+        // line end (CSS Text 3 §4.1.3). 42 tokens therefore leave a SHORT
+        // last line of two — which is what `text-align-last` needs in order
+        // to have any slack to shift.
+        $letters = str_repeat("\u{1820} ", 42);
         $box = $this->buildTree(
             '<html><body><p>' . $letters . '</p></body></html>',
             'html, body, p { display: block; }
@@ -1614,7 +1619,9 @@ final class InlineLayoutTest extends TestCase
         // `text-justify: none` overrides, the last line also falls
         // back to start-alignment.
         $this->skipIfNoFont();
-        $letters = str_repeat("\u{1820} ", 40);
+        // 42 tokens leave a short last line at 80px — see
+        // testTextAlignLastRightAlignsLastLineRight for the arithmetic.
+        $letters = str_repeat("\u{1820} ", 42);
         $box = $this->buildTree(
             '<html><body><p>' . $letters . '</p></body></html>',
             'html, body, p { display: block; }
@@ -1875,8 +1882,10 @@ final class InlineLayoutTest extends TestCase
         // page 1 (widow). Default widows=2 pulls one more line forward,
         // leaving 2 on page 0 and 2 on page 1.
         $this->skipIfNoFont();
-        // 8 letters @ 60px usually shapes to exactly 4 short lines.
-        $body = str_repeat("\u{1820} ", 8);
+        // At 60px a line holds three "letter + space" tokens (the third
+        // letter fits at 56.272px and its trailing space is removed at the
+        // line end), so 12 tokens shape to exactly 4 short lines.
+        $body = str_repeat("\u{1820} ", 12);
         $box = $this->buildTree(
             '<html><body>'
                 . '<div style="height: 740px"></div>'

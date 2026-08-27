@@ -191,12 +191,30 @@ final class InlineLayout
         $hangsTrailingWhitespace = $whiteSpace === 'pre-wrap' || $whiteSpace === 'break-spaces';
         /** @var list<bool> $currentFragmentIsWs */
         $currentFragmentIsWs = [];
+        // Advance of the collapsible whitespace the line currently ends with.
+        // CSS Text 3 §4.1.3 removes it, so it must come off the line's WIDTH
+        // as well as off the fit test — otherwise a line packed to its full
+        // measure reports as over-wide and `text-align` sees negative slack.
+        $currentTrailingSpace = 0.0;
         $currentX = $bounds['left'] + $textIndent;
         $lineMaxRight = $bounds['right'];
         $atLineStart = true;
         $y = 0.0;
         foreach ($tokens as $token) {
             $width = $token['shapedRun']->totalAdvance;
+            // CSS Text 3 §4.1.3 — a sequence of COLLAPSIBLE spaces at the end
+            // of a line is removed, so it must not decide whether the line
+            // fits. A break opportunity sits after the space (UAX #14), which
+            // makes "word + its trailing space" a single token; measuring the
+            // space here broke every line one space early, and a line crafted
+            // to fill its measure exactly lost its last word.
+            //
+            // `pre-wrap` / `break-spaces` keep their spaces (they hang
+            // instead), and that path already drops the fragments after the
+            // fact, so it is left alone.
+            $fitWidth = $hangsTrailingWhitespace
+                ? $width
+                : $width - $token['trailingSpace'];
             $isMandatory = $token['kind'] === LineBreakKind::Mandatory;
 
             if ($collapseLeadingWhitespace && $token['isWhitespace'] && $atLineStart) {
@@ -204,7 +222,7 @@ final class InlineLayout
                 continue;
             }
             if ($allowSoftWrap
-                && $currentX + $width > $lineMaxRight
+                && $currentX + $fitWidth > $lineMaxRight
                 && $currentFragments !== []
             ) {
                 // Wrap before placing this token.
@@ -225,6 +243,8 @@ final class InlineLayout
                         ? $bounds['left'] + $textIndent
                         : end($currentFragments)->x + end($currentFragments)->width;
                 }
+                $currentFragments = $this->trimTrailingSpace($currentFragments, $currentTrailingSpace);
+                $currentTrailingSpace = 0.0;
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
@@ -264,6 +284,7 @@ final class InlineLayout
                 atomicBox: $token['atomicBox'] ?? null,
             );
             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
+            $currentTrailingSpace = $hangsTrailingWhitespace ? 0.0 : $token['trailingSpace'];
             // Side-channel: AtomicInlineBox positions get committed back to
             // the box's geometry so the painter can draw images / replaced
             // content at the right spot. CSS Inline 3 §4.5: for the default
@@ -359,6 +380,8 @@ final class InlineLayout
             $currentX += $width;
             $atLineStart = false;
             if ($isMandatory) {
+                $currentFragments = $this->trimTrailingSpace($currentFragments, $currentTrailingSpace);
+                $currentTrailingSpace = 0.0;
                 [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
                 $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
                 $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
@@ -372,6 +395,8 @@ final class InlineLayout
             }
         }
         if ($currentFragments !== []) {
+            $currentFragments = $this->trimTrailingSpace($currentFragments, $currentTrailingSpace);
+            $currentTrailingSpace = 0.0;
             [$effective, $lineBase, $currentFragments] = $this->finalizeLine($currentFragments, $strutAscent, $strutDescent, $lineHeight, $strutXHeight);
             $this->commitAtomicFragmentY($parent, $y, $lineBase, $currentFragments);
             $lines[] = new LineBox($y, $effective, $currentFragments, $lineBase);
@@ -1326,7 +1351,7 @@ final class InlineLayout
      * break.
      *
      * @param list<string> $decorationLines
-     * @return list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind}>
+     * @return list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind, trailingSpace: float}>
      */
     private function collectTokens(
         Box $parent,
@@ -1392,7 +1417,7 @@ final class InlineLayout
     }
 
     /**
-     * @param list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind}> $tokens
+     * @param list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind, trailingSpace: float}> $tokens
      * @param list<string> $decorationLines
      */
     private function walkInline(
@@ -1468,6 +1493,7 @@ final class InlineLayout
                     0.0,
                 ),
                 'isWhitespace' => false,
+                'trailingSpace' => 0.0,
                 'kind' => LineBreakKind::Mandatory,
                 'lineHeight' => $lineHeight,
                 'verticalAlign' => $verticalAlign,
@@ -1555,6 +1581,7 @@ final class InlineLayout
                     $atomicMarginLeft + $atomicOuterWidth + $atomicMarginRight,
                 ),
                 'isWhitespace' => false,
+                'trailingSpace' => 0.0,
                 'kind' => LineBreakKind::Allowed,
                 'baselineShift' => $baselineShift,
                 'lineHeight' => $lineHeight,
@@ -2308,7 +2335,7 @@ final class InlineLayout
      * by that amount per CSS Text 3 §10 — the painter picks the difference
      * up automatically via its TJ-kerning path.
      *
-     * @return list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind}>
+     * @return list<array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind, trailingSpace: float}>
      */
     private function tokeniseText(
         string $text,
@@ -2430,9 +2457,79 @@ final class InlineLayout
                 'shapedRun' => $shaped,
                 'isWhitespace' => $isWs,
                 'kind' => $seg['kind'],
+                'trailingSpace' => $this->trailingCollapsibleAdvance($shaped, $seg['text'], $isWs),
             ];
         }
         return $out;
+    }
+
+    /**
+     * Shrink the last fragment by the collapsible whitespace it ends with,
+     * so a line's reported width is its width AFTER CSS Text 3 §4.1.3 has
+     * removed that space. The glyph stays in the run — a space paints
+     * nothing — but it stops counting toward alignment and decoration.
+     *
+     * @param list<InlineFragment> $fragments
+     * @return list<InlineFragment>
+     */
+    private function trimTrailingSpace(array $fragments, float $trailing): array
+    {
+        if ($trailing <= 0.0 || $fragments === []) {
+            return $fragments;
+        }
+        $last = $fragments[count($fragments) - 1];
+        $width = max(0.0, $last->width - $trailing);
+        if ($width === $last->width) {
+            return $fragments;
+        }
+        $fragments[count($fragments) - 1] = new InlineFragment(
+            $last->x,
+            $width,
+            $last->shapedRun,
+            $last->baselineShift,
+            $last->href,
+            $last->isBold,
+            $last->isItalic,
+            $last->decorationLines,
+            $last->textColor,
+            $last->backgroundColor,
+            $last->linkTitle,
+            $last->decorationColor,
+            $last->isWhitespace,
+            $last->lineHeight,
+            $last->verticalAlign,
+            blockOffset: $last->blockOffset,
+            atomicBox: $last->atomicBox,
+        );
+        return $fragments;
+    }
+
+    /**
+     * The advance of the COLLAPSIBLE whitespace a token ends with — the run
+     * that CSS Text 3 §4.1.3 removes when the token lands at a line end.
+     *
+     * U+00A0 and friends are deliberately excluded: a no-break space is not
+     * collapsible, so it keeps its width and its power to push a line over.
+     */
+    private function trailingCollapsibleAdvance(ShapedRun $shaped, string $text, bool $isWhitespace): float
+    {
+        if ($shaped->glyphs === []) {
+            return 0.0;
+        }
+        if ($isWhitespace) {
+            return $shaped->totalAdvance;
+        }
+        if (preg_match('/[ \t\n\r\f]+$/', $text, $matches, PREG_OFFSET_CAPTURE) !== 1) {
+            return 0.0;
+        }
+        $start = $matches[0][1];
+        $advance = 0.0;
+        foreach ($shaped->glyphs as $glyph) {
+            if ($glyph->sourceOffset >= $start) {
+                $advance += $glyph->advanceX;
+            }
+        }
+        return $advance;
     }
 
     /**
