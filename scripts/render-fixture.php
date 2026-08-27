@@ -5,7 +5,9 @@ declare(strict_types=1);
 /**
  * Render a single WPT fixture (HTML / XHTML / SVG) to a PNG, using the
  * EXACT same path as the WPT gate (Phpdftk\WptHarness\HarnessRunner) so
- * local debugging matches scored results.
+ * local debugging matches scored results — including the gate's UA default
+ * font, without which every text-bearing fixture renders blank and a test
+ * and its reference wrongly compare as identical.
  *
  * Usage:
  *   php scripts/render-fixture.php <fixture.{html,xht,xhtml,htm,svg}> <out.png> [pageIndex]
@@ -26,6 +28,36 @@ use Phpdftk\Pdf\Writer\PdfWriter;
 use Phpdftk\Svg\Parser as SvgParser;
 use Phpdftk\SvgToPdf\SvgRenderer;
 use Phpdftk\WptHarness\Rasteriser;
+
+
+/**
+ * The gate's UA default font, resolved exactly as
+ * `HarnessRunner::harnessDefaultFont()` does — including the
+ * `WPT_DEFAULT_FONT` override and its `none` opt-out.
+ */
+function harnessDefaultFont(): ?\Phpdftk\FontParser\FontFaceData
+{
+    $env = getenv('WPT_DEFAULT_FONT');
+    if ($env === 'none') {
+        return null;
+    }
+    $path = ($env !== false && $env !== '')
+        ? $env
+        : __DIR__ . '/../packages/wpt-harness/resources/fonts/DejaVuSerif.ttf';
+    if (!is_file($path)) {
+        return null;
+    }
+    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    try {
+        return match ($ext) {
+            'otf' => (new \Phpdftk\FontParser\OpenTypeParser($path))->parse(),
+            'woff' => (new \Phpdftk\FontParser\WoffParser($path))->parse(),
+            default => (new \Phpdftk\FontParser\TrueTypeParser($path))->parse(),
+        };
+    } catch (\Throwable) {
+        return null;
+    }
+}
 
 // Locate the Composer autoloader robustly so the script works whether it
 // lives in the repo's scripts/ dir or a /tmp copy: try alongside the
@@ -92,12 +124,19 @@ if ($ext === 'svg') {
     $pdfBytes = $writer->toBytes();
 } else {
     // Mirror HarnessRunner::renderHtmlToPdf option-for-option.
-    $renderer = new Renderer(
-        (new RendererOptions())
-            ->withBaseDir(dirname($abs))
-            ->withSandboxRoot($sandboxRoot)
-            ->withMatchingMediaTypes(['print', 'screen']),
-    );
+    $options = (new RendererOptions())
+        ->withBaseDir(dirname($abs))
+        ->withSandboxRoot($sandboxRoot)
+        ->withMatchingMediaTypes(['print', 'screen']);
+    // The gate installs a UA default font; without it this script renders
+    // text-bearing fixtures blank, which silently makes a test and its
+    // reference look identical and reports a passing diff for something the
+    // gate scores as a failure.
+    $defaultFont = harnessDefaultFont();
+    if ($defaultFont !== null) {
+        $options = $options->withDefaultFont($defaultFont);
+    }
+    $renderer = new Renderer($options);
     $pdfBytes = $renderer->render($source)->writer->toBytes();
 }
 
