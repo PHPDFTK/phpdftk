@@ -221,7 +221,12 @@ final class InlineLayout
                 // Leading whitespace at a line start is collapsed.
                 continue;
             }
+            // A line may not break inside an inline box's own padding /
+            // border, so its spacer never opens a break opportunity: wrapping
+            // before it would strand the inset on the next line, away from
+            // the text it belongs to.
             if ($allowSoftWrap
+                && ($token['noWrapBefore'] ?? false) === false
                 && $currentX + $fitWidth > $lineMaxRight
                 && $currentFragments !== []
             ) {
@@ -1694,6 +1699,30 @@ final class InlineLayout
             if ($fontSizeChanged || $fontChanged) {
                 $childCtx = new ShapingContext($boxFont, $boxFontSize);
             }
+            // CSS 2.1 §8.4 — horizontal padding, border and margin on an
+            // INLINE box are laid out: they add to its advance, pushing the
+            // following content along. (The vertical ones deliberately do
+            // NOT affect line height per §10.6.1.) They were being dropped
+            // entirely, so a padded `<span>` occupied exactly its text.
+            //
+            // The inset rides in as a zero-glyph spacer token carrying the
+            // inline's own background, so the padding area paints with the
+            // box rather than showing the parent through. It is emitted with
+            // a non-breaking kind: a line may not break inside an inline's
+            // own padding.
+            $leadInset = $this->inlineInlineAxisInset($box, 'left');
+            if ($leadInset > 0.0) {
+                $tokens[] = $this->inlineSpacerToken(
+                    $leadInset,
+                    $childCtx,
+                    $baselineShift + $boxShift,
+                    $childLineHeight,
+                    $childVAlign,
+                    $childHref,
+                    $childBg,
+                    $childTitle,
+                );
+            }
             foreach ($box->children as $c) {
                 $this->walkInline(
                     $c,
@@ -1716,7 +1745,73 @@ final class InlineLayout
                     $splitWsBoundaries,
                 );
             }
+            $trailInset = $this->inlineInlineAxisInset($box, 'right');
+            if ($trailInset > 0.0) {
+                $tokens[] = $this->inlineSpacerToken(
+                    $trailInset,
+                    $childCtx,
+                    $baselineShift + $boxShift,
+                    $childLineHeight,
+                    $childVAlign,
+                    $childHref,
+                    $childBg,
+                    $childTitle,
+                );
+            }
         }
+    }
+
+    /**
+     * The inline-axis inset an inline box contributes on one side: its
+     * margin + border + padding (CSS 2.1 §8.4).
+     */
+    private function inlineInlineAxisInset(InlineBox $box, string $side): float
+    {
+        return self::atomicLength($box->style->get("margin-$side"))
+            + self::atomicBorderWidth($box->style, $side)
+            + self::atomicLength($box->style->get("padding-$side"));
+    }
+
+    /**
+     * A zero-glyph token that occupies `$width` of inline advance — used for
+     * an inline box's own horizontal padding / border / margin.
+     *
+     * It carries the inline's background so the inset paints as part of the
+     * box, and is marked `Mandatory`-free: `kind` stays `Allowed` only at the
+     * OUTER edges of the run, never between the inset and its own text, which
+     * is why the spacer itself reports no break opportunity of its own.
+     *
+     * @return array{shapedRun: ShapedRun, isWhitespace: bool, kind: LineBreakKind, trailingSpace: float, baselineShift: float, lineHeight: float, verticalAlign: string, href: ?string, backgroundColor: ?\Phpdftk\Css\Value\Color, linkTitle: ?string}
+     */
+    private function inlineSpacerToken(
+        float $width,
+        ShapingContext $ctx,
+        float $baselineShift,
+        float $lineHeight,
+        string $verticalAlign,
+        ?string $href,
+        ?\Phpdftk\Css\Value\Color $background,
+        ?string $linkTitle,
+    ): array {
+        return [
+            'shapedRun' => new ShapedRun(
+                $ctx->font,
+                $ctx->fontSizePt,
+                \Phpdftk\Text\ShapingDirection::Ltr,
+                [],
+                $width,
+            ),
+            'isWhitespace' => false,
+            'kind' => LineBreakKind::Allowed,
+            'trailingSpace' => 0.0,
+            'noWrapBefore' => true,
+            'baselineShift' => $baselineShift,
+            'lineHeight' => $lineHeight,
+            'verticalAlign' => $verticalAlign,
+            'href' => $href,
+            'backgroundColor' => $background,
+            'linkTitle' => $linkTitle,
+        ];
     }
 
     /**
