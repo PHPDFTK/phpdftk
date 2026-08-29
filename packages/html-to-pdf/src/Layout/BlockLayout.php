@@ -1254,6 +1254,14 @@ final class BlockLayout
             // codepath — same one `layoutMultiColumn` reuses per segment.
             $childTotal = $this->stackChildrenList($box->children, $childContext, $geo->x, $geo->y);
         }
+        // Skipped for anonymous wrappers: a block-in-inline split box is not
+        // an author-declared containing block, and re-aligning its contents
+        // moves a block that the inline's own alignment already placed.
+        if (!$box instanceof \Phpdftk\HtmlToPdf\Box\AnonymousBlockBox) {
+            foreach ($box->children as $rtlChild) {
+                $this->applyRtlOverconstrainedShift($rtlChild, $style, $geo->width);
+            }
+        }
 
         // Parent-child margin collapsing (CSS 2.1 §8.3.1).
         //
@@ -7743,6 +7751,43 @@ final class BlockLayout
         }
         return !$this->isAuto($box->style->get('top'))
             || !$this->isAuto($box->style->get('bottom'));
+    }
+
+
+    /**
+     * CSS 2.1 §10.3.3 — when none of `margin-left`, `width` and
+     * `margin-right` is `auto`, the horizontal equation is OVER-CONSTRAINED
+     * and one margin is recomputed to satisfy it. The CONTAINING BLOCK's
+     * `direction` picks which: `ltr` discards the specified `margin-right`
+     * (no positional effect), `rtl` discards `margin-left` — which is what
+     * right-aligns a fixed-width block inside an RTL container.
+     *
+     * Applied from the parent's child loop rather than inside the child's
+     * own layout because the rule keys off the CONTAINING BLOCK's direction.
+     * `direction` inherits, so a child reading its own value cannot tell an
+     * inherited `rtl` from one it declared itself, and a `direction: rtl`
+     * container would wrongly right-align ITSELF inside an `ltr` parent.
+     */
+    private function applyRtlOverconstrainedShift(Box $child, ?CascadedValues $parentStyle, float $cbWidth): void
+    {
+        $direction = $parentStyle?->get('direction');
+        if (!($direction instanceof Keyword) || strtolower($direction->name) !== 'rtl') {
+            return;
+        }
+        if ($this->isOutOfFlow($child) || $this->floatSide($child) !== null) {
+            return;
+        }
+        $style = $child->style;
+        if ($this->isAuto($style->get('width'))
+            || $this->isAuto($style->get('margin-left'))
+            || $this->isAuto($style->get('margin-right'))
+        ) {
+            return;
+        }
+        $slack = $cbWidth - $child->geometry->outerWidth();
+        if ($slack > 0.0) {
+            $this->shiftSubtree($child, 0.0, $slack);
+        }
     }
 
     private function shiftSubtree(Box $box, float $dy, float $dx = 0.0): void
