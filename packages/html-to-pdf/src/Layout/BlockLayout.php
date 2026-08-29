@@ -1295,8 +1295,28 @@ final class BlockLayout
                 $this->shiftSubtree($first, -$childTopMargin);
                 // Cascade the shift across all siblings so spacing between
                 // siblings remains unchanged.
+                //
+                // An out-of-flow sibling only comes along when THIS box is
+                // its containing block. One positioned against an ancestor
+                // has already resolved its offsets in that ancestor's
+                // coordinates, so moving it here double-counts the collapsed
+                // margin — an abspos `top: 0` after a `<p>` with
+                // `margin-top: 1.5in` landed at y=-144 and was culled off the
+                // page entirely. Skipping every out-of-flow child instead is
+                // the opposite error: one whose containing block IS this box
+                // must move with it.
+                $providesAbsCb = $this->isPositioned($style)
+                    || $this->establishesAbsPosContainingBlock($style);
                 for ($i = 1, $n = count($box->children); $i < $n; $i++) {
-                    $this->shiftSubtree($box->children[$i], -$childTopMargin);
+                    $sibling = $box->children[$i];
+                    if (!$providesAbsCb
+                        && $this->isOutOfFlow($sibling)
+                        && $this->floatSide($sibling) === null
+                        && $this->hasBlockAxisAnchor($sibling)
+                    ) {
+                        continue;
+                    }
+                    $this->shiftSubtree($sibling, -$childTopMargin);
                 }
                 $childTotal -= $childTopMargin;
                 $extra = max(0.0, $childTopMargin - $geo->marginTop);
@@ -7701,6 +7721,30 @@ final class BlockLayout
      * containing block's geometry, so they ride along automatically when
      * the parent's geometry shifts — no extra walk required.
      */
+
+    /**
+     * Whether an out-of-flow box anchors itself on the block axis with an
+     * explicit `top` or `bottom`.
+     *
+     * Such a box has already resolved its position against its containing
+     * block, so a collapsed margin in the flow must not move it again. One
+     * with both `auto` sits at its STATIC position instead — that IS a flow
+     * position, so it travels with the flow like any sibling.
+     */
+    private function hasBlockAxisAnchor(Box $box): bool
+    {
+        // Restricted to `absolute`. A `fixed` box resolves against the
+        // viewport through a different path that still expects the flow
+        // shift, and holding it back regresses the anchor-scroll fixedpos
+        // cases.
+        $position = $box->style->get('position');
+        if (!($position instanceof Keyword) || strtolower($position->name) !== 'absolute') {
+            return false;
+        }
+        return !$this->isAuto($box->style->get('top'))
+            || !$this->isAuto($box->style->get('bottom'));
+    }
+
     private function shiftSubtree(Box $box, float $dy, float $dx = 0.0): void
     {
         $box->geometry->y += $dy;
