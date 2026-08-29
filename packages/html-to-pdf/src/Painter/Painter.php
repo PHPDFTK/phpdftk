@@ -5025,15 +5025,18 @@ final class Painter
         $color = $box->style->get('color');
         $textColor = $color instanceof Color ? $color : new Color(0, 0, 0, 1);
 
-        // Inline backgrounds (`<mark>` and friends) paint as a strip behind
-        // each fragment that carries a `backgroundColor`. Goes before the
-        // text + shadow passes so the glyphs sit on top.
-        foreach ($box->lineBoxes as $line) {
-            $this->paintInlineBackgrounds($box, $line, $stream);
-        }
-
         $shadows = $this->collectTextShadowLayers($box, $textColor);
+        // CSS 2.1 Appendix E — inline content paints in TREE order, so each
+        // line's background goes down immediately before its own glyphs
+        // rather than every background preceding every glyph. The difference
+        // shows once a background can extend past its line: an inline whose
+        // vertical padding bleeds upward has to cover the previous line's
+        // text, which it cannot do if that text is painted afterwards.
         foreach ($box->lineBoxes as $line) {
+            // Inline backgrounds (`<mark>` and friends) paint as a strip
+            // behind each fragment carrying a `backgroundColor`, before this
+            // line's text + shadow passes so its own glyphs sit on top.
+            $this->paintInlineBackgrounds($box, $line, $stream);
             // Paint shadow layers behind the real text. CSS Text Decoration 4
             // §6 says the first listed shadow is painted on top, so we
             // reverse the list for the back-to-front emission order.
@@ -5068,7 +5071,7 @@ final class Painter
         }
         // Coalesce contiguous fragments that share a background colour into
         // single rects so we emit cheaper output without sub-pixel gaps.
-        /** @var list<array{x: float, width: float, color: Color}> $runs */
+        /** @var list<array{x: float, width: float, color: Color, above: float, below: float}> $runs */
         $runs = [];
         foreach ($line->fragments as $fragment) {
             $bg = $fragment->backgroundColor;
@@ -5087,7 +5090,9 @@ final class Painter
                 && abs($last['x'] + $last['width'] - $fragment->x) < 0.001
                 && $last['color']->r === $bg->r
                 && $last['color']->g === $bg->g
-                && $last['color']->b === $bg->b;
+                && $last['color']->b === $bg->b
+                && $last['above'] === $fragment->bgExtendAbove
+                && $last['below'] === $fragment->bgExtendBelow;
             if ($sameAsLast) {
                 $runs[array_key_last($runs)]['width'] = ($fragment->x + $fragment->width) - $last['x'];
             } else {
@@ -5095,6 +5100,8 @@ final class Painter
                     'x' => $fragment->x,
                     'width' => $fragment->width,
                     'color' => $bg,
+                    'above' => $fragment->bgExtendAbove,
+                    'below' => $fragment->bgExtendBelow,
                 ];
             }
         }
@@ -5105,7 +5112,16 @@ final class Painter
         foreach ($runs as $run) {
             $stream->saveGraphicsState();
             $stream->setFillColorRGB($run['color']->r, $run['color']->g, $run['color']->b);
-            $stream->rectangle($box->geometry->x + $run['x'], $pdfY, $run['width'], $line->height);
+            // CSS 2.1 §10.6.1 — an inline box's vertical padding and border
+            // do not grow the line box, but they ARE painted, so the
+            // background bleeds over the lines above and below rather than
+            // being clipped to this one.
+            $stream->rectangle(
+                $box->geometry->x + $run['x'],
+                $pdfY - $run['below'],
+                $run['width'],
+                $line->height + $run['above'] + $run['below'],
+            );
             $stream->fill();
             $stream->restoreGraphicsState();
         }

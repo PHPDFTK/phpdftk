@@ -225,7 +225,15 @@ final class InlineLayout
             // border, so its spacer never opens a break opportunity: wrapping
             // before it would strand the inset on the next line, away from
             // the text it belongs to.
+            // A ZERO-WIDTH token always fits, so it must never trigger a
+            // wrap. Without this an already-overflowing line followed by a
+            // `<br>` breaks BEFORE the break itself: the `<br>` lands alone
+            // on a line of its own and everything after is pushed a whole
+            // line down. `border-padding-bleed-001` overflows its 596px
+            // measure with 640px of Ahem text, so its `<br>` produced a third
+            // line box where two are correct.
             if ($allowSoftWrap
+                && $fitWidth > 0.0
                 && ($token['noWrapBefore'] ?? false) === false
                 && $currentX + $fitWidth > $lineMaxRight
                 && $currentFragments !== []
@@ -287,6 +295,8 @@ final class InlineLayout
                 $token['lineHeight'] ?? -1.0,
                 $token['verticalAlign'] ?? 'baseline',
                 atomicBox: $token['atomicBox'] ?? null,
+                bgExtendAbove: $token['bgExtendAbove'] ?? 0.0,
+                bgExtendBelow: $token['bgExtendBelow'] ?? 0.0,
             );
             $currentFragmentIsWs[] = (bool) $token['isWhitespace'];
             $currentTrailingSpace = $hangsTrailingWhitespace ? 0.0 : $token['trailingSpace'];
@@ -519,6 +529,8 @@ final class InlineLayout
                     $f->lineHeight,
                     $f->verticalAlign,
                     blockOffset: $f->x,
+                    bgExtendAbove: $f->bgExtendAbove,
+                    bgExtendBelow: $f->bgExtendBelow,
                 );
             }
             $out[] = new LineBox(0.0, $line->height, $newFrags, $line->baseline, $line->availableRight);
@@ -1325,7 +1337,7 @@ final class InlineLayout
     {
         $out = [];
         foreach ($fragments as $f) {
-            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox);
+            $out[] = new InlineFragment($f->x + $dx, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox, $f->bgExtendAbove, $f->bgExtendBelow);
         }
         return $out;
     }
@@ -1357,7 +1369,7 @@ final class InlineLayout
             // visible fragment's right edge becomes — they aren't
             // shifted (they hang past the line edge).
             $shift = $i <= $lastVisible ? $i * $delta : $lastVisible * $delta;
-            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox);
+            $out[] = new InlineFragment($f->x + $shift, $f->width, $f->shapedRun, $f->baselineShift, $f->href, $f->isBold, $f->isItalic, $f->decorationLines, $f->textColor, $f->backgroundColor, $f->linkTitle, $f->decorationColor, $f->isWhitespace, $f->lineHeight, $f->verticalAlign, $f->blockOffset, $f->atomicBox, $f->bgExtendAbove, $f->bgExtendBelow);
         }
         return $out;
     }
@@ -1457,6 +1469,8 @@ final class InlineLayout
         ?string $linkTitle,
         ?\Phpdftk\Css\Value\Color $decorationColor,
         bool $splitWsBoundaries = false,
+        float $bgExtendAbove = 0.0,
+        float $bgExtendBelow = 0.0,
     ): void {
         if ($box instanceof TextBox) {
             $text = $box->text;
@@ -1492,6 +1506,8 @@ final class InlineLayout
                 $token['decorationLines'] = $decorationLines;
                 $token['textColor'] = $textColor;
                 $token['backgroundColor'] = $backgroundColor;
+                $token['bgExtendAbove'] = $bgExtendAbove;
+                $token['bgExtendBelow'] = $bgExtendBelow;
                 $token['linkTitle'] = $linkTitle;
                 $token['decorationColor'] = $decorationColor;
                 $tokens[] = $token;
@@ -1677,6 +1693,20 @@ final class InlineLayout
             // `<mark>` should carry the yellow rect.
             $boxBg = $this->resolveBackground($box);
             $childBg = $boxBg ?? $backgroundColor;
+            // CSS 2.1 §10.6.1 — vertical padding / border on an inline box
+            // leave line height alone but are still PAINTED, so the box's
+            // background bleeds over the lines above and below. The insets
+            // travel with the background they belong to: a box painting its
+            // own background carries its own insets, otherwise the nearest
+            // ancestor's pair passes through unchanged.
+            $childExtendAbove = $bgExtendAbove;
+            $childExtendBelow = $bgExtendBelow;
+            if ($boxBg !== null) {
+                $childExtendAbove = self::atomicBorderWidth($box->style, 'top')
+                    + self::atomicLength($box->style->get('padding-top'));
+                $childExtendBelow = self::atomicBorderWidth($box->style, 'bottom')
+                    + self::atomicLength($box->style->get('padding-bottom'));
+            }
             // Mixed-size inline runs: if this inline carries a different
             // computed `font-size` than the active shaping context, build
             // a per-subtree context so descendants shape at the right size.
@@ -1721,6 +1751,8 @@ final class InlineLayout
                     $childHref,
                     $childBg,
                     $childTitle,
+                    $childExtendAbove,
+                    $childExtendBelow,
                 );
             }
             foreach ($box->children as $c) {
@@ -1743,6 +1775,8 @@ final class InlineLayout
                     $childTitle,
                     $childDecoColor,
                     $splitWsBoundaries,
+                    $childExtendAbove,
+                    $childExtendBelow,
                 );
             }
             $trailInset = $this->inlineInlineAxisInset($box, 'right');
@@ -1756,6 +1790,8 @@ final class InlineLayout
                     $childHref,
                     $childBg,
                     $childTitle,
+                    $childExtendAbove,
+                    $childExtendBelow,
                 );
             }
         }
@@ -1792,6 +1828,8 @@ final class InlineLayout
         ?string $href,
         ?\Phpdftk\Css\Value\Color $background,
         ?string $linkTitle,
+        float $bgExtendAbove = 0.0,
+        float $bgExtendBelow = 0.0,
     ): array {
         return [
             'shapedRun' => new ShapedRun(
@@ -1810,6 +1848,8 @@ final class InlineLayout
             'verticalAlign' => $verticalAlign,
             'href' => $href,
             'backgroundColor' => $background,
+            'bgExtendAbove' => $bgExtendAbove,
+            'bgExtendBelow' => $bgExtendBelow,
             'linkTitle' => $linkTitle,
         ];
     }
@@ -2060,6 +2100,8 @@ final class InlineLayout
             $f->verticalAlign,
             $f->blockOffset,
             $f->atomicBox,
+            $f->bgExtendAbove,
+            $f->bgExtendBelow,
         );
     }
 
@@ -2632,6 +2674,8 @@ final class InlineLayout
             $last->verticalAlign,
             blockOffset: $last->blockOffset,
             atomicBox: $last->atomicBox,
+            bgExtendAbove: $last->bgExtendAbove,
+            bgExtendBelow: $last->bgExtendBelow,
         );
         return $fragments;
     }

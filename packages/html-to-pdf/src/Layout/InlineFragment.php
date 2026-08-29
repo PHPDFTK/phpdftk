@@ -145,5 +145,16 @@ final readonly class InlineFragment
          * fragments keep `null`, so their sizing path is unchanged.
          */
         public ?AtomicInlineBox $atomicBox = null,
+        /**
+         * How far this fragment's background extends beyond the line box,
+         * above and below.
+         *
+         * CSS 2.1 §10.6.1 — an inline box's vertical padding and border do
+         * NOT change the line box height, but they ARE painted, bleeding over
+         * the adjacent lines. Layout ignores these entirely; only the painter
+         * reads them.
+         */
+        public float $bgExtendAbove = 0.0,
+        public float $bgExtendBelow = 0.0,
     ) {}
 }
