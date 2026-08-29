@@ -1252,7 +1252,7 @@ final class BlockLayout
             // (`position: absolute` / `fixed`), page-break logic, margin
             // collapse, and break-inside avoidance all run through one
             // codepath — same one `layoutMultiColumn` reuses per segment.
-            $childTotal = $this->stackChildrenList($box->children, $childContext, $geo->x, $geo->y);
+            $childTotal = $this->stackChildrenList($box->children, $childContext, $geo->x, $geo->y, $style);
         }
         // Skipped for anonymous wrappers: a block-in-inline split box is not
         // an author-declared containing block, and re-aligning its contents
@@ -2473,6 +2473,7 @@ final class BlockLayout
         float $originX,
         float $originY,
         float $cursorY,
+        bool $staticIsRtl = false,
     ): array {
         // CSS Writing Modes 4 §7.1 / CSS Position 3 §4.2 — when the
         // containing block is in a vertical writing mode the §10.3.7
@@ -2554,6 +2555,14 @@ final class BlockLayout
         } elseif (!$this->isAuto($right)) {
             $rightOffset = $this->resolveLength($right, $cbWidth);
             $dx = $cbWidth - $rightOffset - $child->geometry->outerWidth();
+        } else {
+            // Both `auto`: the box sits at the static position, which in RTL
+            // anchors its RIGHT edge (CSS 2.1 §10.3.7) — the caller laid it
+            // out with that position as its LEFT edge, so pull it back by its
+            // own width.
+            if ($staticIsRtl) {
+                $dx = -$child->geometry->outerWidth();
+            }
         }
         // CSS 2.1 §10.3.7 — when `left`, `width`, and `right` are all
         // non-`auto` and both `margin-left` and `margin-right` are
@@ -8609,7 +8618,7 @@ final class BlockLayout
      */
     private function stackChildren(Box $box, LayoutContext $childContext, float $originX, float $originY): float
     {
-        return $this->stackChildrenList($box->children, $childContext, $originX, $originY);
+        return $this->stackChildrenList($box->children, $childContext, $originX, $originY, $box->style);
     }
 
     /**
@@ -8620,8 +8629,13 @@ final class BlockLayout
      *
      * @param list<Box> $children
      */
-    private function stackChildrenList(array $children, LayoutContext $childContext, float $originX, float $originY): float
-    {
+    private function stackChildrenList(
+        array $children,
+        LayoutContext $childContext,
+        float $originX,
+        float $originY,
+        ?CascadedValues $containingBlockStyle = null,
+    ): float {
         $cursorY = $originY;
         $prevBottomMargin = 0.0;
         $hasPrev = false;
@@ -8701,9 +8715,27 @@ final class BlockLayout
                 // static position — the container's inline-start `$originX` —
                 // per CSS 2.1 §10.3.7. Without this gate the block overlay
                 // wrongly lands at the previous paragraph's line end.
+                // CSS 2.1 §10.3.7 — with `left` and `right` both `auto` the
+                // static position is used, and the containing block's
+                // `direction` decides WHICH edge it anchors: `ltr` sets
+                // `left`, `rtl` sets `right`. In RTL the flow also runs the
+                // other way, so both the inline end and the no-content
+                // fallback move to the opposite side.
+                // The CONTAINING BLOCK's direction, not the box's own.
+                // `direction` inherits, so a box that declares `rtl` on
+                // ITSELF would otherwise be read as sitting in an RTL parent
+                // and pulled a full width leftwards inside an `ltr` one.
+                $absDirection = $containingBlockStyle?->get('direction');
+                $absIsRtl = $absDirection instanceof Keyword
+                    && strtolower($absDirection->name) === 'rtl';
+                $staticInlineEnd = $child->wasInlineLevel
+                    ? $this->inlineStaticPositionX($prevInFlowChild, $absIsRtl)
+                    : null;
                 $staticX = $hasLeftAnchor
                     ? $originX
-                    : (($child->wasInlineLevel ? $this->inlineStaticPositionX($prevInFlowChild) : null) ?? $originX);
+                    : ($staticInlineEnd ?? ($absIsRtl
+                        ? $originX + $childContext->containingBlockWidth
+                        : $originX));
                 $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $staticX;
                 // Static-Y origin: the positioned-ancestor edge when the
                 // box has a top/bottom anchor, otherwise the in-flow
@@ -8737,6 +8769,7 @@ final class BlockLayout
                     $absOriginX,
                     $absOriginY,
                     $absOriginY,
+                    $absIsRtl,
                 );
                 if ($dx !== 0.0 || $dy !== 0.0) {
                     $this->shiftSubtree($child, $dy, $dx);
@@ -8881,19 +8914,22 @@ final class BlockLayout
      * preceding sibling established no line boxes so the caller falls
      * back to the container's content origin.
      */
-    private function inlineStaticPositionX(?Box $prevInFlowChild): ?float
+    private function inlineStaticPositionX(?Box $prevInFlowChild, bool $rtl = false): ?float
     {
         if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
             return null;
         }
         $lastLine = $prevInFlowChild->lineBoxes[count($prevInFlowChild->lineBoxes) - 1];
-        // Inline fragments carry absolute x (parent origin + advance), so
-        // the line's inline end is the rightmost fragment edge.
+        // Inline fragments carry absolute x (parent origin + advance). The
+        // line's inline END is the rightmost fragment edge in LTR — and the
+        // LEFTMOST in RTL, where inline content advances leftward. Taking the
+        // rightmost edge regardless put the next inline box at the line's
+        // START in RTL, a whole line-width away.
         $end = null;
         foreach ($lastLine->fragments as $frag) {
-            $right = $frag->x + $frag->width;
-            if ($end === null || $right > $end) {
-                $end = $right;
+            $edge = $rtl ? $frag->x : $frag->x + $frag->width;
+            if ($end === null || ($rtl ? $edge < $end : $edge > $end)) {
+                $end = $edge;
             }
         }
         return $end;
