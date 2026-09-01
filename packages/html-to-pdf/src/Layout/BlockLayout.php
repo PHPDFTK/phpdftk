@@ -7786,6 +7786,14 @@ final class BlockLayout
         if ($this->isOutOfFlow($child) || $this->floatSide($child) !== null) {
             return;
         }
+        // §10.3.3 governs BLOCK-LEVEL boxes in normal flow. An atomic inline
+        // (`<img>`, `inline-block`) is placed by the inline formatting
+        // context, which has already applied the line's own alignment —
+        // shifting it again here moved a `width`-attributed `<img>` a second
+        // full slack to the right and off the page entirely.
+        if ($child instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox) {
+            return;
+        }
         $style = $child->style;
         if ($this->isAuto($style->get('width'))
             || $this->isAuto($style->get('margin-left'))
