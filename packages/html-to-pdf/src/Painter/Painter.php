@@ -956,6 +956,19 @@ final class Painter
                     || $child instanceof \Phpdftk\HtmlToPdf\Box\AtomicInlineBox
                     || $child instanceof \Phpdftk\HtmlToPdf\Box\TextBox
                     || $child instanceof \Phpdftk\HtmlToPdf\Box\LineBreakBox
+                    // An anonymous wrapper around a run of inline content IS
+                    // that inline content for painting purposes (Appendix E
+                    // steps 5/7), so it belongs above floats. A float among
+                    // inline siblings makes `mixesBlockAndInline` true and
+                    // wraps the whole run, which then sat in sub-layer 0 and
+                    // let the float paint over every line box in it.
+                    //
+                    // `element === null` is the discriminator: the OTHER
+                    // AnonymousBlockBox site — the block-in-inline promotion
+                    // in BoxGenerator — passes the real element, and that
+                    // wrapper genuinely is block-level.
+                    || ($child instanceof \Phpdftk\HtmlToPdf\Box\AnonymousBlockBox
+                        && $child->element === null)
                 ) {
                     $layer = 2;
                 }
