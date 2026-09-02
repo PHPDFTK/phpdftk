@@ -1775,10 +1775,19 @@ final class BlockLayout
             $exclusionRect['width'],
             $exclusionRect['height'],
         );
+        // CSS 2.1 §9.5.1 / §9.5.2 — other floats and `clear` settle
+        // against the MARGIN box, which `shape-outside` never shrinks;
+        // only line boxes see the contracted exclusion rect above.
+        $marginBox = [
+            'x' => $targetX,
+            'y' => $targetY,
+            'width' => $floatWidth,
+            'height' => $floatHeight,
+        ];
         if ($side === 'left') {
-            $floatCtx->addLeft($exclusionRect['x'], $exclusionRect['y'], $exclusionRect['width'], $exclusionRect['height'], $shape);
+            $floatCtx->addLeft($exclusionRect['x'], $exclusionRect['y'], $exclusionRect['width'], $exclusionRect['height'], $shape, $marginBox);
         } else {
-            $floatCtx->addRight($exclusionRect['x'], $exclusionRect['y'], $exclusionRect['width'], $exclusionRect['height'], $shape);
+            $floatCtx->addRight($exclusionRect['x'], $exclusionRect['y'], $exclusionRect['width'], $exclusionRect['height'], $shape, $marginBox);
         }
     }
 

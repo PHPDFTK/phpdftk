@@ -34,5 +34,44 @@ final readonly class FloatItem
          * relative to the FloatItem's top-left, plus radius `r`.
          */
         public ?array $shape = null,
+        /**
+         * CSS 2.1 §9.5.1 / §9.5.2 — the float's MARGIN box. Float-vs-
+         * float placement and `clear` settle against this, never
+         * against the (possibly contracted) exclusion rect above: a
+         * `shape-outside: content-box` float still occupies its full
+         * margin box as far as other floats are concerned.
+         *
+         * Null means "same as the exclusion rect", which is the case
+         * whenever `shape-outside` is absent — the overwhelming
+         * default, and byte-identical to the pre-shapes behaviour.
+         */
+        public ?float $marginLeft = null,
+        public ?float $marginTop = null,
+        public ?float $marginWidth = null,
+        public ?float $marginHeight = null,
     ) {}
+
+    /** Margin-box left edge, falling back to the exclusion rect. */
+    public function marginBoxLeft(): float
+    {
+        return $this->marginLeft ?? $this->left;
+    }
+
+    /** Margin-box top edge, falling back to the exclusion rect. */
+    public function marginBoxTop(): float
+    {
+        return $this->marginTop ?? $this->top;
+    }
+
+    /** Margin-box width, falling back to the exclusion rect. */
+    public function marginBoxWidth(): float
+    {
+        return $this->marginWidth ?? $this->width;
+    }
+
+    /** Margin-box height, falling back to the exclusion rect. */
+    public function marginBoxHeight(): float
+    {
+        return $this->marginHeight ?? $this->height;
+    }
 }

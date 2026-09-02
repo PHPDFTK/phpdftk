@@ -19,16 +19,101 @@ final class FloatContext
     /** @var list<FloatItem> */
     private array $items = [];
 
-    /** @param array<string, mixed>|null $shape */
-    public function addLeft(float $left, float $top, float $width, float $height, ?array $shape = null): void
-    {
-        $this->items[] = new FloatItem('left', $left, $top, $width, $height, $shape);
+    /**
+     * @param array<string, mixed>|null $shape
+     * @param array{x: float, y: float, width: float, height: float}|null $marginBox
+     *        CSS 2.1 §9.5.1 margin box, when it differs from the
+     *        exclusion rect (i.e. `shape-outside` contracted it).
+     */
+    public function addLeft(
+        float $left,
+        float $top,
+        float $width,
+        float $height,
+        ?array $shape = null,
+        ?array $marginBox = null,
+    ): void {
+        $this->items[] = new FloatItem(
+            'left',
+            $left,
+            $top,
+            $width,
+            $height,
+            $shape,
+            $marginBox['x'] ?? null,
+            $marginBox['y'] ?? null,
+            $marginBox['width'] ?? null,
+            $marginBox['height'] ?? null,
+        );
     }
 
-    /** @param array<string, mixed>|null $shape */
-    public function addRight(float $left, float $top, float $width, float $height, ?array $shape = null): void
+    /**
+     * @param array<string, mixed>|null $shape
+     * @param array{x: float, y: float, width: float, height: float}|null $marginBox
+     */
+    public function addRight(
+        float $left,
+        float $top,
+        float $width,
+        float $height,
+        ?array $shape = null,
+        ?array $marginBox = null,
+    ): void {
+        $this->items[] = new FloatItem(
+            'right',
+            $left,
+            $top,
+            $width,
+            $height,
+            $shape,
+            $marginBox['x'] ?? null,
+            $marginBox['y'] ?? null,
+            $marginBox['width'] ?? null,
+            $marginBox['height'] ?? null,
+        );
+    }
+
+    /**
+     * Right edge of the left floats' MARGIN boxes at `$y` — the
+     * coordinate a new float must start at. Separate from
+     * {@see leftEdgeAt}, which reports the exclusion contour that
+     * LINE boxes flow around.
+     */
+    private function marginLeftEdgeAt(float $y, float $containingLeft): float
     {
-        $this->items[] = new FloatItem('right', $left, $top, $width, $height, $shape);
+        $edge = $containingLeft;
+        foreach ($this->items as $item) {
+            if ($item->side !== 'left') {
+                continue;
+            }
+            $top = $item->marginBoxTop();
+            if ($y + 0.001 >= $top && $y + 0.001 < $top + $item->marginBoxHeight()) {
+                $rightEdge = $item->marginBoxLeft() + $item->marginBoxWidth();
+                if ($rightEdge > $edge) {
+                    $edge = $rightEdge;
+                }
+            }
+        }
+        return $edge;
+    }
+
+    /** Symmetric to {@see marginLeftEdgeAt} for right floats. */
+    private function marginRightEdgeAt(float $y, float $containingRight): float
+    {
+        $edge = $containingRight;
+        foreach ($this->items as $item) {
+            if ($item->side !== 'right') {
+                continue;
+            }
+            $top = $item->marginBoxTop();
+            if ($y + 0.001 >= $top && $y + 0.001 < $top + $item->marginBoxHeight()) {
+                $leftEdge = $item->marginBoxLeft();
+                if ($leftEdge < $edge) {
+                    $edge = $leftEdge;
+                }
+            }
+        }
+        return $edge;
     }
 
     /**
@@ -63,8 +148,8 @@ final class FloatContext
         $checked = 0;
         $limit = max(1, count($this->items) * 2 + 2);
         while ($checked < $limit) {
-            $left = $this->leftEdgeAt($currentY, $containingLeft, true);
-            $right = $this->rightEdgeAt($currentY, $containingRight, true);
+            $left = $this->marginLeftEdgeAt($currentY, $containingLeft);
+            $right = $this->marginRightEdgeAt($currentY, $containingRight);
             $available = $right - $left;
             if ($available + 0.001 >= $desiredWidth) {
                 return ['left' => $left, 'right' => $right, 'y' => $currentY];
@@ -80,8 +165,8 @@ final class FloatContext
             $checked++;
         }
         return [
-            'left' => $this->leftEdgeAt($currentY, $containingLeft, true),
-            'right' => $this->rightEdgeAt($currentY, $containingRight, true),
+            'left' => $this->marginLeftEdgeAt($currentY, $containingLeft),
+            'right' => $this->marginRightEdgeAt($currentY, $containingRight),
             'y' => $currentY,
         ];
     }
@@ -99,7 +184,8 @@ final class FloatContext
             if ($side !== 'both' && $item->side !== $side) {
                 continue;
             }
-            $bottom = $item->top + $item->height;
+            // §9.5.2 — clearance is past the float's MARGIN box.
+            $bottom = $item->marginBoxTop() + $item->marginBoxHeight();
             if ($bottom > $y) {
                 $y = $bottom;
             }
@@ -360,7 +446,7 @@ final class FloatContext
     {
         $next = null;
         foreach ($this->items as $item) {
-            $bottom = $item->top + $item->height;
+            $bottom = $item->marginBoxTop() + $item->marginBoxHeight();
             if ($bottom > $y + 0.001) {
                 if ($next === null || $bottom < $next) {
                     $next = $bottom;
