@@ -443,6 +443,14 @@ final class PropertyRegistry
         $r->register($initial('text-emphasis-style', new Keyword('none'), true));
         // CSS Text Decoration 4 §1.6 — decoration-skip-ink.
         $r->register($initial('text-decoration-skip-ink', new Keyword('auto'), true));
+        // CSS Text Decoration 4 §5 — `text-decoration-skip-spaces`.
+        // Initial `start end`: decorations skip the white space at each
+        // END of the line but draw through interior spaces.
+        $r->register($initial(
+            'text-decoration-skip-spaces',
+            new ValueList([new Keyword('start'), new Keyword('end')], ListSeparator::Space),
+            true,
+        ));
         // CSS Text Decoration 4 §6.5 — `text-decoration-skip` is
         // the umbrella opt-out for skipping decorations over
         // specific text features. Inherits.

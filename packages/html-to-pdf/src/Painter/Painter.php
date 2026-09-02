@@ -5394,11 +5394,57 @@ final class Painter
      * The fallback approximations stand in until `phpdftk/font-parser`
      * exposes the OS/2 sTypoUnderlinePosition / underlineThickness fields.
      */
+    /**
+     * Resolved `text-decoration-skip-spaces` mode: `none` (decorate
+     * through all white space), `all` (skip every white-space run), or
+     * `start end` — the initial value, and the fallback for any value
+     * we do not model.
+     *
+     * @return 'none'|'all'|'start end'
+     */
+    private function decorationSkipSpaces(Box $box): string
+    {
+        $value = $box->style->get('text-decoration-skip-spaces');
+        if (!($value instanceof Keyword)) {
+            return 'start end';
+        }
+        return match (strtolower($value->name)) {
+            'none' => 'none',
+            'all' => 'all',
+            default => 'start end',
+        };
+    }
+
     private function paintTextDecorations(Box $box, LineBox $line, ContentStream $stream, Color $color): void
     {
         $blockLines = $this->textDecorationLines($box);
         $decoColor = $this->textDecorationColor($box, $color);
-        foreach ($line->fragments as $fragment) {
+        // CSS Text Decoration 4 §5 — `text-decoration-skip-spaces`.
+        // The initial `start end` keeps decorations off the white space
+        // at each END of the line while still drawing through interior
+        // spaces, so locate the first and last fragments with ink.
+        $skipSpaces = $this->decorationSkipSpaces($box);
+        $firstInk = null;
+        $lastInk = null;
+        if ($skipSpaces !== 'none') {
+            foreach ($line->fragments as $inkIndex => $inkFragment) {
+                if (!$inkFragment->isWhitespace) {
+                    $firstInk ??= $inkIndex;
+                    $lastInk = $inkIndex;
+                }
+            }
+        }
+        foreach ($line->fragments as $fragmentIndex => $fragment) {
+            if ($fragment->isWhitespace && $skipSpaces !== 'none') {
+                if ($skipSpaces === 'all'
+                    || $firstInk === null
+                    || $lastInk === null
+                    || $fragmentIndex < $firstInk
+                    || $fragmentIndex > $lastInk
+                ) {
+                    continue;
+                }
+            }
             // CSS Text Decoration 4 §2: a fragment's effective decoration
             // is the union of inherited (from inline ancestors) + block-
             // level lines. Block-level wins for color since the value
@@ -5426,7 +5472,16 @@ final class Painter
             // CSS Text Decoration 4 §4 — `text-decoration-thickness`
             // explicit Length / Percentage overrides the font metric.
             // `auto` defers to the metric above.
-            $explicitThickness = $this->resolveDecorationThickness($box, $fontSize);
+            // CSS Text Decoration 4 §4 — these belong to the box that
+            // INTRODUCED the decoration. When the block itself declares
+            // no lines, the decoration came from an inline ancestor via
+            // `$fragment->decorationLines`, and applying the block's
+            // own thickness / style to it is simply reading the wrong
+            // box — the same reasoning `$fragment->decorationColor`
+            // already follows below.
+            $explicitThickness = $blockLines === []
+                ? null
+                : $this->resolveDecorationThickness($box, $fontSize);
             if ($explicitThickness !== null) {
                 $thickness = max(0.5, $explicitThickness);
             }
@@ -5441,7 +5496,7 @@ final class Painter
             // shift (matching paintFragment). The underline/overline offsets
             // below stay relative to the fragment's own ascent.
             $baselineY = $box->geometry->y + $line->y + $line->baseline + $fragment->baselineShift;
-            $style = $this->textDecorationStyle($box);
+            $style = $blockLines === [] ? 'solid' : $this->textDecorationStyle($box);
             // Per CSS Text Decoration 4 §3, the decoration colour follows
             // the *originating* element's `text-decoration-color` (when
             // explicitly set) — fall back to the fragment's `color` (so an
@@ -5455,7 +5510,11 @@ final class Painter
                 $offsetY = match ($lineKind) {
                     'underline' => $underlineOffset + ($explicitUnderlineOffset ?? 0.0),
                     'overline' => -$ascent,
-                    'line-through' => -0.3 * $fontSize,
+                    // The offset is the band's TOP, so centring a
+                    // line-through on the x-height middle means lifting
+                    // it by half its own thickness — otherwise a thick
+                    // line drifts downward off the glyphs.
+                    'line-through' => -0.3 * $fontSize - $thickness / 2.0,
                     default => 0.0,
                 };
                 $layoutY = $baselineY + $offsetY;
