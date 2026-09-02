@@ -1178,7 +1178,20 @@ final class Painter
             $this->paintFlexGapRules($box, $stream);
             $this->paintImage($box, $stream, $parent);
             $this->paintListMarker($box, $stream);
-            $this->paintLineBoxes($box, $stream);
+            // CSS Overflow 3 §3 — a box's own inline content is clipped
+            // by its own `overflow`, exactly as its descendants are
+            // below. Without this the text escapes the box it lives in.
+            // Backgrounds, borders and the outline stay OUTSIDE the
+            // clip: a box's own border and outline are not clipped by
+            // its overflow.
+            if ($this->shouldOverflowClip($box)) {
+                $stream->saveGraphicsState();
+                $this->emitOverflowClipPath($stream, $box);
+                $this->paintLineBoxes($box, $stream);
+                $stream->restoreGraphicsState();
+            } else {
+                $this->paintLineBoxes($box, $stream);
+            }
             $this->collectBlockLinkRect($box);
         }
         // CSS Overflow 3 §3 — `overflow: hidden | clip | scroll | auto`
