@@ -4793,15 +4793,25 @@ final class BlockLayout
     {
         $maxOfMins = 0.0;
         $maxOfMaxes = 0.0;
-        $sumOfMaxes = 0.0;
+        // CSS Sizing 3 §5.1 — max-content is the width of the widest
+        // LINE, so a forced break ends the run being summed rather than
+        // continuing it. Without this a `<br>` contributes nothing and
+        // the whole text is measured laid end-to-end.
+        $segment = 0.0;
+        $widestSegment = 0.0;
         foreach ($box->children as $child) {
+            if ($inline && $child instanceof \Phpdftk\HtmlToPdf\Box\LineBreakBox) {
+                $widestSegment = max($widestSegment, $segment);
+                $segment = 0.0;
+                continue;
+            }
             $cm = $this->measureMinMaxContent($child, $context);
             $maxOfMins = max($maxOfMins, $cm['min']);
             $maxOfMaxes = max($maxOfMaxes, $cm['max']);
-            $sumOfMaxes += $cm['max'];
+            $segment += $cm['max'];
         }
         if ($inline) {
-            return ['min' => $maxOfMins, 'max' => $sumOfMaxes];
+            return ['min' => $maxOfMins, 'max' => max($widestSegment, $segment)];
         }
         return ['min' => $maxOfMins, 'max' => $maxOfMaxes];
     }
