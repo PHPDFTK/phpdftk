@@ -583,6 +583,11 @@ class PdfWriter
                 && substr($data, 12, 4) === 'IHDR'
                 ? ord($data[8 + 8 + 9])
                 : null;
+            // IHDR byte 12: 0 = no interlace, 1 = Adam7.
+            $pngInterlace = strlen($data) >= 8 + 8 + 13
+                && substr($data, 12, 4) === 'IHDR'
+                ? ord($data[8 + 8 + 12])
+                : 0;
             if ($pngColorType === 3) {
                 $decoded = \Phpdftk\ImageMetadata\PngParser::decodeIndexedPng($data);
                 if ($decoded !== null) {
@@ -638,6 +643,18 @@ class PdfWriter
                         $smaskRef = new PdfReference($smaskStream->objectNumber);
                         $dict->set('Filter', new PdfName('FlateDecode'));
                         $data = $colourCompressed;
+                    }
+                }
+            } elseif ($info->bitsPerComponent === 8 && $pngInterlace === 1) {
+                // PNG spec §8.2 — an Adam7 IDAT is seven sub-images, not
+                // scanlines, so PDF's `/Predictor 15` pass-through below
+                // cannot read it. Decode here and re-emit un-predicted.
+                $decoded = \Phpdftk\ImageMetadata\PngParser::decodeOpaquePng($data);
+                if ($decoded !== null) {
+                    $recompressed = @gzcompress($decoded['colour']);
+                    if ($recompressed !== false) {
+                        $dict->set('Filter', new PdfName('FlateDecode'));
+                        $data = $recompressed;
                     }
                 }
             } elseif ($info->bitsPerComponent === 8) {

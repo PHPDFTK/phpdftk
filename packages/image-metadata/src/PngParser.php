@@ -95,6 +95,59 @@ final class PngParser
     }
 
     /**
+     * Decode a non-alpha 8-bit PNG (colour type 0 grayscale or 2 RGB)
+     * to a flat raster.
+     *
+     * Only needed for INTERLACED images: a non-interlaced PNG's IDAT
+     * can be handed straight to PDF as FlateDecode with `/Predictor
+     * 15`, but Adam7 data is seven sub-images rather than scanlines,
+     * so the PDF predictor cannot read it and the image must be
+     * decoded here and re-emitted.
+     *
+     * @return array{colour: string, width: int, height: int, components: int}|null
+     */
+    public static function decodeOpaquePng(string $data): ?array
+    {
+        $info = self::parse($data);
+        $colorType = self::peekColorType($data);
+        if ($colorType === null || $info->bitsPerComponent !== 8) {
+            return null;
+        }
+        $components = match ($colorType) {
+            0 => 1, // grayscale
+            2 => 3, // RGB
+            default => null,
+        };
+        if ($components === null) {
+            return null;
+        }
+        $idat = self::extractIdatData($data);
+        if ($idat === null) {
+            return null;
+        }
+        $decompressed = @gzuncompress($idat);
+        if ($decompressed === false) {
+            return null;
+        }
+        $raster = self::unfilterRaster(
+            $decompressed,
+            $info->width,
+            $info->height,
+            $components,
+            self::peekInterlace($data) ?? 0,
+        );
+        if ($raster === null) {
+            return null;
+        }
+        return [
+            'colour' => $raster,
+            'width' => $info->width,
+            'height' => $info->height,
+            'components' => $components,
+        ];
+    }
+
+    /**
      * PNG spec §8.2 — the seven Adam7 interlace passes, each as
      * `[xStart, yStart, xStep, yStep]`. Every pass is a self-contained
      * sub-image with its OWN filter state, so each is unfiltered
