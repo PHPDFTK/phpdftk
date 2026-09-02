@@ -8955,12 +8955,62 @@ final class BlockLayout
             $hasPrev = true;
             $prevInFlowChild = $child;
         }
-        // Close the trailing vertical border-spacing gap below the last
-        // table row (separating it from the table's bottom border).
-        if ($stackedTableRow && $rowSpacingV > 0.0) {
+        // Close the trailing vertical border-spacing gap below the last table
+        // row (separating it from the table's bottom border).
+        //
+        // CSS 2.1 §17.6.1 gives a table `nrows + 1` vertical gaps in total,
+        // and row groups do not introduce their own. This method runs once
+        // per row group, so closing the gap unconditionally added one per
+        // GROUP: six `<tbody>`s around one row each produced five spurious
+        // gaps (168 device px against the 148 of the same six rows in a
+        // single group). Only the stack that IS the table closes it — and it
+        // must close it whether the rows are its direct children or sit
+        // inside row groups.
+        $closesTableGap = $stackedTableRow
+            || ($rowSpacingV > 0.0 && $this->stackHasRowGroupWithRows($children));
+        if ($closesTableGap && $rowSpacingV > 0.0 && $this->stackIsTableBody($containingBlockStyle)) {
             $total += $rowSpacingV;
         }
         return $total;
+    }
+
+    /**
+     * Whether this stack belongs to the TABLE box itself rather than to one
+     * of its row groups — i.e. whether it owns the table's trailing
+     * border-spacing gap.
+     */
+    private function stackIsTableBody(?CascadedValues $containingBlockStyle): bool
+    {
+        // Must test FOR the table, not against the row-group displays: this
+        // renderer models `<tbody>` / `<thead>` / `<tfoot>` as plain
+        // BlockBoxes with `display: block` (see `collectTableRows`, which
+        // walks through them transparently), so a "not a row group" test is
+        // true for them and closes the gap in every group.
+        $display = $containingBlockStyle?->get('display');
+        if (!($display instanceof Keyword)) {
+            return false;
+        }
+        $name = strtolower($display->name);
+        return $name === 'table' || $name === 'inline-table';
+    }
+
+    /**
+     * Whether any child of this stack is a row group that actually contains
+     * rows — the case where the table's own stack sees no `TableRowBox`
+     * directly but still owes a trailing gap.
+     *
+     * @param list<Box> $children
+     */
+    private function stackHasRowGroupWithRows(array $children): bool
+    {
+        foreach ($children as $child) {
+            foreach ($child->children as $grandchild) {
+                if ($grandchild instanceof \Phpdftk\HtmlToPdf\Box\TableRowBox) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
