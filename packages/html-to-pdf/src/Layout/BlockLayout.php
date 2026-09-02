@@ -696,8 +696,25 @@ final class BlockLayout
         return $geo->outerHeight();
     }
 
+    /**
+     * CSS Flexbox 1 §9.8 — a one-shot definite main size handed from
+     * {@see layoutFlexBox} to the very next {@see layoutBlock} call.
+     *
+     * A fully inflexible COLUMN flex item with a definite `flex-basis` has a
+     * definite main size (its height) BEFORE it is laid out, and the basis
+     * wins over any specified `height`. Its percentage-height children must
+     * resolve against that, not against the `height` declaration — an item
+     * with `height: 0; flex: 0 0 100px` gave its `height: 100%` child a 1px
+     * sliver. `layoutBlock` has no override parameter and threading one
+     * through `layoutBox` would touch every caller, so the value is passed on
+     * this field and consumed exactly once.
+     */
+    private ?float $flexItemDefiniteBlockSize = null;
+
     private function layoutBlock(Box $box, LayoutContext $context): float
     {
+        $flexDefiniteBlockSize = $this->flexItemDefiniteBlockSize;
+        $this->flexItemDefiniteBlockSize = null;
         $style = $box->style;
         $cbWidth = $context->containingBlockWidth;
         $geo = $box->geometry;
@@ -1067,7 +1084,11 @@ final class BlockLayout
         $childCbHeight = $context->containingBlockHeight;
         $heightExplicit = $this->heightAppliesToDisplay($style)
             && !$this->isHeightAutoLike($heightValueForChildCtx);
-        if ($heightExplicit) {
+        if ($flexDefiniteBlockSize !== null) {
+            // §9.8: the flexed main size is definite and supersedes `height`.
+            $childCbHeight = $flexDefiniteBlockSize;
+            $heightExplicit = true;
+        } elseif ($heightExplicit) {
             $resolvedHeight = $this->resolveLength(
                 $heightValueForChildCtx,
                 $context->containingBlockHeight,
@@ -3062,7 +3083,19 @@ final class BlockLayout
             // the same width constraint + origin but a now-definite height
             // (CSS Flexbox 1 §9.4 second pass — see the stretch branch).
             $childLayoutContexts[] = $childCtx;
+            // CSS Flexbox 1 §9.8 — a COLUMN item that can neither grow nor
+            // shrink has a definite main size before layout: its flex basis,
+            // which supersedes any specified `height`. Hand it down so the
+            // item's percentage-height children resolve against the basis.
+            if ($isColumn
+                && $basis !== null
+                && $this->resolveFlexGrow($child->style) === 0.0
+                && $this->resolveFlexShrink($child->style) === 0.0
+            ) {
+                $this->flexItemDefiniteBlockSize = $basis;
+            }
             $this->layoutBox($child, $childCtx);
+            $this->flexItemDefiniteBlockSize = null;
             // CSS Display 3 §2.7 — an inline-level box that is a flex item
             // is blockified. `layoutBox`'s atomic-inline path sizes the
             // content but leaves the box-model edges at zero, so the flex
