@@ -1102,6 +1102,19 @@ final class BlockLayout
                 );
             }
             $childCbHeight = $resolvedHeight;
+        } else {
+            // CSS Sizing 4 §4.1 — a block size DERIVED from
+            // `aspect-ratio` against a definite inline size is itself
+            // definite, so a descendant's `height: %` resolves against
+            // it rather than falling back to `auto`. Mirrors the
+            // §9.8 flexed-main-size branch above.
+            $ratioBlockSize = $this->heightAppliesToDisplay($style)
+                ? $this->ratioDerivedContainerHeight($style, $geo)
+                : null;
+            if ($ratioBlockSize !== null) {
+                $childCbHeight = $ratioBlockSize;
+                $heightExplicit = true;
+            }
         }
         // CSS 2.1 §10.5 + CSS Position 3 §3.4 — track whether the
         // propagated `cbHeight` is definite for descendant percentage
@@ -2933,8 +2946,10 @@ final class BlockLayout
         // ITS children against the real line). The parent passes that
         // stretched CONTENT height here; treat it exactly like an author
         // `height` (definite → `crossDefinite`, item %-heights resolve).
+        $ratioDeclaredHeight = $this->ratioDerivedContainerHeight($style, $geo);
         $declaredHeight = $definiteContentHeightOverride
-            ?? $this->resolveExplicitHeightOrNull($style, $cbHeight);
+            ?? $this->resolveExplicitHeightOrNull($style, $cbHeight)
+            ?? $ratioDeclaredHeight;
 
         // CSS Flexbox 1 §3 — absolutely-positioned children of a
         // flex container are NOT flex items. They take their
@@ -3002,8 +3017,15 @@ final class BlockLayout
         // a definite Length is definite; a percentage container height is
         // definite only if ITS containing block was; auto is indefinite.
         $flexHeightValue = $style->get('height');
-        $flexHeightExplicit = $this->heightAppliesToDisplay($style)
-            && !$this->isHeightAutoLike($flexHeightValue);
+        // The container's cross size can be made definite by something
+        // other than its own `height`: the §9.8 stretched-size override
+        // passed in by a parent flex container, or a block size derived
+        // from `aspect-ratio` (CSS Sizing 4 §4.1). Both are definite, so
+        // an item's `height: %` resolves against them.
+        $flexHeightExplicit = ($this->heightAppliesToDisplay($style)
+                && !$this->isHeightAutoLike($flexHeightValue))
+            || $definiteContentHeightOverride !== null
+            || $ratioDeclaredHeight !== null;
         $itemInFlowHeightDefinite = $flexHeightExplicit
             ? (($flexHeightValue instanceof Percentage)
                 ? $context->inFlowHeightDefinite
@@ -3714,7 +3736,8 @@ final class BlockLayout
         // Compute the explicit-height-for-fr early so it's available
         // both for auto-fill row track resolution and the later fr
         // pass.
-        $declaredHeightForFr = $this->resolveExplicitHeightOrNull($style, $cbHeight);
+        $declaredHeightForFr = $this->resolveExplicitHeightOrNull($style, $cbHeight)
+            ?? $this->ratioDerivedContainerHeight($style, $geo);
         $columnDescriptors = $this->parseGridTrackList(
             $style->get('grid-template-columns'),
             availableSize: max(0.0, $geo->width),
@@ -6645,6 +6668,33 @@ final class BlockLayout
             return null;
         }
         return $this->resolveLength($value, $cbHeight);
+    }
+
+    /**
+     * CSS Sizing 4 §4.1 — a flex or grid CONTAINER with an
+     * `aspect-ratio` and an auto block size derives that block size
+     * from its definite inline size, exactly as a block container
+     * does in {@see layoutBlock}'s sizing tail. Flex and grid return
+     * from {@see layoutBox} before reaching that tail, so both seed
+     * the declared height they would otherwise take only from an
+     * author `height` with this instead.
+     *
+     * The ratio applies to the content box: neither specialised path
+     * resolves `box-sizing`, so `$geo->width` is the content width
+     * throughout and the derived height matches it.
+     *
+     * Returns null when there is no usable ratio or the inline size
+     * is not definite, leaving the caller's `??` chain untouched.
+     */
+    private function ratioDerivedContainerHeight(
+        CascadedValues $style,
+        \Phpdftk\HtmlToPdf\Layout\BoxGeometry $geo,
+    ): ?float {
+        $ratio = $this->resolveAspectRatio($style);
+        if ($ratio === null || $ratio <= 0.0 || $geo->width <= 0.0) {
+            return null;
+        }
+        return \Phpdftk\Css\Cascade\LengthResolver::clampPx($geo->width / $ratio);
     }
 
     /**
