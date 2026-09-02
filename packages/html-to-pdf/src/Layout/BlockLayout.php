@@ -4636,8 +4636,21 @@ final class BlockLayout
         // size for a box have stated its intrinsic preference; the
         // intrinsic-sizing pass shouldn't second-guess it.
         $explicit = $box->style->get('width');
-        if ($explicit instanceof Length && $explicit->value > 0.0) {
-            return ['min' => $explicit->value, 'max' => $explicit->value];
+        if ($explicit instanceof Length) {
+            // Intrinsic measurement can run BEFORE `resolveLengths` reaches
+            // this box, so the cascade may still hold author units. Reading
+            // `->value` raw measured `width: 2in` as 2px and `12pt` as 12px —
+            // a float wrapping such a child came out 30px wide instead of
+            // 283. `cellColumnContribution` already resolves via `toPx` for
+            // exactly this reason; the generic path never did. `toPx` is the
+            // identity for an already-resolved px length.
+            $explicitPx = \Phpdftk\Css\Cascade\LengthResolver::toPx(
+                $explicit,
+                $context->lengthContext,
+            );
+            if ($explicitPx > 0.0) {
+                return ['min' => $explicitPx, 'max' => $explicitPx];
+            }
         }
         return $this->measureContentMinMax($box, $context);
     }
