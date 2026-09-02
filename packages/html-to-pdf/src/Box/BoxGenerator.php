@@ -134,6 +134,58 @@ final class BoxGenerator
         return $this->runningElements;
     }
 
+    /**
+     * Resolved `direction` for an element with HTML auto
+     * directionality, or null when the element does not have it.
+     *
+     * @return 'ltr'|'rtl'|null
+     */
+    private function autoDirectionFor(Element $element): ?string
+    {
+        $dir = $element->getAttribute('dir');
+        $dirValue = $dir === null ? null : strtolower(trim($dir));
+        // `<bdi>` has auto directionality by default (HTML §4.5.24).
+        $isBareBdi = $dirValue === null
+            && strtolower($element->localName) === 'bdi';
+        if ($dirValue !== 'auto' && !$isBareBdi) {
+            return null;
+        }
+        $text = $this->autoDirectionText($element);
+        if ($text === '') {
+            return null;
+        }
+        $result = (new \Phpdftk\Text\Bidi())->analyze($text, \Phpdftk\Text\BidiBase::Auto);
+        return $result->resolvedBase === \Phpdftk\Text\BidiBase::Rtl ? 'rtl' : 'ltr';
+    }
+
+    /**
+     * Descendant text in tree order for the auto-directionality scan,
+     * skipping subtrees that establish their own direction (an element
+     * carrying `dir`, or a nested `<bdi>`) and non-rendered content.
+     */
+    private function autoDirectionText(Element $element): string
+    {
+        $text = '';
+        for ($n = $element->firstChild; $n !== null; $n = $n->nextSibling) {
+            if ($n instanceof Text) {
+                $text .= $n->data;
+                continue;
+            }
+            if (!($n instanceof Element)) {
+                continue;
+            }
+            $tag = strtolower($n->localName);
+            if ($tag === 'script' || $tag === 'style' || $tag === 'bdi') {
+                continue;
+            }
+            if ($n->getAttribute('dir') !== null) {
+                continue;
+            }
+            $text .= $this->autoDirectionText($n);
+        }
+        return $text;
+    }
+
     /** @param list<Stylesheet> $sheets */
     private function buildElementBox(
         Element $element,
@@ -185,6 +237,19 @@ final class BoxGenerator
             } else {
                 $values->set('direction', new Keyword('ltr'));
             }
+        }
+        // HTML §3.2.6.5 — auto directionality. `dir="auto"` (and a
+        // `<bdi>` with no `dir`) resolves `direction` from the first
+        // STRONG character of the element's text, which is exactly
+        // UAX#9's P2/P3 rule that {@see \Phpdftk\Text\Bidi::analyze}
+        // already implements for `BidiBase::Auto`. The UA sheet maps
+        // `dir=auto` to `unicode-bidi: plaintext` but never resolved
+        // `direction`, so such an element silently inherited its
+        // parent's — putting Hebrew under `text-align: start` on the
+        // wrong side.
+        $autoDirection = $this->autoDirectionFor($element);
+        if ($autoDirection !== null) {
+            $values->set('direction', new Keyword($autoDirection));
         }
         // CSS Display 3 §3.2.1 — `display: contents` on the root
         // element is "blockified": the value is treated as `block`
