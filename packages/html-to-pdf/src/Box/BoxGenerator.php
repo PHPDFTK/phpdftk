@@ -1661,11 +1661,58 @@ final class BoxGenerator
         // 100px; background: black` parent would paint a second
         // 100×100 black rect at the cursor.
         $anonValues = $this->cascade->anonymousFromParent($values);
+        // CSS Overflow 4 §5 — `line-clamp` clamps the lines of the block
+        // container's whole formatting context, not just the ones the styled
+        // box happens to lay out itself. `line-clamp` is not inherited, so an
+        // anonymous wrapper dropped it and the clamp silently did nothing the
+        // moment the container held any element child: `line-clamp: 4` around
+        // an abspos plus five lines rendered all five.
+        //
+        // The effective count is resolved here and planted as the modern
+        // property, so the wrapper needs no `-webkit-box` display of its own
+        // to satisfy the legacy gate.
+        $inheritedClamp = $this->effectiveLineClamp($values);
+        if ($inheritedClamp !== null) {
+            $anonValues->set('line-clamp', new \Phpdftk\Css\Value\Integer($inheritedClamp));
+        }
         $anon = new AnonymousBlockBox(null, $anonValues);
         foreach ($inlineGroup as $c) {
             $anon->addChild($c);
         }
         $parent->addChild($anon);
+    }
+
+
+    /**
+     * The effective `line-clamp` count on a block container: the modern
+     * property, or `-webkit-line-clamp` when the legacy `-webkit-box` gate
+     * is satisfied. Null when the box does not clamp.
+     */
+    private function effectiveLineClamp(CascadedValues $values): ?int
+    {
+        $modern = $values->get('line-clamp');
+        if ($modern instanceof \Phpdftk\Css\Value\Integer && $modern->value > 0) {
+            return $modern->value;
+        }
+        $legacy = $values->get('-webkit-line-clamp');
+        if (!($legacy instanceof \Phpdftk\Css\Value\Integer) || $legacy->value <= 0) {
+            return null;
+        }
+        $display = $values->get('display');
+        if (!($display instanceof Keyword)) {
+            return null;
+        }
+        $name = strtolower($display->name);
+        if ($name !== '-webkit-box' && $name !== '-webkit-inline-box') {
+            return null;
+        }
+        $orient = $values->get('-webkit-box-orient');
+        if (!($orient instanceof Keyword)
+            || strtolower($orient->name) !== 'vertical'
+        ) {
+            return null;
+        }
+        return $legacy->value;
     }
 
     /**
