@@ -385,6 +385,19 @@ final class BlockLayout
                 }
             }
             $this->currentColumnMinWidths = $this->collectColumnMinWidths($box, $this->currentTableColumns, $context->lengthContext);
+            // CSS 2.1 §17.5.1 — record the column-group / column
+            // background layers and each cell's column index. Both are
+            // rebuilt per table layout and read at paint time; the
+            // `current*` grid state below is transient (restored in the
+            // `finally`), so the painter cannot consult it.
+            $box->columnLayers = $this->collectColumnLayerBoxes($box, $this->currentTableColumns);
+            foreach ($this->currentTableCellGrid as $cellId => $slot) {
+                $gridCell = $this->resolvedCellReferences[$cellId] ?? null;
+                if ($gridCell !== null) {
+                    $gridCell->tableColumn = $slot['col'];
+                    $gridCell->tableColumnSpan = $slot['colspan'];
+                }
+            }
             try {
                 $height = $this->layoutBlock($box, $context);
                 // CSS Tables 3 §11.1 — extend rowspan cells to cover
@@ -8878,11 +8891,24 @@ final class BlockLayout
                 $staticInlineEnd = $child->wasInlineLevel
                     ? $this->inlineStaticPositionX($prevInFlowChild, $absIsRtl)
                     : null;
+                // Static-Y is needed before static-X: with no preceding
+                // inline content the hypothetical line's horizontal
+                // bounds depend on which floats are present at that Y.
+                $staticYCandidate = $hasTopAnchor
+                    ? $cursorY
+                    : (($child->wasInlineLevel
+                        ? $this->inlineStaticPositionY($prevInFlowChild)
+                        : null) ?? $cursorY);
                 $staticX = $hasLeftAnchor
                     ? $originX
-                    : ($staticInlineEnd ?? ($absIsRtl
-                        ? $originX + $childContext->containingBlockWidth
-                        : $originX));
+                    : ($staticInlineEnd ?? $this->inlineStaticFallbackX(
+                        $childContext,
+                        $originX,
+                        $staticYCandidate,
+                        $absIsRtl,
+                        $containingBlockStyle,
+                        $child->wasInlineLevel,
+                    ));
                 $absOriginX = ($pa !== null && $hasLeftAnchor) ? $pa->originX : $staticX;
                 // Static-Y origin: the positioned-ancestor edge when the
                 // box has a top/bottom anchor, otherwise the in-flow
@@ -8891,9 +8917,7 @@ final class BlockLayout
                 // pattern), that static position is the TOP of the last
                 // line of that content — not `$cursorY`. A block-level abspos
                 // uses `$cursorY` (its next block-flow position) directly.
-                $staticY = $hasTopAnchor
-                    ? $cursorY
-                    : (($child->wasInlineLevel ? $this->inlineStaticPositionY($prevInFlowChild) : null) ?? $cursorY);
+                $staticY = $staticYCandidate;
                 $absOriginY = ($pa !== null && $hasTopAnchor) ? $pa->originY : $staticY;
                 // CSS 2.1 §10.3.7 / §10.6.4 — when both opposing edge
                 // anchors are set (left+right or top+bottom) AND the
@@ -9111,6 +9135,44 @@ final class BlockLayout
      * preceding sibling established no line boxes so the caller falls
      * back to the container's content origin.
      */
+    /**
+     * CSS 2.1 §10.3.7 — the static-position inline offset for an
+     * abspos with no preceding inline content on its hypothetical
+     * line. The box would have been the first thing on a line at
+     * `$staticY`, so it starts where that line starts: inside any
+     * floats intruding at that Y, and at the edge the containing
+     * block's `text-align` puts the line's content.
+     *
+     * A block-level abspos keeps the plain content edge — it is not
+     * placed on a line at all.
+     */
+    private function inlineStaticFallbackX(
+        LayoutContext $childContext,
+        float $originX,
+        float $staticY,
+        bool $rtl,
+        ?CascadedValues $containingBlockStyle,
+        bool $wasInlineLevel,
+    ): float {
+        $cbRight = $originX + $childContext->containingBlockWidth;
+        if (!$wasInlineLevel) {
+            return $rtl ? $cbRight : $originX;
+        }
+        $floats = $childContext->floatContext;
+        $lineLeft = $floats?->leftEdgeAt($staticY, $originX) ?? $originX;
+        $lineRight = $floats?->rightEdgeAt($staticY, $cbRight) ?? $cbRight;
+        $align = $containingBlockStyle?->get('text-align');
+        $alignName = $align instanceof Keyword ? strtolower($align->name) : '';
+        return match ($alignName) {
+            'left' => $lineLeft,
+            'right' => $lineRight,
+            'center' => ($lineLeft + $lineRight) / 2.0,
+            'end' => $rtl ? $lineLeft : $lineRight,
+            // `start` and the initial value follow the direction.
+            default => $rtl ? $lineRight : $lineLeft,
+        };
+    }
+
     private function inlineStaticPositionX(?Box $prevInFlowChild, bool $rtl = false): ?float
     {
         if ($prevInFlowChild === null || $prevInFlowChild->lineBoxes === []) {
@@ -10249,6 +10311,72 @@ final class BlockLayout
     private function columnBoxMinWidth(Box $colBox, \Phpdftk\Css\Cascade\LengthContext $lengthContext): ?float
     {
         return $this->columnBoxLength($colBox, 'min-width', $lengthContext);
+    }
+
+    /**
+     * CSS 2.1 §17.5.1 — the column-group (layer 2) and column (layer 3)
+     * background layers with the column range each covers. Groups are
+     * returned first so columns paint over them.
+     *
+     * Mirrors {@see collectColumnBoxWidths}'s traversal: a
+     * `table-column-group` with `table-column` children delegates its
+     * span to those children; one without children spans on its own.
+     *
+     * @return list<array{box: \Phpdftk\HtmlToPdf\Box\TableColumnBox, start: int, span: int}>
+     */
+    private function collectColumnLayerBoxes(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        int $totalColumns,
+    ): array {
+        if ($totalColumns === 0) {
+            return [];
+        }
+        /** @var list<array{box: \Phpdftk\HtmlToPdf\Box\TableColumnBox, start: int, span: int}> $groups */
+        $groups = [];
+        /** @var list<array{box: \Phpdftk\HtmlToPdf\Box\TableColumnBox, start: int, span: int}> $columns */
+        $columns = [];
+        $col = 0;
+        foreach ($table->children as $tc) {
+            if (!($tc instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox)) {
+                continue;
+            }
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableColumnBox> $groupCols */
+            $groupCols = array_values(array_filter(
+                $tc->children,
+                static fn(Box $c): bool => $c instanceof \Phpdftk\HtmlToPdf\Box\TableColumnBox,
+            ));
+            if ($groupCols !== []) {
+                $groupStart = $col;
+                foreach ($groupCols as $colBox) {
+                    $span = min($this->columnSpan($colBox), max(0, $totalColumns - $col));
+                    if ($span > 0) {
+                        $columns[] = ['box' => $colBox, 'start' => $col, 'span' => $span];
+                        $col += $span;
+                    }
+                }
+                if ($col > $groupStart) {
+                    $groups[] = ['box' => $tc, 'start' => $groupStart, 'span' => $col - $groupStart];
+                }
+                continue;
+            }
+            $span = min($this->columnSpan($tc), max(0, $totalColumns - $col));
+            if ($span <= 0) {
+                continue;
+            }
+            // A childless `table-column-group` still establishes columns,
+            // but its background is the GROUP layer, not the column layer.
+            $display = $tc->style->get('display');
+            $isGroup = $display instanceof Keyword
+                && strtolower($display->name) === 'table-column-group';
+            $entry = ['box' => $tc, 'start' => $col, 'span' => $span];
+            if ($isGroup) {
+                $groups[] = $entry;
+            } else {
+                $columns[] = $entry;
+            }
+            $col += $span;
+        }
+        return array_merge($groups, $columns);
     }
 
     /**
