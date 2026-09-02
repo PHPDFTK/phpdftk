@@ -1194,6 +1194,12 @@ final class Painter
             }
             $this->collectBlockLinkRect($box);
         }
+        // CSS 2.1 §17.5.1 — column-group and column backgrounds sit
+        // above the table's own background and below the row groups /
+        // rows / cells that follow as children.
+        if ($box instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+            $this->paintTableColumnBackgrounds($box, $stream);
+        }
         // CSS Overflow 3 §3 — `overflow: hidden | clip | scroll | auto`
         // clips descendants to the box's padding-edge. `visible` (the
         // initial value) lets descendants render outside the box.
@@ -3659,6 +3665,143 @@ final class Painter
      * Caller is responsible for the `saveGraphicsState` /
      * `restoreGraphicsState` envelope.
      */
+    /**
+     * CSS 2.1 §17.5.1 background layers 2 and 3 — column groups and
+     * columns. `<col>` / `<colgroup>` generate no boxes of their own,
+     * so their background is painted into the CELLS of the columns they
+     * cover: the background POSITIONING AREA is the whole column strip,
+     * while the paint is CLIPPED to each cell's border box.
+     *
+     * That split matters twice over. It is what the spec asks for, so a
+     * `background-image` on a column tiles across the strip rather than
+     * restarting in every cell; and because the paint only ever happens
+     * per-cell, a column with no cells renders nothing at all — which
+     * the spec also requires, and which a naive "fill the strip" would
+     * get wrong.
+     */
+    private function paintTableColumnBackgrounds(
+        \Phpdftk\HtmlToPdf\Box\TableBox $table,
+        ContentStream $stream,
+    ): void {
+        if ($table->columnLayers === []) {
+            return;
+        }
+        /** @var array<int, list<\Phpdftk\HtmlToPdf\Box\TableCellBox>> $byColumn */
+        $byColumn = [];
+        $this->collectTableCellsByColumn($table, $byColumn);
+        if ($byColumn === []) {
+            return;
+        }
+        // The strip's block extent is the table's whole row area.
+        $stripTop = null;
+        $stripBottom = null;
+        foreach ($byColumn as $cells) {
+            foreach ($cells as $cell) {
+                $rect = $this->cellBorderBoxRect($cell);
+                $stripTop = $stripTop === null ? $rect['y'] : min($stripTop, $rect['y']);
+                $bottom = $rect['y'] + $rect['h'];
+                $stripBottom = $stripBottom === null ? $bottom : max($stripBottom, $bottom);
+            }
+        }
+        if ($stripTop === null || $stripBottom === null || $stripBottom <= $stripTop) {
+            return;
+        }
+        foreach ($table->columnLayers as $layer) {
+            $colBox = $layer['box'];
+            if (!$this->boxHasPaintableBackground($colBox)) {
+                continue;
+            }
+            $left = null;
+            $right = null;
+            /** @var list<\Phpdftk\HtmlToPdf\Box\TableCellBox> $covered */
+            $covered = [];
+            for ($c = $layer['start']; $c < $layer['start'] + $layer['span']; $c++) {
+                foreach ($byColumn[$c] ?? [] as $cell) {
+                    $rect = $this->cellBorderBoxRect($cell);
+                    $left = $left === null ? $rect['x'] : min($left, $rect['x']);
+                    $edge = $rect['x'] + $rect['w'];
+                    $right = $right === null ? $edge : max($right, $edge);
+                    $covered[] = $cell;
+                }
+            }
+            if ($covered === [] || $left === null || $right === null || $right <= $left) {
+                continue;
+            }
+            // Stand the column box up at the strip's geometry so the
+            // existing background machinery (colour, images, repeat,
+            // size, position) resolves against the strip.
+            $strip = new \Phpdftk\HtmlToPdf\Layout\BoxGeometry();
+            $strip->x = $left;
+            $strip->y = $stripTop;
+            $strip->width = $right - $left;
+            $strip->height = $stripBottom - $stripTop;
+            $original = $colBox->geometry;
+            $colBox->geometry = $strip;
+            foreach ($covered as $cell) {
+                $rect = $this->cellBorderBoxRect($cell);
+                if ($rect['w'] <= 0.0 || $rect['h'] <= 0.0) {
+                    continue;
+                }
+                $stream->saveGraphicsState();
+                $stream->rectangle(
+                    $rect['x'],
+                    $this->pageHeight - $rect['y'] - $rect['h'],
+                    $rect['w'],
+                    $rect['h'],
+                );
+                $stream->clip();
+                $this->paintBackground($colBox, $stream);
+                $stream->restoreGraphicsState();
+            }
+            $colBox->geometry = $original;
+        }
+    }
+
+    /**
+     * Border-box rect of a table cell in layout (top-down) coordinates.
+     *
+     * @return array{x: float, y: float, w: float, h: float}
+     */
+    private function cellBorderBoxRect(\Phpdftk\HtmlToPdf\Box\TableCellBox $cell): array
+    {
+        $g = $cell->geometry;
+        return [
+            'x' => $g->x - $g->paddingLeft - $g->borderLeft,
+            'y' => $g->y - $g->paddingTop - $g->borderTop,
+            'w' => $g->paddingLeft + $g->width + $g->paddingRight
+                + $g->borderLeft + $g->borderRight,
+            'h' => $g->paddingTop + $g->height + $g->paddingBottom
+                + $g->borderTop + $g->borderBottom,
+        ];
+    }
+
+    /**
+     * Collect every cell in the table, keyed by the column it starts in.
+     * A cell spanning N columns is registered under each of them so a
+     * column background reaches the part of the cell it covers (the clip
+     * still confines the paint to the cell itself).
+     *
+     * @param array<int, list<\Phpdftk\HtmlToPdf\Box\TableCellBox>> $byColumn
+     */
+    private function collectTableCellsByColumn(Box $box, array &$byColumn): void
+    {
+        foreach ($box->children as $child) {
+            if ($child instanceof \Phpdftk\HtmlToPdf\Box\TableBox) {
+                // A nested table owns its own column layers.
+                continue;
+            }
+            if ($child instanceof \Phpdftk\HtmlToPdf\Box\TableCellBox
+                && $child->tableColumn !== null
+            ) {
+                for ($i = 0; $i < $child->tableColumnSpan; $i++) {
+                    $byColumn[$child->tableColumn + $i][] = $child;
+                }
+                continue;
+            }
+            $this->collectTableCellsByColumn($child, $byColumn);
+        }
+    }
+
     private function emitOverflowClipPath(ContentStream $stream, Box $box): void
     {
         $g = $box->geometry;
