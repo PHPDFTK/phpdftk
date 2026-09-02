@@ -2159,6 +2159,30 @@ final class BlockLayout
         if ($value instanceof \Phpdftk\Css\Value\Percentage) {
             return $refSize * ($value->value / 100.0);
         }
+        // A `<position>` keyword names an edge or the centre. The axis does
+        // not need distinguishing here: `left` and `top` are both the zero
+        // edge, `right` and `bottom` both the far edge, and the caller has
+        // already picked the matching reference extent. Falling through to
+        // `$default` instead collapsed `circle(50% at left top)` onto the box
+        // CENTRE, so a quarter-circle float area became a full circle 60px
+        // to the right of where it belongs.
+        if ($value instanceof Keyword) {
+            return match (strtolower($value->name)) {
+                'left', 'top' => 0.0,
+                'right', 'bottom' => $refSize,
+                'center' => $refSize / 2.0,
+                default => $default,
+            };
+        }
+        // The three/four-value `<position>` form folds an offset from a far
+        // edge into `calc(100% - <length>)` at parse time.
+        if ($value instanceof \Phpdftk\Css\Value\Calc) {
+            $resolved = \Phpdftk\Css\Cascade\CalcEvaluator::evaluate(
+                $value,
+                new \Phpdftk\Css\Cascade\LengthContext(percentageBasis: $refSize),
+            );
+            return is_finite($resolved) ? $resolved : $default;
+        }
         return $default;
     }
 
