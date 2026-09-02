@@ -959,13 +959,23 @@ final class Painter
                 ) {
                     $layer = 2;
                 }
+            } else {
+                // Appendix E step 8 — a POSITIONED descendant with `z-index:
+                // auto` or `0` paints above ALL in-flow content of the same
+                // stacking context (steps 3-7), whatever document order says.
+                // Leaving it in sub-layer 0 let a following in-flow sibling
+                // cover it: the ubiquitous "absolutely positioned green
+                // overlay declared before the red block" pattern rendered
+                // entirely red. A non-zero z-index is already decisive on its
+                // own, so this only settles the auto / 0 case.
+                $layer = 3;
             }
             // Only a float (sub-layer 1) genuinely reorders against
             // document order; block (0) and inline (2) never coexist as
             // direct siblings (mixed content is anonymous-block-wrapped),
             // so those alone must not trip the reorder and disturb the
             // byte-identical fast path.
-            if ($z !== 0 || $order !== 0 || $layer === 1) {
+            if ($z !== 0 || $order !== 0 || $layer === 1 || $layer === 3) {
                 $anyReorder = true;
             }
             $indexed[] = [$i, $z, $layer, $order, $child];
