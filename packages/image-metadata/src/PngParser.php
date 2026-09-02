@@ -66,21 +66,151 @@ final class PngParser
             return null;
         }
         $bpp = $components + 1; // colour bytes + 1 alpha byte
-        $stride = $info->width * $bpp;
-        $expected = ($stride + 1) * $info->height;
-        if (strlen($decompressed) < $expected) {
+        $raster = self::unfilterRaster(
+            $decompressed,
+            $info->width,
+            $info->height,
+            $bpp,
+            self::peekInterlace($data) ?? 0,
+        );
+        if ($raster === null) {
             return null;
         }
+        // Split the unfiltered raster into colour + alpha planes.
         $colour = '';
         $alpha = '';
-        $prev = str_repeat("\x00", $stride);
+        $pixels = $info->width * $info->height;
+        for ($i = 0; $i < $pixels; $i++) {
+            $pxBase = $i * $bpp;
+            $colour .= substr($raster, $pxBase, $components);
+            $alpha .= $raster[$pxBase + $components];
+        }
+        return [
+            'colour' => $colour,
+            'alpha' => $alpha,
+            'width' => $info->width,
+            'height' => $info->height,
+            'components' => $components,
+        ];
+    }
+
+    /**
+     * PNG spec §8.2 — the seven Adam7 interlace passes, each as
+     * `[xStart, yStart, xStep, yStep]`. Every pass is a self-contained
+     * sub-image with its OWN filter state, so each is unfiltered
+     * independently and then scattered into the full raster.
+     */
+    private const ADAM7_PASSES = [
+        [0, 0, 8, 8],
+        [4, 0, 8, 8],
+        [0, 4, 4, 8],
+        [2, 0, 4, 4],
+        [0, 2, 2, 4],
+        [1, 0, 2, 2],
+        [0, 1, 1, 2],
+    ];
+
+    /**
+     * Peek the PNG's interlace method (IHDR byte 12): 0 = none,
+     * 1 = Adam7. Same direct-read trick as {@see peekColorType}.
+     */
+    private static function peekInterlace(string $data): ?int
+    {
+        if (strlen($data) < 8 + 8 + 13 || substr($data, 0, 8) !== "\x89PNG\r\n\x1A\n") {
+            return null;
+        }
+        if (substr($data, 12, 4) !== 'IHDR') {
+            return null;
+        }
+        return ord($data[8 + 8 + 12]);
+    }
+
+    /**
+     * Unfilter a decompressed PNG datastream into a flat, filter-byte-
+     * free raster of `$width * $height * $bpp` bytes.
+     *
+     * Handles both interlace methods. For Adam7 (`$interlace === 1`)
+     * each of the seven passes is unfiltered as its own sub-image and
+     * its pixels scattered to their final positions — without this,
+     * an interlaced PNG is read as though the pass data were one
+     * contiguous raster, which renders as noise.
+     *
+     * Byte-for-byte identical to the previous single-pass behaviour
+     * when `$interlace === 0`. Requires whole-byte pixels (bit depth
+     * 8), which every caller already enforces.
+     */
+    private static function unfilterRaster(
+        string $data,
+        int $width,
+        int $height,
+        int $bpp,
+        int $interlace,
+    ): ?string {
+        if ($interlace === 0) {
+            $pass = self::unfilterPass($data, 0, $width, $height, $bpp);
+            return $pass === null ? null : $pass['raster'];
+        }
+        if ($interlace !== 1) {
+            return null;
+        }
+        $raster = str_repeat("\x00", $width * $height * $bpp);
         $offset = 0;
-        for ($y = 0; $y < $info->height; $y++) {
-            $filter = ord($decompressed[$offset]);
+        foreach (self::ADAM7_PASSES as [$xStart, $yStart, $xStep, $yStep]) {
+            // Ceiling division — a pass covering no pixels is skipped
+            // entirely and contributes no bytes to the stream.
+            $passWidth = intdiv($width - $xStart + $xStep - 1, $xStep);
+            $passHeight = intdiv($height - $yStart + $yStep - 1, $yStep);
+            if ($passWidth <= 0 || $passHeight <= 0) {
+                continue;
+            }
+            $pass = self::unfilterPass($data, $offset, $passWidth, $passHeight, $bpp);
+            if ($pass === null) {
+                return null;
+            }
+            $offset = $pass['offset'];
+            $passRaster = $pass['raster'];
+            for ($py = 0; $py < $passHeight; $py++) {
+                $targetY = $yStart + $py * $yStep;
+                for ($px = 0; $px < $passWidth; $px++) {
+                    $targetX = $xStart + $px * $xStep;
+                    $src = ($py * $passWidth + $px) * $bpp;
+                    $dst = ($targetY * $width + $targetX) * $bpp;
+                    for ($b = 0; $b < $bpp; $b++) {
+                        $raster[$dst + $b] = $passRaster[$src + $b];
+                    }
+                }
+            }
+        }
+        return $raster;
+    }
+
+    /**
+     * Reverse the per-row PNG filters (spec §9.2) for one sub-image of
+     * `$width x $height` pixels starting at `$offset`. Returns the
+     * unfiltered bytes plus the offset just past the data consumed, so
+     * the caller can walk consecutive Adam7 passes.
+     *
+     * @return array{raster: string, offset: int}|null
+     */
+    private static function unfilterPass(
+        string $data,
+        int $offset,
+        int $width,
+        int $height,
+        int $bpp,
+    ): ?array {
+        $stride = $width * $bpp;
+        if (strlen($data) < $offset + ($stride + 1) * $height) {
+            return null;
+        }
+        $raster = '';
+        $prev = str_repeat("\x00", $stride);
+        for ($y = 0; $y < $height; $y++) {
+            $filter = ord($data[$offset]);
             $offset++;
             $current = '';
             for ($x = 0; $x < $stride; $x++) {
-                $px = ord($decompressed[$offset + $x]);
+                $px = ord($data[$offset + $x]);
                 $left = $x >= $bpp ? ord($current[$x - $bpp]) : 0;
                 $up = ord($prev[$x]);
                 $upLeft = $x >= $bpp ? ord($prev[$x - $bpp]) : 0;
@@ -98,21 +228,10 @@ final class PngParser
                 $current .= chr($unfiltered);
             }
             $offset += $stride;
-            // Split the unfiltered row into colour + alpha bytes.
-            for ($x = 0; $x < $info->width; $x++) {
-                $pxBase = $x * $bpp;
-                $colour .= substr($current, $pxBase, $components);
-                $alpha .= $current[$pxBase + $components];
-            }
+            $raster .= $current;
             $prev = $current;
         }
-        return [
-            'colour' => $colour,
-            'alpha' => $alpha,
-            'width' => $info->width,
-            'height' => $info->height,
-            'components' => $components,
-        ];
+        return ['raster' => $raster, 'offset' => $offset];
     }
 
     /**
