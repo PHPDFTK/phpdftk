@@ -282,7 +282,28 @@ final class BoxGenerator
         // space-3` (which uses `<math style="position: absolute;
         // top: 0; left: 0">`).
         $wasInlineLevelOutOfFlow = false;
-        if (in_array($display, ['inline', 'inline-block', 'inline-flex', 'inline-grid', 'inline-table'], true)
+        // CSS 2.1 §9.7 / CSS Display 3 §2.7 — out-of-flow blockification
+        // covers the internal-table displays too, not just the inline
+        // family: a `position: absolute` / floated `table-row` /
+        // `table-cell` / `table-column` (etc.) computes to `block`.
+        // `inline-table` is the one value that blockifies to `table`
+        // rather than `block`, matching the flex-item mapping elsewhere.
+        $outOfFlowBlockified = [
+            'inline' => 'block',
+            'inline-block' => 'block',
+            'inline-flex' => 'flex',
+            'inline-grid' => 'grid',
+            'inline-table' => 'table',
+            'table-row-group' => 'block',
+            'table-header-group' => 'block',
+            'table-footer-group' => 'block',
+            'table-row' => 'block',
+            'table-column' => 'block',
+            'table-column-group' => 'block',
+            'table-cell' => 'block',
+            'table-caption' => 'block',
+        ];
+        if (isset($outOfFlowBlockified[$display])
             && $this->isOutOfFlow($values)
             && !$this->isForeignContentRoot($element)
         ) {
@@ -291,9 +312,12 @@ final class BoxGenerator
             // inline-level box (inline-continuation static position) from an
             // originally block-level one (block-flow static position). The
             // cascade's `display` is about to be overwritten to `block`.
-            $wasInlineLevelOutOfFlow = true;
-            $values->set('display', new Keyword('block'));
-            $display = 'block';
+            // Only the inline family was inline-LEVEL before
+            // blockification; an internal-table display was not, so it
+            // must not claim the inline static position.
+            $wasInlineLevelOutOfFlow = str_starts_with($display, 'inline');
+            $display = $outOfFlowBlockified[$display];
+            $values->set('display', new Keyword($display));
         }
         // Foreign-content roots (`<svg>` / `<math>`) are replaced
         // atomic-inline boxes routed to the dedicated foreign painters.
