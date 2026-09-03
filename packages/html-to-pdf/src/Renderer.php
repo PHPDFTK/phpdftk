@@ -1323,6 +1323,18 @@ final class Renderer
         foreach ([ord('.'), ord(','), ord(':'), ord(';'), ord(' ')] as $cp) {
             $seen[$cp] = true;
         }
+        // Characters the box tree SYNTHESIZES rather than copying from the
+        // source: form-control markers `[ ]` / `[x]` / `( )` / `(o)` (see
+        // BoxGenerator's checkbox / radio lowering). This subset is built
+        // from `strip_tags($html)`, so a synthesized codepoint is absent
+        // from it — and an absent codepoint does not fall back to notdef,
+        // it paints whatever glyph happens to occupy that subset slot.
+        foreach ([ord('['), ord(']'), ord('('), ord(')')] as $cp) {
+            $seen[$cp] = true;
+        }
+        // U+2022 BULLET — the `<input type=password>` mask character, and
+        // the default `list-style-type: disc` marker.
+        $seen[0x2022] = true;
         // U+2026 HORIZONTAL ELLIPSIS — emitted by `text-overflow: ellipsis`
         // and useful punctuation in body text.
         $seen[0x2026] = true;
