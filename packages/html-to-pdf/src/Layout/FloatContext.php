@@ -259,7 +259,14 @@ final class FloatContext
         if ($ignoreShape || $item->shape === null) {
             return $item->left + $item->width;
         }
-        return $item->left + $this->shapeRightEdgeLocal($item, $y);
+        // CSS Shapes 1 §1.1 — the float area is CLIPPED to the float's
+        // margin box, so a shape larger than the float itself (say a
+        // `circle(150px)` on a 50x50 float) cannot push content past
+        // the float's own outer edge.
+        return min(
+            $item->left + $this->shapeRightEdgeLocal($item, $y),
+            $item->marginBoxLeft() + $item->marginBoxWidth(),
+        );
     }
 
     /**
@@ -270,7 +277,11 @@ final class FloatContext
         if ($ignoreShape || $item->shape === null) {
             return $item->left;
         }
-        return $item->left + $this->shapeLeftEdgeLocal($item, $y);
+        // §1.1 clip, mirrored for a right float.
+        return max(
+            $item->left + $this->shapeLeftEdgeLocal($item, $y),
+            $item->marginBoxLeft(),
+        );
     }
 
     /**

@@ -1347,7 +1347,9 @@ final class BlockLayout
                 && $first->geometry->marginTop > 0.0
             ) {
                 $childTopMargin = $first->geometry->marginTop;
-                $this->shiftSubtree($first, -$childTopMargin);
+                $providesAbsCb = $this->isPositioned($style)
+                    || $this->establishesAbsPosContainingBlock($style);
+                $this->shiftFlowSubtree($first, -$childTopMargin, $providesAbsCb);
                 // Cascade the shift across all siblings so spacing between
                 // siblings remains unchanged.
                 //
@@ -1360,8 +1362,6 @@ final class BlockLayout
                 // page entirely. Skipping every out-of-flow child instead is
                 // the opposite error: one whose containing block IS this box
                 // must move with it.
-                $providesAbsCb = $this->isPositioned($style)
-                    || $this->establishesAbsPosContainingBlock($style);
                 for ($i = 1, $n = count($box->children); $i < $n; $i++) {
                     $sibling = $box->children[$i];
                     if (!$providesAbsCb
@@ -1371,7 +1371,7 @@ final class BlockLayout
                     ) {
                         continue;
                     }
-                    $this->shiftSubtree($sibling, -$childTopMargin);
+                    $this->shiftFlowSubtree($sibling, -$childTopMargin, $providesAbsCb);
                 }
                 $childTotal -= $childTopMargin;
                 $extra = max(0.0, $childTopMargin - $geo->marginTop);
@@ -7959,6 +7959,43 @@ final class BlockLayout
         }
     }
 
+    /**
+     * Translate a subtree during the margin-collapse cascade.
+     *
+     * Unlike the general {@see shiftSubtree}, this knows that an
+     * out-of-flow descendant only travels with the shift when its
+     * containing block is INSIDE the subtree being moved. One
+     * positioned against an outer ancestor already resolved its
+     * offsets in that ancestor's coordinates, so translating it here
+     * double-counts the collapsed margin — an abspos `top: 0` after a
+     * `<p style="margin-top: 1.5in">` landed at y = -144 and was culled
+     * off the page entirely.
+     *
+     * The direct-sibling loop above applies the same rule one level up,
+     * where it also has to decide whether to descend at all; this
+     * carries the rule down through the whole subtree.
+     *
+     * `$cbInside` is true once some box on the path down from the shift
+     * root establishes the abspos containing block.
+     */
+    private function shiftFlowSubtree(Box $box, float $dy, bool $cbInside): void
+    {
+        $box->geometry->y += $dy;
+        $inside = $cbInside
+            || $this->isPositioned($box->style)
+            || $this->establishesAbsPosContainingBlock($box->style);
+        foreach ($box->children as $child) {
+            if (!$inside
+                && $this->isOutOfFlow($child)
+                && $this->floatSide($child) === null
+                && $this->hasBlockAxisAnchor($child)
+            ) {
+                continue;
+            }
+            $this->shiftFlowSubtree($child, $dy, $inside);
+        }
+    }
+
     private function shiftSubtree(Box $box, float $dy, float $dx = 0.0): void
     {
         $box->geometry->y += $dy;
@@ -10572,8 +10609,8 @@ final class BlockLayout
         // Horizontal padding+border of the cell itself. Percentage
         // padding has no resolved basis during intrinsic measurement —
         // resolve against 0 (→0), matching the px-padding common case.
-        $inset = $this->resolveLength($cell->style->get('padding-left'), 0.0)
-            + $this->resolveLength($cell->style->get('padding-right'), 0.0)
+        $inset = $this->cellIntrinsicPadding($cell, $context, 'left')
+            + $this->cellIntrinsicPadding($cell, $context, 'right')
             + $this->resolveBorderWidth($cell->style, 'left')
             + $this->resolveBorderWidth($cell->style, 'right');
         $min = $mm['min'] + $inset;
@@ -10589,6 +10626,36 @@ final class BlockLayout
             $max = max($max, $floor);
         }
         return ['min' => $min, 'max' => $max];
+    }
+
+    /**
+     * One side's padding of a table cell during INTRINSIC measurement.
+     *
+     * Intrinsic measurement runs BEFORE the cell's `resolveLengths`
+     * pass, so an author `padding: 1em` is still a `Length` in its
+     * declared unit — and {@see resolveLength} returns a `Length`'s raw
+     * `.value`, which silently turns `1em` into 1 PIXEL and
+     * under-measures the column until the content overflows its own
+     * border box. Resolve through `LengthResolver::toPx` against the
+     * cell's own context, exactly as the `min-width` floor above does.
+     *
+     * Percentages and `calc()` keep the existing behaviour: there is no
+     * resolved basis during intrinsic measurement, so they resolve
+     * against 0.
+     */
+    private function cellIntrinsicPadding(
+        \Phpdftk\HtmlToPdf\Box\TableCellBox $cell,
+        LayoutContext $context,
+        string $side,
+    ): float {
+        $value = $cell->style->get("padding-{$side}");
+        if ($value instanceof Length) {
+            return \Phpdftk\Css\Cascade\LengthResolver::toPx(
+                $value,
+                $this->boxLengthContext($cell, $context),
+            );
+        }
+        return $this->resolveLength($value, 0.0);
     }
 
     /**
