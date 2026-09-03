@@ -4830,6 +4830,34 @@ final class BlockLayout
     }
 
     /**
+     * Extra advance contributed by `letter-spacing` / `word-spacing`
+     * for an already-shaped run, mirroring what `InlineLayout`'s
+     * `applyLetterSpacing()` / `applyWordSpacing()` add during line
+     * layout: letter-spacing bumps every glyph, word-spacing bumps
+     * only word separators (CSS Text 3 §9 — U+0020 and U+00A0).
+     *
+     * Callers measuring min-content pass `$wordSpacing = 0`: a single
+     * unbreakable word contains no separators.
+     */
+    private function spacingAdvance(
+        \Phpdftk\Text\ShapedRun $run,
+        string $text,
+        float $letterSpacing,
+        float $wordSpacing,
+    ): float {
+        $extra = 0.0;
+        if ($letterSpacing !== 0.0) {
+            $extra += $letterSpacing * count($run->glyphs);
+        }
+        if ($wordSpacing !== 0.0) {
+            $extra += $wordSpacing * (
+                substr_count($text, ' ') + substr_count($text, "\xC2\xA0")
+            );
+        }
+        return $extra;
+    }
+
+    /**
      * Shape the text and report `(widest word, total advance)`.
      * Words split on Unicode whitespace; empty or whitespace-only
      * text returns 0/0.
@@ -4888,6 +4916,17 @@ final class BlockLayout
             : 12.0;
         $ctx = new \Phpdftk\Text\ShapingContext($font, $fontSize);
         $shaper = new \Phpdftk\Text\Shaper();
+        // CSS Text 3 §9 / §10 — `word-spacing` and `letter-spacing` add
+        // advance that INTRINSIC sizing must include, exactly as line
+        // layout does. Without them a shrink-to-fit box is measured as
+        // though the gaps were zero and then wraps content that would
+        // have fit on one line.
+        $letterSpacing = $box->style->get('letter-spacing') instanceof Length
+            ? $box->style->get('letter-spacing')->value
+            : 0.0;
+        $wordSpacing = $box->style->get('word-spacing') instanceof Length
+            ? $box->style->get('word-spacing')->value
+            : 0.0;
         // CSS Text 3 §4 / Sizing 3 §5 — preserved white-space modes
         // compute max-content per LINE (split on `\n`) rather than
         // as a single collapsed text run. Without this, `pre`,
@@ -4907,7 +4946,11 @@ final class BlockLayout
                     continue;
                 }
                 $shaped = $shaper->shapeRun($line, $ctx);
-                $maxAdvance = max($maxAdvance, $shaped->totalAdvance);
+                $maxAdvance = max(
+                    $maxAdvance,
+                    $shaped->totalAdvance
+                        + $this->spacingAdvance($shaped, $line, $letterSpacing, $wordSpacing),
+                );
             }
             if ($whiteSpace === 'pre') {
                 // No soft-wrap opportunities: min == max (each
@@ -4923,12 +4966,17 @@ final class BlockLayout
                     continue;
                 }
                 $shaped = $shaper->shapeRun($w, $ctx);
-                $minAdvance = max($minAdvance, $shaped->totalAdvance);
+                $minAdvance = max(
+                    $minAdvance,
+                    $shaped->totalAdvance
+                        + $this->spacingAdvance($shaped, $w, $letterSpacing, 0.0),
+                );
             }
             return ['min' => $minAdvance, 'max' => $maxAdvance];
         }
         $full = $shaper->shapeRun($text, $ctx);
-        $maxAdvance = $full->totalAdvance;
+        $maxAdvance = $full->totalAdvance
+            + $this->spacingAdvance($full, $text, $letterSpacing, $wordSpacing);
         // CSS Text 3 §6 / Sizing 3 §5.2 — under `overflow-wrap:
         // anywhere`, `line-break: anywhere`, or `word-break: break-all`,
         // soft-wrap opportunities exist between every typographic
@@ -4953,7 +5001,11 @@ final class BlockLayout
                 continue;
             }
             $shaped = $shaper->shapeRun($w, $ctx);
-            $minAdvance = max($minAdvance, $shaped->totalAdvance);
+            $minAdvance = max(
+                $minAdvance,
+                $shaped->totalAdvance
+                    + $this->spacingAdvance($shaped, $w, $letterSpacing, 0.0),
+            );
         }
         return ['min' => $minAdvance, 'max' => $maxAdvance];
     }
