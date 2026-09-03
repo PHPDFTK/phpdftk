@@ -2301,8 +2301,13 @@ final class BlockLayoutTest extends TestCase
         self::assertEqualsWithDelta(100.0, $section->geometry->height, 0.5);
     }
 
-    public function testColumnCountZeroClampsToSingleColumn(): void
+    public function testInvalidZeroColumnCountIsDropped(): void
     {
+        // CSS Multi-column 1 §3.1 — `column-count` is `<integer [1,inf]>`,
+        // so `0` is INVALID and the declaration is dropped rather than
+        // clamped. `column-count` and `column-width` are then both `auto`,
+        // which is not a multi-column container at all — the same outcome
+        // as {@see testBothColumnCountAndWidthAutoIsNotMultiColumn}.
         $box = $this->buildTree(
             '<html><body><section><div></div></section></body></html>',
             'html, body, section, div { display: block; }
@@ -2312,10 +2317,23 @@ final class BlockLayoutTest extends TestCase
         $this->layout->layout($box, $this->defaultCtx);
         $section = $this->find($box, 'section');
         self::assertNotNull($section);
+        self::assertNull($section->multiColumn);
+    }
+
+    public function testInvalidColumnCountLeavesEarlierValidDeclaration(): void
+    {
+        // An invalid declaration must not clobber the valid one before it.
+        $box = $this->buildTree(
+            '<html><body><section><div></div></section></body></html>',
+            'html, body, section, div { display: block; }
+             section { column-count: 4; column-count: -1; }
+             div { height: 40px; }',
+        );
+        $this->layout->layout($box, $this->defaultCtx);
+        $section = $this->find($box, 'section');
+        self::assertNotNull($section);
         self::assertNotNull($section->multiColumn);
-        self::assertSame(1, $section->multiColumn->columnCount);
-        // Degenerate single-column → child takes the container's full width.
-        self::assertEqualsWithDelta($section->geometry->width, $section->multiColumn->columnWidth, 0.001);
+        self::assertSame(4, $section->multiColumn->columnCount);
     }
 
     public function testBothColumnCountAndWidthAutoIsNotMultiColumn(): void

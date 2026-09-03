@@ -134,6 +134,28 @@ final class Cascade
     private int $nextLayerIndex = 0;
 
     /**
+     * True when a longhand's value is PROVABLY outside the property's
+     * accepted range, making the declaration invalid.
+     *
+     * Kept deliberately narrow — only cases where accepting the bad
+     * value destroys layout rather than merely looking wrong. A
+     * `column-count: 0` clamps to a single column at use time, which
+     * silently discards the whole multi-column layout an earlier valid
+     * declaration had set up.
+     */
+    private function longhandValueIsOutOfRange(string $property, \Phpdftk\Css\Value\Value $value): bool
+    {
+        return match ($property) {
+            // §3.1 — `<integer [1,∞]>`.
+            'column-count' => ($value instanceof \Phpdftk\Css\Value\Integer && $value->value < 1)
+                || ($value instanceof \Phpdftk\Css\Value\Number && $value->value < 1.0),
+            // §3.2 — `<length [0,∞]>`; a negative width is invalid.
+            'column-width' => $value instanceof \Phpdftk\Css\Value\Length && $value->value < 0.0,
+            default => false,
+        };
+    }
+
+    /**
      * Expand a declaration's shorthand, memoised on the Declaration
      * object itself. Returns `[longhandName, expandedValue]` tuples
      * so the cascade can iterate without per-call array allocation.
@@ -163,6 +185,14 @@ final class Cascade
             return $pairs;
         }
         foreach ($this->shorthands->expand($decl->property, $decl->value) as $longhand => $value) {
+            // CSS Cascade 5 §4.1 — an invalid declaration is dropped, so
+            // the previously-declared valid value keeps applying. Only
+            // provably out-of-range values are rejected here (see
+            // {@see longhandValueIsOutOfRange}); this is deliberately
+            // not a general value-validation hook.
+            if ($this->longhandValueIsOutOfRange($longhand, $value)) {
+                continue;
+            }
             $pairs[] = [$longhand, $value];
         }
         $this->expandedCache[$decl] = $pairs;

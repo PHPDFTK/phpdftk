@@ -1291,6 +1291,15 @@ final class ShorthandExpander
     private function expandColumns(Value $value): array
     {
         $components = $this->toComponents($value);
+        // CSS Multi-column 1 §3.3 — `columns` takes at most a
+        // `<column-width>` and a `<column-count>`. More components than
+        // that, or a component matching neither, makes the whole
+        // declaration invalid; it must be DROPPED so an earlier valid
+        // `column-count` keeps applying, rather than silently ignoring
+        // the stray part and letting the rest win the cascade.
+        if (count($components) > 2) {
+            return [];
+        }
         $width = null;
         $count = null;
         foreach ($components as $c) {
@@ -1310,7 +1319,11 @@ final class ShorthandExpander
                 } elseif ($count === null) {
                     $count = $c;
                 }
+                continue;
             }
+            // A component that is neither a count, a width nor `auto`
+            // (e.g. `columns: 8 normal`) invalidates the declaration.
+            return [];
         }
         $out = [];
         if ($width !== null) {
