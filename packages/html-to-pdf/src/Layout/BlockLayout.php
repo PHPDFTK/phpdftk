@@ -133,6 +133,28 @@ final class BlockLayout
     ) {}
 
     /**
+     * The document root's used `font-size` in px, for the `rem` basis.
+     *
+     * The root has no parent, so its own `em` and `%` refer to the
+     * INITIAL font size — which is exactly what `$initial` already
+     * carries at this point. Anything unresolvable (a keyword such as
+     * `medium`, or an absent declaration) keeps that initial value.
+     */
+    private function resolveRootFontSize(Box $root, \Phpdftk\Css\Cascade\LengthContext $initial): float
+    {
+        $value = $root->style->get('font-size');
+        if ($value instanceof Length) {
+            $px = \Phpdftk\Css\Cascade\LengthResolver::toPx($value, $initial);
+            return $px > 0.0 ? $px : $initial->rootFontSize;
+        }
+        if ($value instanceof Percentage) {
+            $px = $initial->currentFontSize * $value->value / 100.0;
+            return $px > 0.0 ? $px : $initial->rootFontSize;
+        }
+        return $initial->rootFontSize;
+    }
+
+    /**
      * Lay out `$root` at the origin from `$context`. Mutates the box tree
      * in place; returns the root's accumulated outer height so callers can
      * size the page box.
@@ -140,6 +162,18 @@ final class BlockLayout
     public function layout(Box $root, LayoutContext $context): float
     {
         $this->tableIntrinsicMemo = [];
+        // CSS Values 4 §6.1 — `rem` resolves against the DOCUMENT ROOT's
+        // font-size. Nothing ever set `LengthContext::$rootFontSize`, so
+        // every `rem` in the document resolved against the initial 16px
+        // however large `html { font-size }` was. Resolve the root's own
+        // font-size first (against the initial basis, which is what its
+        // own `em` / `%` refer to) and seed the context with it before
+        // anything else is measured.
+        $context = $context->withLengthContext(
+            $context->lengthContext->withRootFontSize(
+                $this->resolveRootFontSize($root, $context->lengthContext),
+            ),
+        );
         // Ensure the root's style has lengths resolved against the context.
         $this->cascade->resolveLengths($root->style, $this->boxLengthContext($root, $context));
         // Phase 1 simplification: a single FloatContext for the whole
@@ -6982,6 +7016,12 @@ final class BlockLayout
         }
         if ($lh instanceof \Phpdftk\Css\Value\Number) {
             return $fontSizePx * $lh->value;
+        }
+        // `line-height: 2` tokenises as an Integer, not a Number, and
+        // without this branch never reached a child's `lh` basis — which
+        // then fell back to `1.2 x font-size`.
+        if ($lh instanceof \Phpdftk\Css\Value\Integer) {
+            return $fontSizePx * (float) $lh->value;
         }
         if ($lh instanceof Percentage) {
             return $fontSizePx * ($lh->value / 100.0);

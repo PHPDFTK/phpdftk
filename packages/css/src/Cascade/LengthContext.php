@@ -80,6 +80,30 @@ final readonly class LengthContext
         public bool $percentagesAsZero = false,
     ) {}
 
+    /**
+     * CSS Values 4 §6.1 — the `rem` reference. Set once from the
+     * document root's own resolved `font-size` and then propagated
+     * unchanged down the tree.
+     */
+    public function withRootFontSize(float $px): self
+    {
+        return new self(
+            $this->parentFontSize,
+            $this->currentFontSize,
+            $px,
+            $this->viewportWidth,
+            $this->viewportHeight,
+            $this->percentageBasis,
+            $this->xHeightRatio,
+            $this->chWidthRatio,
+            $this->capHeightRatio,
+            $this->containerInlineSize,
+            $this->containerBlockSize,
+            $this->lineHeight,
+            $this->percentagesAsZero,
+        );
+    }
+
     public function withCurrentFontSize(float $px): self
     {
         return new self(
