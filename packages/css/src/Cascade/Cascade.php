@@ -2626,6 +2626,19 @@ final class Cascade
             if ($name === 'font-size') {
                 continue;
             }
+            if ($name === 'line-height') {
+                // Already resolved into `$bodyCtx` above. Re-resolving it
+                // here would apply the `lh` multiplier a SECOND time —
+                // `line-height: 2lh` came out as 2 x 2 x the parent's
+                // line-height. Write back the computed px only for
+                // authored <length> / calc() values; Number, Integer,
+                // Percentage and `normal` must stay unresolved so they
+                // keep inheriting as ratios.
+                if ($value instanceof Length || $value instanceof \Phpdftk\Css\Value\Calc) {
+                    $values->set($name, new Length($bodyCtx->lineHeight, LengthUnit::Px));
+                }
+                continue;
+            }
             $resolved = $this->resolveValueLengths($value, $bodyCtx);
             if ($resolved !== $value) {
                 $values->set($name, $resolved);
