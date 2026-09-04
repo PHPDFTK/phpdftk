@@ -1368,6 +1368,7 @@ final class BlockLayout
             && $box->children !== []
             && $geo->paddingTop === 0.0
             && $geo->borderTop === 0.0
+            && !$this->establishesBlockFormattingContext($box)
         ) {
             // CSS 2.1 §8.3.1 — an out-of-flow (abs-pos / float) child's
             // margins never collapse. Using an out-of-flow first child as
@@ -1644,6 +1645,7 @@ final class BlockLayout
             && $box->children !== []
             && $geo->paddingBottom === 0.0
             && $geo->borderBottom === 0.0
+            && !$this->establishesBlockFormattingContext($box)
         ) {
             // CSS 2.1 §8.3.1 — as for the top edge, an out-of-flow last
             // child's margin never collapses through the parent (and must
@@ -1766,7 +1768,16 @@ final class BlockLayout
         // its inner geometry resolves (width / margins / borders /
         // padding / child block heights).
         $floatCtx = $childContext->floatContext;
-        $virtual = $childContext->withOrigin($originX, $cursorY);
+        // CSS 2.1 §9.4.1 — a float establishes its own block formatting
+        // context, so its CONTENTS lay out against their own float set,
+        // not the parent's. Sharing the parent's context let a float
+        // nested inside this one register a document-wide exclusion that
+        // this float was then placed around — i.e. a float displaced by
+        // its own child. The parent's context is kept for PLACING this
+        // float below; the fresh one is discarded afterwards.
+        $virtual = $childContext
+            ->withOrigin($originX, $cursorY)
+            ->withFloatContext(new FloatContext());
         $this->layoutBox($child, $virtual);
 
         // If no FloatContext exists yet, lazily attach one to the
@@ -2393,6 +2404,40 @@ final class BlockLayout
         }
         $lower = strtolower($value->name);
         return $lower === 'absolute' || $lower === 'fixed';
+    }
+
+    /**
+     * CSS 2.1 §8.3.1 — a box that establishes a new block formatting
+     * context does NOT collapse its margins with its in-flow children.
+     * Only the parent side is decided here; {@see collapsesOuterMargin}
+     * covers the child side (flex / grid / table CONTAINERS).
+     *
+     * Without this a floated or `overflow: hidden` parent swallowed its
+     * first child's top margin: a `margin-top: 100px` child inside a
+     * float rendered at y = 0.
+     */
+    private function establishesBlockFormattingContext(Box $box): bool
+    {
+        if ($this->floatSide($box) !== null || $this->isOutOfFlow($box)) {
+            return true;
+        }
+        $overflow = $box->style->get('overflow');
+        if ($overflow instanceof Keyword && strtolower($overflow->name) !== 'visible') {
+            return true;
+        }
+        $display = $box->style->get('display');
+        if (!($display instanceof Keyword)) {
+            return false;
+        }
+        return in_array(strtolower($display->name), [
+            'inline-block',
+            'flow-root',
+            'table-cell',
+            'table-caption',
+            'inline-flex',
+            'inline-grid',
+            'inline-table',
+        ], true);
     }
 
     /**
